@@ -14,3 +14,4 @@ site/tsconfig.tsbuildinfo
 site/.vercel
 coverage/
 artifacts/
+.env*

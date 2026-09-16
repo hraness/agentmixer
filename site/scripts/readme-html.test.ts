@@ -9,21 +9,21 @@ const repository = join(import.meta.dir, "..", "..");
 
 test("site installation coordinates stay on the admitted release while new source is prepared", () => {
   const source = [
-    "bun add https://github.com/hraness/agentmixer/releases/download/v0.21.1/hraness-agentmixer-0.21.1.tgz",
-    "npm install @hraness/agentmixer@0.21.1",
-    "bun add github:hraness/agentmixer#v0.21.1",
-    "Version 0.21.1 and historical @hraness/agentmixer@0.20.0 remain prose.",
-    "Unrelated @hraness/agentmixer@0.21.10 and hraness/agentmixer#v0.21.1-beta.1 stay literal.",
+    "bun add https://github.com/hraness/agentmixer/releases/download/v0.1.2/hraness-agentmixer-0.1.2.tgz",
+    "npm install @hraness/agentmixer@0.1.2",
+    "bun add github:hraness/agentmixer#v0.1.2",
+    "Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.",
+    "Unrelated @hraness/agentmixer@0.1.20 and hraness/agentmixer#v0.1.2-beta.1 stay literal.",
   ].join("\n");
-  const projected = publishedReadme(source, "0.21.1", "0.21.0");
-  expect(projected).toContain("/v0.21.0/hraness-agentmixer-0.21.0.tgz");
-  expect(projected).toContain("npm install @hraness/agentmixer@0.21.0");
-  expect(projected).toContain("hraness/agentmixer#v0.21.0");
-  expect(projected).toContain("Version 0.21.1 and historical @hraness/agentmixer@0.20.0 remain prose.");
-  expect(projected).toContain("Unrelated @hraness/agentmixer@0.21.10 and hraness/agentmixer#v0.21.1-beta.1 stay literal.");
-  expect(publishedReadme(source, "0.21.1", "0.21.1")).toBe(source);
-  expect(publishedReadme(source, "0.21.1", null)).toBe(source);
-  expect(() => publishedReadme(source, "0.21.1", "latest")).toThrow();
+  const projected = publishedReadme(source, "0.1.2", "0.1.1");
+  expect(projected).toContain("/v0.1.1/hraness-agentmixer-0.1.1.tgz");
+  expect(projected).toContain("npm install @hraness/agentmixer@0.1.1");
+  expect(projected).toContain("hraness/agentmixer#v0.1.1");
+  expect(projected).toContain("Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.");
+  expect(projected).toContain("Unrelated @hraness/agentmixer@0.1.20 and hraness/agentmixer#v0.1.2-beta.1 stay literal.");
+  expect(publishedReadme(source, "0.1.2", "0.1.2")).toBe(source);
+  expect(publishedReadme(source, "0.1.2", null)).toBe(source);
+  expect(() => publishedReadme(source, "0.1.2", "latest")).toThrow();
 });
 
 test("renders the repository README with stable heading fragments and repository-rooted relative links", async () => {
@@ -40,7 +40,7 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_START)).toBeGreaterThanOrEqual(0);
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
-  expect(landing.title).toBe("Agentmixer");
+  expect(landing.title).toBe("AgentMixer");
   expect(landing.lead).toContain("provider-neutral foundation");
   expect(landing.markdown).toContain("small, explicit tool surface");
 });

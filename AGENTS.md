@@ -1,8 +1,9 @@
 # Contents
 
 - `src/` owns provider-neutral routing, account leases, model selection and
-  scoped tool contracts. `src/index.ts` is the package's complete public
-  surface.
+  scoped tool contracts, including the unqualified Devin ACP task adapter
+  (`devin-acp.ts`, `devin-client.ts`, `devin-adapter.ts`, `devin-mcp.ts`).
+  `src/index.ts` is the package's complete public surface.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a

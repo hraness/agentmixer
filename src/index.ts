@@ -45,3 +45,5 @@ export type { DevinFact, DevinPromptResult, DevinPermissionRequest, DevinPermiss
   DevinStopReason } from "./devin-acp.ts";
 export { startDevinToolRelay, DEVIN_MCP_BRIDGE_SOURCE } from "./devin-mcp.ts";
 export type { DevinToolRelay, DevinToolRelayOptions } from "./devin-mcp.ts";
+export { browserSessionArgv, browserSessionEnvironment, createBrowserSession, purgeBrowserSession, recoverBrowserSession } from "./browser-session.ts";
+export type { BrowserSessionBinding, BrowserSessionCloseReceipt, BrowserSessionOptions, BrowserSessionPhase, BrowserSessionPort, BrowserSessionReceipt, BrowserSessionRuntimeAdmission, BrowserSessionSpawn, BrowserSessionSystem } from "./browser-session.ts";

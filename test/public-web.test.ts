@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,12 +77,23 @@ test("the real HTTPS client pins DNS, verifies TLS, and bounds incomplete or hos
   const directory = await mkdtemp(join(tmpdir(), "agentmixer-web-"));
   const certificate = join(directory, "certificate.pem"), key = join(directory, "key.pem");
   const hostname = "agentmixer-web.invalid";
-  const environment = { PATH: process.env.PATH ?? "/usr/bin:/bin", OPENSSL_CONF: "/dev/null" };
+  const configuration = join(directory, "openssl.cnf");
+  await writeFile(configuration, [
+    "[ req ]",
+    "distinguished_name = dn",
+    "prompt = no",
+    "[ dn ]",
+    `CN = ${hostname}`,
+    "[ v3_req ]",
+    `subjectAltName = DNS:${hostname}`,
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const environment = { PATH: process.env.PATH ?? "/usr/bin:/bin", OPENSSL_CONF: configuration };
   let server: ReturnType<typeof createServer> | undefined;
   try {
     let generated: Bun.Subprocess<"ignore", "pipe", "pipe">;
     try {
-      generated = Bun.spawn(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-keyout", key, "-out", certificate, "-days", "1", "-subj", `/CN=${hostname}`, "-addext", `subjectAltName=DNS:${hostname}`], {
+      generated = Bun.spawn(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-keyout", key, "-out", certificate, "-days", "1", "-extensions", "v3_req"], {
         env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5_000,
       });
     } catch { throw new Error("Public HTTPS security tests require OpenSSL to generate a temporary certificate"); }

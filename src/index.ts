@@ -8,7 +8,7 @@ export * from "./runtime.ts";
 export * from "./capabilities.ts";
 export * from "./task-runtime.ts";
 export { createPublicWeb } from "./public-web.ts";
-export { identifier } from "./validation.ts";
+export { boundedText, identifier } from "./validation.ts";
 export type { AgentProvider } from "./validation.ts";
 export * from "./claude-sdk.ts";
 export * from "./claude-credentials.ts";

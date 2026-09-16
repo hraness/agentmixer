@@ -1,0 +1,16 @@
+node_modules/
+dist/
+site/node_modules/
+site/.next/
+site/out/
+site/next-env.d.ts
+site/tsconfig.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vercel
+site/.vercel
+coverage/
+artifacts/

@@ -1,0 +1,14 @@
+/.github/workflows/** @0thernet
+/.github/CODEOWNERS @0thernet
+/scripts/package-smoke* @0thernet
+/scripts/package-scan* @0thernet
+/scripts/build-dist* @0thernet
+/scripts/check-* @0thernet
+/scripts/npm-provenance-* @0thernet
+/scripts/verify-npm-provenance-* @0thernet
+/scripts/npm-release-policy* @0thernet
+/scripts/publish-* @0thernet
+/scripts/release-* @0thernet
+/docs/publishing.md @0thernet
+/package.json @0thernet
+/bun.lock @0thernet

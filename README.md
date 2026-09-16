@@ -1,7 +1,7 @@
 <!-- hraness:agentmixer-landing:start -->
-# Agentmixer
+# AgentMixer
 
-Agentmixer is a provider-neutral foundation for applications that give an agent
+AgentMixer is a provider-neutral foundation for applications that give an agent
 a small, explicit tool surface. Its first consumer is Textbutler. The package's
 public contract and provider qualification are still being developed; see the
 qualification limits below before relying on any provider adapter.
@@ -360,7 +360,7 @@ managed launcher or new production qualification is bundled or implicitly enable
 
 The application owns its daemon, contact enrollment, message classification policy,
 conversation history, memory format, prefix formatting and Ghostget/Linq access.
-Agentmixer owns the execution seam. The model cannot choose a workspace or contact
+AgentMixer owns the execution seam. The model cannot choose a workspace or contact
 in broker input. `WorkspaceFiles` and `PublicWeb` are trusted host ports. Textbutler supplies its confined file implementation and uses `createPublicWeb()` by default. Custom replacements must preserve file confinement and public-network policy across DNS and every redirect. URL syntax validation alone is insufficient. The supplied web client admits public unicast addresses, rejects mixed public/private DNS answers, pins the selected address while preserving TLS hostname verification, and validates each redirect anew. It fetches bounded UTF-8 text only; it does not carry account cookies or authorization headers.
 
 Messaging ports only stage proposed actions and return an intent ID. They must never

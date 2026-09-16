@@ -64,7 +64,7 @@ describe("AgentMixer site source contract", () => {
     expect(home).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(home).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev" />');
     expect(docs).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev/docs" />');
-    expect(generated).toContain('export const readmeTitle = "Agentmixer";');
+    expect(generated).toContain('export const readmeTitle = "AgentMixer";');
     expect(generated).toContain("export const readmeHtml = ");
   });
 

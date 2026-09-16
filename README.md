@@ -18,6 +18,21 @@ It provides:
 
 `src/index.ts` exports the complete current interface. `createPublicWeb()` provides bounded public HTTPS GETs with address pinning, redirect checks, no ambient authentication, a 15-second deadline, and a 256 KiB maximum text response. Run `bun test` from the repository root.
 
+## Install
+
+Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
+versioned GitHub archive to a Bun project:
+
+```sh
+bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.1.1/hraness-agentmixer-0.1.1.tgz
+```
+
+The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):
+
+```sh
+npm install --save-exact --ignore-scripts @hraness/agentmixer@0.1.1
+```
+
 ## Standalone package
 
 `npm pack` produces a self-contained tarball after `bun

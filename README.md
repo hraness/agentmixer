@@ -512,8 +512,12 @@ net namespaces, per-file `--ro-bind` entries, `--bind` for the writable roots,
 rebuilt in sorted `--setenv` order. On Linux only `network: "denied"` is
 plannable: bubblewrap cannot express per-destination egress, so provider
 TCP/443 parity requires a separately qualified unix-socket proxy bridge. There
-is no fallback — an unavailable platform, unverified artifact, or
-unexpressible policy refuses the plan rather than launching unsandboxed.
+is no fallback — a spec whose admitted platform the backend cannot enforce,
+an unverified artifact, or an unexpressible policy refuses the plan rather
+than launching unsandboxed. The spec's `platform` is admission evidence about
+the runtime being launched, not the build host: a backend refuses a spec whose
+declared platform it cannot enforce, so synthetic custody tests exercise the
+real launch path on any host.
 
 `createSandboxedProviderProcessFactory(plan)` composes a plan onto the
 unchanged bounded-provider custody — stdout/stderr bounds, the detached

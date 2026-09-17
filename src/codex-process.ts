@@ -195,7 +195,7 @@ export function createCodexProcessLauncher(options: { executablePath: string; st
       const policyPath = join(root, "sandbox.sb");
       const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
         codexMacSandbox({ executable: spec.executable, scratch: spec.scratch, relayPort: input.relayPort }) })
-        .plan({ executable, scratch, network: "loopback", policyPath });
+        .plan({ platform: "darwin", executable, scratch, network: "loopback", policyPath });
       value.profileSha256 = sandboxPlan.policySha256;
       await writeFile(policyPath, sandboxPlan.policy, { mode: 0o600, flag: "wx" });
       const inspectedScratch = await inspectCodexScratch({ scratch, configuration: input.configuration });

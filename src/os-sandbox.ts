@@ -33,8 +33,13 @@ import { spawnBoundedProvider, type BoundedProviderProcessFactory, type BoundedP
  */
 export type OsSandboxNetworkPolicy = "denied" | "loopback" | "provider-tcp443-dns";
 export type OsSandboxBackendName = "seatbelt" | "bwrap";
+/** The platform the *admitted runtime* targets — host admission evidence, not
+ * `process.platform`. A backend refuses a spec whose platform it cannot
+ * enforce; synthetic custody tests exercise the real launch path on any host. */
+export type OsSandboxPlatform = "darwin" | "linux";
 
 export type OsSandboxSpec = Readonly<{
+  platform: OsSandboxPlatform;
   /** Absolute canonical path of the in-sandbox executable (the admitted run
    * snapshot), bound read-only and executable. */
   executable: string;
@@ -101,7 +106,9 @@ function arg(value: string, code: string): string {
   return value;
 }
 function specOf(value: unknown): OsSandboxSpec {
-  const raw = object(value, ["executable", "scratch", "accountHome", "readOnlyPaths", "network", "policyPath"]);
+  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "policyPath"]);
+  const platform = raw.platform;
+  assert(platform === "darwin" || platform === "linux", "OS_SANDBOX_PLATFORM_INVALID");
   const readOnly = raw.readOnlyPaths === undefined ? [] : (() => {
     assert(Array.isArray(raw.readOnlyPaths) && raw.readOnlyPaths.length <= 256, "OS_SANDBOX_SPEC_INVALID");
     return (raw.readOnlyPaths as unknown[]).map(entry => path(entry));
@@ -109,7 +116,7 @@ function specOf(value: unknown): OsSandboxSpec {
   const network = raw.network;
   assert(network === "denied" || network === "loopback" || network === "provider-tcp443-dns", "OS_SANDBOX_NETWORK_INVALID");
   const executable = path(raw.executable), scratch = path(raw.scratch), policyPath = path(raw.policyPath);
-  const spec = Object.freeze({ executable, scratch,
+  const spec = Object.freeze({ platform, executable, scratch,
     ...(raw.accountHome === undefined ? {} : { accountHome: path(raw.accountHome) }),
     readOnlyPaths: Object.freeze(readOnly), network, policyPath });
   // The writable roots must not contain or enclose the executable or each
@@ -165,6 +172,7 @@ export async function verifyOsSandboxExecutable(executablePath: string, sha256: 
  * platform gate and generator ownership. */
 export function planSeatbeltPolicy(input: OsSandboxSpec, policy: string): OsSandboxPlan {
   const spec = specOf(input);
+  assert(spec.platform === "darwin", "OS_SANDBOX_PLATFORM_MISMATCH");
   assert(typeof policy === "string" && policy.length > 0 && policy.length <= 64 * 1024, "OS_SANDBOX_POLICY_INVALID");
   const policyPath = spec.policyPath, executable = spec.executable;
   return Object.freeze({ backend: "seatbelt", policy, policySha256: hash(policy),
@@ -182,6 +190,7 @@ export function planSeatbeltPolicy(input: OsSandboxSpec, policy: string): OsSand
  * `network: "denied"` bound, and wrapper-artifact re-verification. */
 export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string): OsSandboxPlan {
   const spec = specOf(input);
+  assert(spec.platform === "linux", "OS_SANDBOX_PLATFORM_MISMATCH");
   // bwrap is all-or-nothing on network namespaces and seccomp cBPF cannot
   // inspect sockaddr contents: egress parity needs a unix-socket proxy
   // bridge, which is a separate qualification. Until then only the offline
@@ -233,7 +242,6 @@ export function createSeatbeltOsSandbox(options: Readonly<{
   return Object.freeze({
     name: "seatbelt" as const,
     async plan(input: OsSandboxSpec): Promise<OsSandboxPlan> {
-      assert(process.platform === "darwin", "OS_SANDBOX_PLATFORM_UNSUPPORTED");
       return planSeatbeltPolicy(input, generate(specOf(input)));
     },
   });
@@ -252,7 +260,7 @@ export function createBwrapOsSandbox(options: Readonly<{
   return Object.freeze({
     name: "bwrap" as const,
     async plan(input: OsSandboxSpec): Promise<OsSandboxPlan> {
-      assert(process.platform === "linux", "OS_SANDBOX_PLATFORM_UNSUPPORTED");
+      assert(specOf(input).platform === "linux", "OS_SANDBOX_PLATFORM_MISMATCH");
       await verifyOsSandboxExecutable(wrapper, wrapperSha256, 8n * 1024n * 1024n);
       return planBwrapPolicy(input, wrapper);
     },

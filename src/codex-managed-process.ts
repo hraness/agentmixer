@@ -269,7 +269,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       const policyPath = join(root, "sandbox.sb");
       const sandboxPlan: OsSandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
         (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
-        .plan({ executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
+        .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
       state.profileSha256 = sandboxPlan.policySha256;
       await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
       const inspected = await inspectScratch(scratch); state.scratchContentSha256 = inspected.content; state.scratchIdentitySha256 = inspected.identity;

@@ -13,7 +13,7 @@ async function fixture() {
   const executable = join(root, "runtime", "provider");
   return { root, scratch, accountHome, policyPath, executable,
     spec(overrides: Record<string, unknown> = {}): OsSandboxSpec {
-      return { executable, scratch, accountHome, network: "denied", policyPath, ...overrides } as OsSandboxSpec;
+      return { platform: "darwin", executable, scratch, accountHome, network: "denied", policyPath, ...overrides } as OsSandboxSpec;
     },
     async cleanup() { await rm(root, { recursive: true, force: true }); } };
 }
@@ -97,24 +97,19 @@ describe("os-sandbox seatbelt planning", () => {
       expect(() => plan.wrap({ args: ["a\0b"], env: {}, cwd: "/x" })).toThrow("OS_SANDBOX_WRAP_INVALID");
     } finally { await f.cleanup(); }
   });
-  test("backend gates on platform and rejects an invalid generator", async () => {
+  test("backend refuses a spec whose admitted platform it cannot enforce", async () => {
     expect(() => createSeatbeltOsSandbox({} as never)).toThrow("OS_SANDBOX_GENERATOR_INVALID");
     expect(() => createSeatbeltOsSandbox({ generateProfile: () => "(deny default)", extra: 1 } as never)).toThrow("OS_SANDBOX_UNKNOWN_FIELD");
     const backend = createSeatbeltOsSandbox({ generateProfile: () => "(deny default)" });
     expect(backend.name).toBe("seatbelt");
     const f = await fixture();
     try {
-      const result = backend.plan(f.spec());
-      if (process.platform === "darwin") {
-        const plan = await result;
-        expect(plan.executable).toBe("/usr/bin/sandbox-exec");
-      } else {
-        await expect(result).rejects.toThrow("OS_SANDBOX_PLATFORM_UNSUPPORTED");
-      }
+      await expect(backend.plan(f.spec({ platform: "linux" }))).rejects.toThrow("OS_SANDBOX_PLATFORM_MISMATCH");
+      const plan = await backend.plan(f.spec());
+      expect(plan.executable).toBe("/usr/bin/sandbox-exec");
     } finally { await f.cleanup(); }
   });
   test("backend rejects an oversized or empty generated policy", async () => {
-    if (process.platform !== "darwin") return;
     const f = await fixture();
     try {
       await expect(createSeatbeltOsSandbox({ generateProfile: () => "" }).plan(f.spec())).rejects.toThrow("OS_SANDBOX_POLICY_INVALID");
@@ -127,7 +122,7 @@ describe("os-sandbox bwrap planning", () => {
   test("builds private-namespace argv with clearenv and sorted setenv", async () => {
     const f = await fixture();
     try {
-      const plan = planBwrapPolicy(f.spec({ readOnlyPaths: [join(f.root, "lib.so")] }), join(f.root, "bwrap"));
+      const plan = planBwrapPolicy(f.spec({ platform: "linux", readOnlyPaths: [join(f.root, "lib.so")] }), join(f.root, "bwrap"));
       expect(plan.backend).toBe("bwrap");
       expect(plan.executable).toBe(join(f.root, "bwrap"));
       const wrapped = plan.wrap({ args: ["run"], env: Object.freeze({ Z_VAR: "z", A_VAR: "a" }), cwd: "/inside" });
@@ -149,7 +144,7 @@ describe("os-sandbox bwrap planning", () => {
   test("binds executable and read-only paths ro, scratch and account rw", async () => {
     const f = await fixture();
     try {
-      const plan = planBwrapPolicy(f.spec(), join(f.root, "bwrap"));
+      const plan = planBwrapPolicy(f.spec({ platform: "linux" }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: [], env: {}, cwd: "/" }).args];
       const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
       expect(pairs("--ro-bind")).toContain(f.executable);
@@ -165,20 +160,20 @@ describe("os-sandbox bwrap planning", () => {
   test("rejects every network policy but denied", async () => {
     const f = await fixture();
     try {
-      expect(() => planBwrapPolicy(f.spec({ network: "loopback" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
-      expect(() => planBwrapPolicy(f.spec({ network: "provider-tcp443-dns" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "loopback" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
     } finally { await f.cleanup(); }
   });
   test("policy digest tracks bind-set changes", async () => {
     const f = await fixture();
     try {
-      const a = planBwrapPolicy(f.spec(), join(f.root, "bwrap"));
-      const b = planBwrapPolicy(f.spec({ readOnlyPaths: [join(f.root, "extra")] }), join(f.root, "bwrap"));
+      const a = planBwrapPolicy(f.spec({ platform: "linux" }), join(f.root, "bwrap"));
+      const b = planBwrapPolicy(f.spec({ platform: "linux", readOnlyPaths: [join(f.root, "extra")] }), join(f.root, "bwrap"));
       expect(a.policySha256).not.toBe(b.policySha256);
-      expect(planBwrapPolicy(f.spec(), join(f.root, "bwrap")).policySha256).toBe(a.policySha256);
+      expect(planBwrapPolicy(f.spec({ platform: "linux" }), join(f.root, "bwrap")).policySha256).toBe(a.policySha256);
     } finally { await f.cleanup(); }
   });
-  test("backend gates on platform and re-verifies the wrapper artifact", async () => {
+  test("backend refuses a mismatched platform and re-verifies the wrapper artifact", async () => {
     const f = await fixture();
     try {
       const wrapper = join(f.root, "bwrap");
@@ -186,14 +181,10 @@ describe("os-sandbox bwrap planning", () => {
       await chmod(wrapper, 0o500);
       const backend = createBwrapOsSandbox({ executable: wrapper, sha256: sha256("synthetic-bwrap") });
       expect(backend.name).toBe("bwrap");
-      const result = backend.plan(f.spec());
-      if (process.platform === "linux") {
-        await expect(result).resolves.toMatchObject({ backend: "bwrap" });
-        const wrongDigest = createBwrapOsSandbox({ executable: wrapper, sha256: sha256("other") });
-        await expect(wrongDigest.plan(f.spec())).rejects.toThrow("OS_SANDBOX_EXECUTABLE_CHANGED");
-      } else {
-        await expect(result).rejects.toThrow("OS_SANDBOX_PLATFORM_UNSUPPORTED");
-      }
+      await expect(backend.plan(f.spec())).rejects.toThrow("OS_SANDBOX_PLATFORM_MISMATCH");
+      await expect(backend.plan(f.spec({ platform: "linux" }))).resolves.toMatchObject({ backend: "bwrap" });
+      const wrongDigest = createBwrapOsSandbox({ executable: wrapper, sha256: sha256("other") });
+      await expect(wrongDigest.plan(f.spec({ platform: "linux" }))).rejects.toThrow("OS_SANDBOX_EXECUTABLE_CHANGED");
     } finally { await f.cleanup(); }
   });
 });

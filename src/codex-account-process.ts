@@ -256,7 +256,7 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     const policyPath = join(root, "sandbox.sb");
     const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
       selectedProfile({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
-      .plan({ executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath });
+      .plan({ platform: "darwin", executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath });
     state.profileSha256 = sandboxPlan.policySha256;
     await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
     await fixedFile(join(accountHome, "config.toml"), configuration, false); await directory(accountHome); await directory(scratch); alivePreparation();

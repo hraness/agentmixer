@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
     process.exitCode = 1;
   } else {
     const backend = createBwrapOsSandbox({ executable: bwrap, sha256: bwrapSha256 });
-    const plan = await backend.plan({ executable: probe, scratch, accountHome: account, network: "denied",
+    const plan = await backend.plan({ platform: "linux", executable: probe, scratch, accountHome: account, network: "denied",
       policyPath: join(root, "sandbox.json") });
     const wrapped = plan.wrap({ args: [join(scratch, "own"), canary, join(outside, "write"), "65533", outside],
       env: { HOME: scratch, TMPDIR: scratch }, cwd: scratch });

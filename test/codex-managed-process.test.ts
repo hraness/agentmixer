@@ -408,7 +408,7 @@ test("a linux parent without a sandbox admission is refused, and a darwin parent
   await darwin.owned(async request => { const handle = await darwin.launch(request, undefined, mismatched); await unavailable(handle); expect(darwin.spawns).toHaveLength(0); });
 });
 
-test("a linux launch refuses a provider-egress profile because bwrap cannot express it", async () => {
+test("a linux launch refuses a provider-egress profile without an admitted egress bridge", async () => {
   const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "x64", sha256: parentSha };
   const f = await fixture({ parent: Promise.resolve(linuxParent), sandboxProfile: providerProfile });
   const wrapper = join(f.root, "synthetic-bwrap");
@@ -416,4 +416,57 @@ test("a linux launch refuses a provider-egress profile because bwrap cannot expr
   const launcher = createCodexManagedProcessLauncher({ ...f.options,
     runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } }, f.system);
   await f.owned(async request => { const handle = await f.launch(request, undefined, launcher); await unavailable(handle); expect(f.spawns).toHaveLength(0); });
+  // Egress admitted but no host bridge seam on the trusted system.
+  const g = await fixture({ parent: Promise.resolve(linuxParent), sandboxProfile: providerProfile });
+  const admittedNoSeam = createCodexManagedProcessLauncher({ ...g.options,
+    runtime: { ...g.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} } } }, g.system);
+  await g.owned(async request => { const handle = await g.launch(request, undefined, admittedNoSeam); await unavailable(handle); expect(g.spawns).toHaveLength(0); });
+});
+
+test("a linux provider launch rides the admitted egress bridge and joins it on cleanup", async () => {
+  const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "x64", sha256: parentSha };
+  const f = await fixture({ parent: Promise.resolve(linuxParent), sandboxProfile: providerProfile });
+  const wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const bridgeRequests: { socketPath: string; allowlist?: readonly string[] }[] = [];
+  let bridgeClosed = false;
+  const system = { ...f.system, startEgressBridge(request: { socketPath: string; allowlist?: readonly string[] }) {
+    bridgeRequests.push(request);
+    return Promise.resolve({ socketPath: request.socketPath, connections: 0,
+      close: () => { bridgeClosed = true; return Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+        connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: true, socketRemoved: true })); } });
+  } };
+  const launcher = createCodexManagedProcessLauncher({ ...f.options,
+    runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: { allowlist: ["API.example.com"] } } } }, system);
+  await f.owned(async request => { const handle = await f.launch(request, undefined, launcher); await handle.ready;
+    expect(bridgeRequests).toHaveLength(1);
+    const socketPath = bridgeRequests[0]!.socketPath;
+    expect(bridgeRequests[0]!.allowlist).toEqual(["api.example.com"]);
+    const spawn = f.spawns[0]!;
+    const pairs = (flag: string) => spawn.args.flatMap((value, index) => value === flag ? [spawn.args[index + 1]!] : []);
+    expect(pairs("--bind")).toContain(socketPath);
+    const setenvAt = spawn.args.findIndex((value, index) => value === "--setenv" && spawn.args[index + 1] === "AGENTMIXER_EGRESS_SOCKET");
+    expect(spawn.args[setenvAt + 2]).toBe(socketPath);
+    const policy = JSON.parse(await readFile(join(dirname(handle.receipt().custodyPath), "sandbox.json"), "utf8"));
+    expect(policy.egress).toEqual({ socket: socketPath, protocol: "connect-tcp443" });
+    expect(handle.receipt()).toMatchObject({ productionQualified: false, network: networkLabel });
+    joined(await handle.stopAndJoin(), providerProfile);
+    expect(bridgeClosed).toBe(true);
+  });
+});
+
+test("a linux provider launch retains custody when the bridge join is unproven", async () => {
+  const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "x64", sha256: parentSha };
+  const f = await fixture({ parent: Promise.resolve(linuxParent), sandboxProfile: providerProfile });
+  const wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const system = { ...f.system, startEgressBridge: (request: { socketPath: string }) => Promise.resolve({ socketPath: request.socketPath, connections: 1,
+    close: () => Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+      connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: false, socketRemoved: false })) }) };
+  const launcher = createCodexManagedProcessLauncher({ ...f.options,
+    runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} } } }, system);
+  await f.owned(async request => { const handle = await f.launch(request, undefined, launcher); await handle.ready;
+    const stopped = await handle.stopAndJoin();
+    expect(stopped).toMatchObject({ phase: "recovery-required", lockReleased: false });
+  });
 });

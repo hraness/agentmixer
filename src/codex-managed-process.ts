@@ -13,6 +13,7 @@ import type { CodexManagedProcessLauncher } from "./codex-managed-config.ts";
 import type { CodexProcessHandle, CodexProcessReceipt } from "./codex-process.ts";
 import { providerProcessWriteResult, type ProviderProcessWriteResult } from "./process-port.ts";
 import { createSeatbeltOsSandbox, createBwrapOsSandbox, type OsSandboxPlan } from "./os-sandbox.ts";
+import { createEgressBridge, egressBridgeDialer, type EgressBridge } from "./egress-bridge.ts";
 import { assertCodexHostFileStable, inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRuntime, type CodexParentRuntimeBinding } from "./codex-host.ts";
 import { assertAgentTaskAccountLease, type AgentTaskAccountLease, type AgentTaskBinding } from "./task-runtime.ts";
 import { identifier, safeInteger } from "./validation.ts";
@@ -26,6 +27,10 @@ type ManagedSandboxProfile = "managed-task-offline-candidate-v1" | "managed-task
  * self-admitted as provenance or sandbox qualification. */
 export type CodexManagedSandboxAdmission = Readonly<{
   executable: string; sha256: string; readOnlyPaths?: readonly string[];
+  /** Required for provider-egress profiles on Linux: the host starts a
+   * unix-socket CONNECT bridge bound into the namespace. The allowlist is an
+   * exact-host set; absent admits any host on :443 (seatbelt parity). */
+  egress?: Readonly<{ allowlist?: readonly string[] }>;
 }>;
 export type CodexManagedProcessOptions = Readonly<{
   stateRoot: string;
@@ -45,6 +50,9 @@ export interface CodexManagedProcessSystem {
   signalGroup(pgid: number, signal: "SIGTERM" | "SIGKILL" | 0): boolean;
   /** Host-derived release directory only; defaults to the physical fsync helper. */
   syncDirectory?(path: string): Promise<void>;
+  /** Host-owned unix-socket CONNECT bridge; required for provider-egress
+   * profiles on Linux. The returned handle is joined during cleanup. */
+  startEgressBridge?(options: { socketPath: string; allowlist?: readonly string[] }): Promise<EgressBridge>;
 }
 type CoreReceipt<B, S extends string> = CodexProcessReceipt & Readonly<{
   schema: S; binding: B; processGeneration: number;
@@ -70,12 +78,24 @@ function record(value: unknown, keys: readonly string[]): Record<string, unknown
 function path(value: unknown): string {
   check(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "CODEX_MANAGED_PROCESS_PATH_INVALID"); return value;
 }
+/** Lowercase hostname grammar matching the egress bridge's CONNECT target
+ * normalization, so an admitted allowlist entry can never silently mismatch. */
+function egressHost(value: unknown): string {
+  check(typeof value === "string", "CODEX_MANAGED_PROCESS_EGRESS_INVALID");
+  const lowered = value.toLowerCase();
+  check(lowered.length > 0 && Buffer.byteLength(lowered) <= 253 && /^[a-z0-9._:\[\]-]+$/u.test(lowered), "CODEX_MANAGED_PROCESS_EGRESS_INVALID");
+  return lowered;
+}
 function sandboxOf(value: unknown): CodexManagedSandboxAdmission | undefined {
   if (value === undefined) return undefined;
-  const raw = record(value, ["executable", "sha256", "readOnlyPaths"]);
+  const raw = record(value, ["executable", "sha256", "readOnlyPaths", "egress"]);
   return Object.freeze({ executable: path(raw.executable), sha256: digest(raw.sha256),
     readOnlyPaths: raw.readOnlyPaths === undefined ? Object.freeze([] as readonly string[])
-      : Object.freeze((check(Array.isArray(raw.readOnlyPaths) && raw.readOnlyPaths.length <= 256, "CODEX_MANAGED_PROCESS_SANDBOX_INVALID"), (raw.readOnlyPaths as unknown[]).map(entry => path(entry)))) });
+      : Object.freeze((check(Array.isArray(raw.readOnlyPaths) && raw.readOnlyPaths.length <= 256, "CODEX_MANAGED_PROCESS_SANDBOX_INVALID"), (raw.readOnlyPaths as unknown[]).map(entry => path(entry)))),
+    ...(raw.egress === undefined ? {} : { egress: (() => { const e = record(raw.egress, ["allowlist"]);
+      return Object.freeze({ ...(e.allowlist === undefined ? {}
+        : { allowlist: (check(Array.isArray(e.allowlist) && e.allowlist.length <= 256, "CODEX_MANAGED_PROCESS_EGRESS_INVALID"),
+          Object.freeze((e.allowlist as unknown[]).map(entry => egressHost(entry)))) }) }); })() }) });
 }
 async function directory(value: string): Promise<BigIntStats> {
   const metadata = await lstat(value, { bigint: true });
@@ -135,6 +155,7 @@ async function bounded<T>(promise: Promise<T>, deadline: number): Promise<T> {
 }
 const system: CodexManagedProcessSystem = {
   inspectParent: inspectCodexHostRuntime,
+  startEgressBridge: request => createEgressBridge({ socketPath: request.socketPath, ...(request.allowlist === undefined ? {} : { allowlist: request.allowlist }), dialer: egressBridgeDialer }),
   spawn: request => spawn(request.executable, [...request.args], { cwd: request.cwd, env: { ...request.env }, detached: true, stdio: ["pipe", "pipe", "pipe"] }),
   processGroup(pid) { const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "pgid="], { encoding: "utf8", timeout: 1_000, maxBuffer: 1024, env: { PATH: "/usr/bin:/bin" } });
     return !result.error && result.status === 0 && /^[1-9][0-9]*$/u.test(result.stdout.trim()) ? Number(result.stdout.trim()) : null; },
@@ -187,7 +208,9 @@ export function createCodexManagedProcessLauncher(options: CodexManagedProcessOp
   check(sandboxProfile === "managed-task-offline-candidate-v1" || sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1", "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
   check(digest(a.nativeSha256) === runtime.sha256 && digest(a.schemaSha256) === runtime.schemaSha256 && digest(a.parentSha256) === runtime.parentRuntime.expectedSha256, "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
   const taskRuntime = Object.freeze({ version: identifier(a.taskRuntimeVersion), digest: digest(a.taskRuntimeDigest) }), startupMs = safeInteger(raw.startupTimeoutMs ?? 10_000, 1, 120_000);
-  const host = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem), syncDirectory: trustedSystem.syncDirectory?.bind(trustedSystem) ?? syncDirectory });
+  const host = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem),
+    ...(trustedSystem.startEgressBridge === undefined ? {} : { startEgressBridge: trustedSystem.startEgressBridge.bind(trustedSystem) }),
+    syncDirectory: trustedSystem.syncDirectory?.bind(trustedSystem) ?? syncDirectory });
   const seen = new WeakSet<AgentTaskAccountLease>(); let generation = 0;
   return Object.freeze({ launch(input: Parameters<CodexManagedProcessLauncher["launch"]>[0]) {
     const launch = record(input, ["request", "runId", "accountId", "workspaceId", "configuration", "accountLease", "cancellationSignal"]), request = launch.request as Parameters<CodexManagedProcessLauncher["launch"]>[0]["request"];
@@ -210,7 +233,7 @@ export function createCodexManagedProcessLauncher(options: CodexManagedProcessOp
 // This ownership core is deliberately not exported. A task can enter only via
 // the original runtime authority checks; diagnostics have a separate fixed entry.
 interface OwnedCore<B, S extends string> extends CodexProcessHandle { receipt(): CoreReceipt<B, S>; stopAndJoin(): Promise<CoreReceipt<B, S>> }
-type ProcessHost = Required<CodexManagedProcessSystem>;
+type ProcessHost = Omit<CodexManagedProcessSystem, "syncDirectory"> & { syncDirectory(path: string): Promise<void> };
 function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: string; runtime: CodexManagedProcessOptions["runtime"]; host: ProcessHost;
   binding: B; lease: AccountLease; processGeneration: number; configuration: string; runId: string; schema: S;
   sandboxProfile?: ManagedSandboxProfile;
@@ -227,7 +250,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
     const startupDeadline = Math.min(executionDeadline, Date.now() + startupMs);
     const state = { phase: "preparing" as CodexManagedProcessReceipt["phase"], launchAttempted: false, pid: null as number | null, pgid: null as number | null, rootExited: false, groupAbsent: false, stdioJoined: false, lockReleased: false, scratchRetained: false,
       nativeExitCode: null as number | null, nativeExitSignal: null as string | null, runtimeSnapshotSha256: "", profileSha256: "", scratchContentSha256: "", scratchIdentitySha256: "" };
-    let child: ChildProcessWithoutNullStreams | undefined, lockOwned = false, pendingReleaseSync = false, journalFd: number | undefined, journalFailed = false, sequence = 0, previous: string | null = null;
+    let child: ChildProcessWithoutNullStreams | undefined, lockOwned = false, pendingReleaseSync = false, journalFd: number | undefined, journalFailed = false, sequence = 0, previous: string | null = null, bridge: EgressBridge | undefined;
     let scratchIdentity: BigIntStats | undefined, runtimeIdentity: BigIntStats | undefined, preparationSettled = false, nativeClosed = false, spawnEvent = false, spawnError = false, closing = false, pendingWrites = 0;
     let stopTask: Promise<CoreReceipt<B, S>> | undefined, cleanupDeadline: number | undefined, cleanupErrors: readonly string[] = [], executionTimer: ReturnType<typeof setTimeout> | undefined;
     const runtimeErrors = new Set<string>(), nativeStreams = { stdin: false, stdout: false, stderr: false };
@@ -286,13 +309,18 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       for (const name of ["home", "tmp", "work"]) await mkdir(join(scratch, name), { mode: 0o700 });
       await copyExecutable(runtime.executablePath, executable, runtime.sha256); state.runtimeSnapshotSha256 = runtime.sha256;
       const policyPath = join(root, parent.platform === "darwin" ? "sandbox.sb" : "sandbox.json");
+      if (parent.platform === "linux" && sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1") {
+        check(host.startEgressBridge !== undefined && runtime.sandbox!.egress !== undefined, "CODEX_MANAGED_PROCESS_EGRESS_UNAVAILABLE");
+        bridge = await host.startEgressBridge({ socketPath: join(root, "egress.sock"), ...(runtime.sandbox!.egress.allowlist === undefined ? {} : { allowlist: runtime.sandbox!.egress.allowlist }) });
+      }
       const sandboxPlan: OsSandboxPlan = parent.platform === "darwin"
         ? await createSeatbeltOsSandbox({ generateProfile: spec =>
           (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
           .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath })
         : await createBwrapOsSandbox({ executable: runtime.sandbox!.executable, sha256: runtime.sandbox!.sha256 })
           .plan({ platform: "linux", executable, scratch, accountHome, readOnlyPaths: runtime.sandbox!.readOnlyPaths ?? [],
-            network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
+            network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied",
+            ...(bridge === undefined ? {} : { egressSocket: bridge.socketPath }), policyPath });
       state.profileSha256 = sandboxPlan.policySha256;
       await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
       const inspected = await inspectScratch(scratch); state.scratchContentSha256 = inspected.content; state.scratchIdentitySha256 = inspected.identity;
@@ -301,7 +329,8 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       // This pending record intentionally leaves PID unknown across the spawn
       // crash gap. A thrown spawn is uncertainty, never proof that none started.
       const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd,
-        env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }) });
+        env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
+          ...(bridge === undefined ? {} : { AGENTMIXER_EGRESS_SOCKET: bridge.socketPath }) }) });
       child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd,
         env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
       state.pid = child.pid ?? null;
@@ -354,6 +383,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
           if (!inputClosed) await bounded(inputClosure, deadline);
           if (!stdout.readableEnded) await bounded(new Promise<void>(done => stdout.once("end", done)), deadline);
           check(inputClosed && pendingWrites === 0, "CODEX_MANAGED_PROCESS_WRITES_UNJOINED"); state.stdioJoined = true;
+          if (bridge !== undefined) { const receipt = await bridge.close(); check(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved, "CODEX_MANAGED_PROCESS_EGRESS_UNJOINED"); bridge = undefined; }
           if (lockOwned) {
             check(!journalFailed, "CODEX_MANAGED_PROCESS_JOURNAL_FAILED"); await fixedFile(lockPath, lockContents);
             if (scratchIdentity && state.scratchRetained) { const current = await directory(scratch); check(current.dev === scratchIdentity.dev && current.ino === scratchIdentity.ino, "CODEX_MANAGED_PROCESS_SCRATCH_CHANGED"); await rm(scratch, { recursive: true }); state.scratchRetained = false; }

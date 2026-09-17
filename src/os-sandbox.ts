@@ -52,6 +52,11 @@ export type OsSandboxSpec = Readonly<{
    * backend documents subpath semantics. */
   readOnlyPaths?: readonly string[];
   network: OsSandboxNetworkPolicy;
+  /** Canonical absolute path of a host-side egress-bridge unix socket,
+   * bind-mounted read-write. Required iff `network` is
+   * `"provider-tcp443-dns"` on a bwrap plan; refused by seatbelt, whose
+   * profile carries egress internally. */
+  egressSocket?: string;
   /** Absolute path of the durable policy artifact the caller persists
    * (`sandbox.sb`, `sandbox.json`). Identity flows into custody journals. */
   policyPath: string;
@@ -106,7 +111,7 @@ function arg(value: string, code: string): string {
   return value;
 }
 function specOf(value: unknown): OsSandboxSpec {
-  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "policyPath"]);
+  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "egressSocket", "policyPath"]);
   const platform = raw.platform;
   assert(platform === "darwin" || platform === "linux", "OS_SANDBOX_PLATFORM_INVALID");
   const readOnly = raw.readOnlyPaths === undefined ? [] : (() => {
@@ -116,15 +121,23 @@ function specOf(value: unknown): OsSandboxSpec {
   const network = raw.network;
   assert(network === "denied" || network === "loopback" || network === "provider-tcp443-dns", "OS_SANDBOX_NETWORK_INVALID");
   const executable = path(raw.executable), scratch = path(raw.scratch), policyPath = path(raw.policyPath);
+  const egressSocket = raw.egressSocket === undefined ? undefined : path(raw.egressSocket);
+  assert(egressSocket === undefined || network === "provider-tcp443-dns", "OS_SANDBOX_EGRESS_UNEXPECTED");
   const spec = Object.freeze({ platform, executable, scratch,
     ...(raw.accountHome === undefined ? {} : { accountHome: path(raw.accountHome) }),
-    readOnlyPaths: Object.freeze(readOnly), network, policyPath });
+    readOnlyPaths: Object.freeze(readOnly), network,
+    ...(egressSocket === undefined ? {} : { egressSocket }), policyPath });
   // The writable roots must not contain or enclose the executable or each
   // other: a rw bind over the exe would let the child replace it.
   const inside = (inner: string, outer: string) => inner === outer || inner.startsWith(outer + "/");
   assert(!inside(executable, scratch) && (spec.accountHome === undefined || !inside(executable, spec.accountHome)), "OS_SANDBOX_LAYOUT_INVALID");
   assert(spec.accountHome === undefined || (!inside(scratch, spec.accountHome) && !inside(spec.accountHome, scratch)), "OS_SANDBOX_LAYOUT_INVALID");
   assert(!inside(policyPath, scratch) && (spec.accountHome === undefined || !inside(policyPath, spec.accountHome)), "OS_SANDBOX_LAYOUT_INVALID");
+  // The bridge socket takes its own rw bind; nesting it inside a writable root
+  // would make the extra bind meaningless, and a socket inside the writable
+  // roots could be replaced by the child before the bridge notices.
+  assert(egressSocket === undefined || (!inside(egressSocket, scratch)
+    && (spec.accountHome === undefined || !inside(egressSocket, spec.accountHome))), "OS_SANDBOX_LAYOUT_INVALID");
   return spec;
 }
 function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<Record<string, string>>; cwd: string } {
@@ -173,6 +186,9 @@ export async function verifyOsSandboxExecutable(executablePath: string, sha256: 
 export function planSeatbeltPolicy(input: OsSandboxSpec, policy: string): OsSandboxPlan {
   const spec = specOf(input);
   assert(spec.platform === "darwin", "OS_SANDBOX_PLATFORM_MISMATCH");
+  // Seatbelt carries egress inside its reviewed profile; a bridge socket is
+  // never consumed and admitting one silently would misrecord the plan.
+  assert(spec.egressSocket === undefined, "OS_SANDBOX_EGRESS_UNEXPECTED");
   assert(typeof policy === "string" && policy.length > 0 && policy.length <= 64 * 1024, "OS_SANDBOX_POLICY_INVALID");
   const policyPath = spec.policyPath, executable = spec.executable;
   return Object.freeze({ backend: "seatbelt", policy, policySha256: hash(policy),
@@ -192,22 +208,25 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
   const spec = specOf(input);
   assert(spec.platform === "linux", "OS_SANDBOX_PLATFORM_MISMATCH");
   // bwrap is all-or-nothing on network namespaces and seccomp cBPF cannot
-  // inspect sockaddr contents: egress parity needs a unix-socket proxy
-  // bridge, which is a separate qualification. Until then only the offline
-  // profile is plannable.
-  assert(spec.network === "denied", "OS_SANDBOX_NETWORK_UNSUPPORTED");
+  // inspect sockaddr contents: provider egress rides a host-side unix-socket
+  // CONNECT bridge bound into the namespace. The net namespace stays
+  // unshared either way — the socket is the only egress path.
+  assert(spec.network === "denied"
+    || (spec.network === "provider-tcp443-dns" && spec.egressSocket !== undefined), "OS_SANDBOX_NETWORK_UNSUPPORTED");
   const wrapper = path(wrapperExecutable);
   const binds: readonly { mode: "ro" | "rw"; target: string }[] = Object.freeze([
     { mode: "ro" as const, target: spec.executable },
     ...(spec.readOnlyPaths ?? []).map(target => ({ mode: "ro" as const, target })),
     { mode: "rw" as const, target: spec.scratch },
     ...(spec.accountHome === undefined ? [] : [{ mode: "rw" as const, target: spec.accountHome }]),
+    ...(spec.egressSocket === undefined ? [] : [{ mode: "rw" as const, target: spec.egressSocket }]),
   ]);
   // The canonical policy binds every mount decision before any argv is
   // wrapped: namespace flags, bind set, and the in-sandbox executable.
   const policy = JSON.stringify({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap",
     namespaces: ["user", "mount", "pid", "ipc", "uts", "cgroup", "net"], newSession: true, dieWithParent: true,
-    executable: spec.executable, binds }) + "\n";
+    executable: spec.executable, binds,
+    ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443" } }) }) + "\n";
   const prefix = [
     "--unshare-all", "--new-session", "--die-with-parent",
     "--proc", "/proc", "--dev", "/dev",

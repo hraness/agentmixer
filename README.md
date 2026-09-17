@@ -509,9 +509,16 @@ behavior. `createBwrapOsSandbox()` (Linux) re-verifies the admitted `bwrap`
 binary's SHA-256 at plan time and emits private user/mount/pid/ipc/uts/cgroup/
 net namespaces, per-file `--ro-bind` entries, `--bind` for the writable roots,
 `--die-with-parent`, `--new-session`, `--clearenv`, and the closed environment
-rebuilt in sorted `--setenv` order. On Linux only `network: "denied"` is
-plannable: bubblewrap cannot express per-destination egress, so provider
-TCP/443 parity requires a separately qualified unix-socket proxy bridge. There
+rebuilt in sorted `--setenv` order. Bubblewrap cannot express per-destination
+egress, so on Linux `network: "provider-tcp443-dns"` is plannable only with an
+admitted `egressSocket`: a host-side unix-socket CONNECT bridge bound into the
+namespace as its own read-write mount. The in-sandbox runtime never performs
+DNS or TCP itself — it speaks `CONNECT host:443` over the socket and the host
+bridge resolves and dials, refusing every port but 443 and any host outside
+the admitted exact-host allowlist. The network namespace stays unshared either
+way, so the socket is the child's only egress path; without one, provider
+networking still refuses to plan. The bridge is an internal host seam
+(`src/egress-bridge.ts`), not a public export. There
 is no fallback — a spec whose admitted platform the backend cannot enforce,
 an unverified artifact, or an unexpressible policy refuses the plan rather
 than launching unsandboxed. The spec's `platform` is admission evidence about
@@ -690,9 +697,17 @@ A Linux parent requires the runtime admission to carry a `sandbox` artifact —
 the pinned `bwrap` executable SHA-256 plus the host-admitted read-only library
 closure the copied runtime needs inside the namespace — and plans through the
 bwrap backend with `network: "denied"`. A Linux parent without that artifact,
-or a Darwin parent carrying one, is refused as a sandbox-admission mismatch;
-provider-egress profiles remain unplannable on Linux until a proxy bridge is
-separately qualified. The `codex-process.ts` loopback relay stays Darwin-only
+or a Darwin parent carrying one, is refused as a sandbox-admission mismatch.
+A Linux provider-egress profile additionally requires a `sandbox.egress`
+admission and a trusted-host `startEgressBridge` seam: the owner starts the
+unix-socket CONNECT bridge inside the run directory, binds the socket into
+the bwrap plan, hands the child its path as `AGENTMIXER_EGRESS_SOCKET`, and
+joins the bridge — listener closed, sockets joined, socket removed — before
+the account lock may release. A missing admission, a missing seam, a failed
+start, or an unproven join refuses or holds custody exactly like any other
+launch boundary failure. Neither mechanism is qualified for production:
+receipts continue to report `productionQualified: false`. The
+`codex-process.ts` loopback relay stays Darwin-only
 because a network-namespace cut would sever the relay socket it exists to
 serve.
 

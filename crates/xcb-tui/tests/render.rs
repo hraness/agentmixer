@@ -3,7 +3,7 @@ use xcb_core::{
     Id, Provider,
     models::{Mode, ModelChoice},
     panes::Pane,
-    session::{Attachment, Session, State},
+    session::{Attachment, Message, MessageProvenance, Role, Session, State},
 };
 use xcb_tui::{App, render};
 
@@ -128,4 +128,79 @@ fn tiny_terminal_and_large_text_cannot_panic_the_renderer() {
             .draw(|frame| render::draw(frame, &mut app, 0))
             .unwrap();
     }
+}
+
+fn provenance(run: Option<&str>) -> MessageProvenance {
+    MessageProvenance {
+        account: Id::new("personal").unwrap(),
+        model: ModelChoice {
+            provider: Provider::Devin,
+            id: Id::new("gpt-6-astra-max").unwrap(),
+            label: "Astra Max".into(),
+            mode: Mode::Fixed,
+            resolved: None,
+            effort: None,
+            observed_at_ms: 1,
+        },
+        run: run.map(|value| Id::new(value).unwrap()),
+    }
+}
+
+#[test]
+fn response_and_thinking_provenance_boundaries_are_visible_without_repetition() {
+    let mut app = app();
+    app.view.pane = Pane::focus();
+    app.show_thinking = true;
+    app.show_history = true;
+    app.view.messages = vec![
+        Message {
+            id: Id::new("m1").unwrap(),
+            role: Role::Assistant,
+            text: "first".into(),
+            attachments: vec![],
+            at_ms: 1,
+            provenance: Some(provenance(Some("r1"))),
+        },
+        Message {
+            id: Id::new("m2").unwrap(),
+            role: Role::Assistant,
+            text: "second".into(),
+            attachments: vec![],
+            at_ms: 2,
+            provenance: Some(provenance(Some("r1"))),
+        },
+        Message {
+            id: Id::new("m3").unwrap(),
+            role: Role::Assistant,
+            text: "third".into(),
+            attachments: vec![],
+            at_ms: 3,
+            provenance: Some(provenance(Some("r2"))),
+        },
+        Message {
+            id: Id::new("m4").unwrap(),
+            role: Role::Thinking,
+            text: "thought".into(),
+            attachments: vec![],
+            at_ms: 4,
+            provenance: Some(provenance(Some("r2"))),
+        },
+    ];
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert_eq!(contents.matches("r1").count(), 1);
+    assert_eq!(contents.matches("r2").count(), 2);
+    assert!(contents.contains("first"));
+    assert!(contents.contains("second"));
+    assert!(contents.contains("third"));
+    assert!(contents.contains("thought"));
 }

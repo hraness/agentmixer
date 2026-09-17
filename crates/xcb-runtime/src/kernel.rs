@@ -25,7 +25,7 @@ use xcb_core::{
     models::{ModelChoice, Preference},
     panes::Pane,
     policy::{RouteCandidate, Terminal, next_route, should_continue},
-    session::{Message, Role, Session, State, Subagent},
+    session::{Message, MessageProvenance, Role, Session, State, Subagent},
     ui::{Intent, Update},
 };
 
@@ -234,6 +234,11 @@ async fn execute_inner(
             text,
             attachments,
             at_ms: now_ms(),
+            provenance: Some(MessageProvenance {
+                account: session.account.clone(),
+                model: session.model.clone(),
+                run: None,
+            }),
         };
         let current = store.append_message(&session_id, session.revision, &message)?;
         fire_hooks(

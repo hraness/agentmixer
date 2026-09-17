@@ -80,6 +80,7 @@ fn revision_checked_messages_persist_across_reopen() {
         text: "hello".into(),
         attachments: vec![],
         at_ms: 3,
+        provenance: None,
     };
     let revised = store
         .append_message(&session.id, session.revision, &message)

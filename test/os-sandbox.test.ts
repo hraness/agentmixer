@@ -157,11 +157,41 @@ describe("os-sandbox bwrap planning", () => {
       expect(plan.policySha256).toBe(sha256(plan.policy));
     } finally { await f.cleanup(); }
   });
-  test("rejects every network policy but denied", async () => {
+  test("rejects loopback and provider networking without a bridge socket", async () => {
     const f = await fixture();
     try {
       expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "loopback" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
       expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns" }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_NETWORK_UNSUPPORTED");
+    } finally { await f.cleanup(); }
+  });
+  test("binds an admitted egress socket rw and records it in the policy", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock");
+      const plan = planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns", egressSocket: socket }), join(f.root, "bwrap"));
+      const args = [...plan.wrap({ args: [], env: {}, cwd: "/" }).args];
+      const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
+      expect(pairs("--bind")).toContain(socket);
+      const policy = JSON.parse(plan.policy);
+      expect(policy.egress).toEqual({ socket, protocol: "connect-tcp443" });
+      expect(policy.binds.find((b: { target: string }) => b.target === socket).mode).toBe("rw");
+    } finally { await f.cleanup(); }
+  });
+  test("rejects a bridge socket nested inside a writable root", async () => {
+    const f = await fixture();
+    try {
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns", egressSocket: join(f.scratch, "egress.sock") }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_LAYOUT_INVALID");
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns", egressSocket: join(f.accountHome, "egress.sock") }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_LAYOUT_INVALID");
+    } finally { await f.cleanup(); }
+  });
+  test("rejects a bridge socket on denied or non-provider networks and on seatbelt", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock");
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "denied", egressSocket: socket }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
+      expect(() => planSeatbeltPolicy(f.spec({ egressSocket: socket }), "(deny default)")).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
+      // Seatbelt with provider networking still refuses the foreign field.
+      expect(() => planSeatbeltPolicy(f.spec({ network: "provider-tcp443-dns", egressSocket: socket }), "(deny default)")).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
     } finally { await f.cleanup(); }
   });
   test("policy digest tracks bind-set changes", async () => {

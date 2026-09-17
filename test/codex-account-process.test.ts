@@ -416,10 +416,76 @@ test("a linux parent without a sandbox admission is refused, and a darwin parent
   await expect(mismatched.ready).rejects.toThrow("UNAVAILABLE"); expectJoined(await darwin.stop(mismatched), mismatched.binding); expect(darwin.spawns).toHaveLength(0);
 });
 
-test("a linux device-code launch refuses because provider egress has no bwrap plan", async () => {
+test("a linux device-code launch refuses without an admitted egress bridge", async () => {
   const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
   await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const linuxParent = { ...f.parent, platform: "linux" as const, arch: "x64" as const };
+  // No sandbox.egress admission at all.
   const port = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } },
-    { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux", arch: "x64" }) });
+    { ...f.host, inspectParent: () => Promise.resolve(linuxParent), startEgressBridge: () => Promise.reject(new Error("must not start")) });
   await expect(port.ready).rejects.toThrow("UNAVAILABLE"); expect(f.spawns).toHaveLength(0);
+  // Egress admitted but no host bridge seam — separate fixture so the first
+  // port's retained lock cannot mask this refusal's own cause.
+  const g = await fixture();
+  const noSeam = g.create({ ...deviceCodeOptions(g), runtime: { ...g.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} } } },
+    { ...g.host, inspectParent: () => Promise.resolve({ ...g.parent, platform: "linux" as const, arch: "x64" as const }) });
+  await expect(noSeam.ready).rejects.toThrow("UNAVAILABLE"); expect(g.spawns).toHaveLength(0);
+});
+
+test("a linux device-code launch rides the admitted egress bridge and joins it on cleanup", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const bridgeRequests: { socketPath: string; allowlist?: readonly string[] }[] = [];
+  let bridgeClosed = false;
+  const host = { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux" as const, arch: "x64" as const }),
+    startEgressBridge(request: { socketPath: string; allowlist?: readonly string[] }) {
+      bridgeRequests.push(request);
+      return Promise.resolve({ socketPath: request.socketPath, connections: 0,
+        close: () => { bridgeClosed = true; return Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+          connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: true, socketRemoved: true })); } });
+    } };
+  const port = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: { allowlist: ["API.example.com"] } } } }, host);
+  await port.ready;
+  expect(bridgeRequests).toHaveLength(1);
+  const socketPath = bridgeRequests[0]!.socketPath;
+  // Admission lowercases allowlist entries to match bridge normalization.
+  expect(bridgeRequests[0]!.allowlist).toEqual(["api.example.com"]);
+  const request = f.spawns[0]!;
+  const pairs = (flag: string) => request.args.flatMap((value, index) => value === flag ? [request.args[index + 1]!] : []);
+  // The child's env rides --setenv KEY VALUE pairs; the wrapper env stays minimal.
+  const setenvAt = request.args.findIndex((value, index) => value === "--setenv" && request.args[index + 1] === "AGENTMIXER_EGRESS_SOCKET");
+  expect(request.args[setenvAt + 2]).toBe(socketPath);
+  expect(request.env.AGENTMIXER_EGRESS_SOCKET).toBeUndefined();
+  const binds = pairs("--bind");
+  expect(binds).toContain(socketPath);
+  const policy = JSON.parse(await readFile(join(dirname(port.receipt().journalPath!), "sandbox.json"), "utf8"));
+  expect(policy.egress).toEqual({ socket: socketPath, protocol: "connect-tcp443" });
+  expect(port.receipt()).toMatchObject({ productionQualified: false, network: "tcp443-system-resolver-candidate" });
+  expectJoined(await f.stop(port));
+  expect(bridgeClosed).toBe(true);
+});
+
+test("a linux provider launch retains custody when bridge startup or join fails", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const linuxParent = { ...f.parent, platform: "linux" as const, arch: "x64" as const };
+  const sandbox = { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} };
+  // Startup failure: no launch attempted, custody never released silently.
+  const failing = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime, sandbox } },
+    { ...f.host, inspectParent: () => Promise.resolve(linuxParent), startEgressBridge: () => Promise.reject(new Error("synthetic bridge failure")) });
+  await expect(failing.ready).rejects.toThrow("UNAVAILABLE"); expect(f.spawns).toHaveLength(0);
+  expect(await readFile(join(f.accountRoot, "active.json"), "utf8")).toContain("synthetic-account");
+  // Unjoined bridge: the close proof fails, custody stays recovery-required.
+  const g = await fixture();
+  const unjoined = g.create({ ...deviceCodeOptions(g), runtime: { ...g.options.runtime, sandbox } },
+    { ...g.host, inspectParent: () => Promise.resolve({ ...g.parent, platform: "linux" as const, arch: "x64" as const }),
+      startEgressBridge: (request: { socketPath: string }) => Promise.resolve({ socketPath: request.socketPath, connections: 1,
+        close: () => Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+          connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: false, socketRemoved: false })) }) });
+  await unjoined.ready;
+  const result = await unjoined.stopAndJoin({ binding: unjoined.binding, deadlineMs: Date.now() + 1000 });
+  expect(result).toMatchObject({ processExited: true });
+  expect(unjoined.receipt()).toMatchObject({ phase: "recovery-required", lockReleased: false });
 });

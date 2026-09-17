@@ -6,7 +6,10 @@
   per-account browser-session custody (`browser-session.ts`), and the
   provider-neutral managed-account controller (`managed-account.ts`), and
   the OS-confinement port every provider launcher plans through
-  (`os-sandbox.ts`; never add a silent unsandboxed fallback).
+  (`os-sandbox.ts`; never add a silent unsandboxed fallback), and the
+  host-side unix-socket CONNECT egress bridge (`egress-bridge.ts`) that makes
+  `provider-tcp443-dns` plannable on Linux bwrap without unsharing the child's
+  network namespace.
   `src/index.ts` is the package's complete public surface.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling

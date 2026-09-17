@@ -21,7 +21,7 @@ use xcb_core::{
     Id, MAX_TEXT_BYTES, Provider,
     models::{Mode, ModelChoice},
     policy::{EffectState, Failure, Terminal, TurnFacts},
-    session::{Message, Role, Session, State, Subagent, classify},
+    session::{Message, MessageProvenance, Role, Session, State, Subagent, classify},
     usage::{QuotaPoint, VelocitySample},
 };
 
@@ -706,6 +706,11 @@ pub async fn run(
                                 text: format!("{name}: {text}"),
                                 at_ms: now_ms(),
                                 attachments: vec![],
+                                provenance: Some(MessageProvenance {
+                                    account: session.account.clone(),
+                                    model: session.model.clone(),
+                                    run: Some(run.id.clone()),
+                                }),
                             },
                         )?;
                         Some(json!({"content":[{"type":"text","text":text}],"isError":failed}))
@@ -806,6 +811,11 @@ pub async fn run(
                     text: thinking,
                     at_ms: now_ms(),
                     attachments: vec![],
+                    provenance: Some(MessageProvenance {
+                        account: session.account.clone(),
+                        model: session.model.clone(),
+                        run: Some(run.id.clone()),
+                    }),
                 },
             )?;
         }
@@ -822,6 +832,11 @@ pub async fn run(
                     text: final_text.clone(),
                     at_ms: now_ms(),
                     attachments: vec![],
+                    provenance: Some(MessageProvenance {
+                        account: session.account.clone(),
+                        model: session.model.clone(),
+                        run: Some(run.id.clone()),
+                    }),
                 },
             )?;
         }

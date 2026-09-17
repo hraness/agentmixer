@@ -86,6 +86,42 @@ impl Attachment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MessageProvenance {
+    pub account: Id,
+    pub model: ModelChoice,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Id>,
+}
+impl MessageProvenance {
+    pub fn boundary_label(&self, previous: Option<&Self>) -> String {
+        let account_changed = previous.map(|p| p.account != self.account).unwrap_or(false);
+        let model_changed = previous
+            .map(|p| p.model.key() != self.model.key())
+            .unwrap_or(true);
+        let run_changed = previous.map(|p| p.run != self.run).unwrap_or(true);
+        if !account_changed && !model_changed && !run_changed {
+            return String::new();
+        }
+        let mut parts = Vec::new();
+        if account_changed {
+            parts.push("↷".to_string());
+        }
+        if model_changed {
+            parts.push(self.model.key());
+        }
+        if run_changed {
+            if let Some(run) = &self.run {
+                parts.push(run.as_str().to_string());
+            } else if !account_changed && !model_changed {
+                parts.push("↷".to_string());
+            }
+        }
+        parts.join("/")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Message {
     pub id: Id,
     pub role: Role,
@@ -93,6 +129,8 @@ pub struct Message {
     pub at_ms: u64,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<MessageProvenance>,
 }
 impl Message {
     pub fn validate(&self) -> Result<()> {
@@ -102,6 +140,9 @@ impl Message {
         }
         for image in &self.attachments {
             image.validate()?;
+        }
+        if let Some(provenance) = &self.provenance {
+            provenance.model.validate()?;
         }
         Ok(())
     }

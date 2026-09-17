@@ -308,17 +308,27 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
                 muted(),
             )));
             if app.show_thinking {
+                let latest = app
+                    .view
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == Role::Thinking);
                 let text = if app.thinking.is_empty() {
-                    app.view
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|message| message.role == Role::Thinking)
+                    latest
                         .map(|message| message.text.as_str())
                         .unwrap_or("No thinking text reported.")
                 } else {
                     &app.thinking
                 };
+                if app.thinking.is_empty()
+                    && let Some(provenance) = latest.and_then(|message| message.provenance.as_ref())
+                {
+                    lines.push(Line::from(Span::styled(
+                        provenance.boundary_label(None),
+                        muted(),
+                    )));
+                }
                 lines.extend(
                     clean(text)
                         .lines()
@@ -351,7 +361,15 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
             } else {
                 &responses[responses.len().saturating_sub(1)..]
             };
+            let mut previous: Option<&xcb_core::session::MessageProvenance> = None;
             for message in selected {
+                if let Some(provenance) = message.provenance.as_ref() {
+                    let label = provenance.boundary_label(previous);
+                    if !label.is_empty() {
+                        lines.push(Line::from(Span::styled(label, muted())));
+                    }
+                    previous = Some(provenance);
+                }
                 lines.extend(
                     clean(&message.text)
                         .lines()

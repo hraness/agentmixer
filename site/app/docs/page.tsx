@@ -12,7 +12,13 @@ export const metadata: Metadata = {
     title: `${readmeTitle} documentation`,
     description: "The complete AgentMixer README.",
     type: "article",
+    siteName: "AgentMixer",
     url: "/docs",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${readmeTitle} documentation`,
+    description: "The complete AgentMixer README.",
   },
 };
 

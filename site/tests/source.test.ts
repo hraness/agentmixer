@@ -82,6 +82,15 @@ describe("AgentMixer site source contract", () => {
     expect(sitemap).toContain("<loc>https://agentmixer.dev/docs</loc>");
     expect(robots).toContain("Sitemap: https://agentmixer.dev/sitemap.xml");
   });
+
+  test("keeps the llms.txt map and docs social metadata on the canonical origin", async () => {
+    const [llms, docs] = await Promise.all([read("public/llms.txt"), read("app/docs/page.tsx")]);
+    expect(llms).toContain("https://agentmixer.dev/");
+    expect(llms).toContain("https://agentmixer.dev/docs");
+    expect(llms).not.toContain("http://");
+    expect(docs).toContain('siteName: "AgentMixer"');
+    expect(docs).toContain('card: "summary_large_image"');
+  });
 });
 
 

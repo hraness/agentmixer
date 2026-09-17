@@ -1,0 +1,161 @@
+{
+  "profile": "native-synthetic-model-visible-tools",
+  "experimentalOsSandbox": true,
+  "runtimeVersion": "claude-sdk/0.3.268;claude-code/2.1.268",
+  "runtimeDigest": "af0d4ebe5f6e3bdd9efe0e4063f0d8fd3c5ab45bfa95bdee11db9c2648a490fb",
+  "platform": "darwin-arm64",
+  "realCredentialsUsed": false,
+  "paidModelRequests": 0,
+  "productionQualificationIssued": false,
+  "sourceDigests": {
+    "fixture": "95bdbea4bc6076d4115d643e1ef3199fd319f8381bdd28fff13902cbe9845a76",
+    "launchOptions": "e660969f997f5d72c9625aa6e7fbacf0ef98c81f27cb281f51e2794d8d4c5d75",
+    "contactWorkspace": "3b5f52baa70339aa8fb82c510adf9fb8446311094c2402159d25de0732442c8e"
+  },
+  "scenarios": [
+    {
+      "scenario": "classifier-and-literal-doctor",
+      "attempts": [],
+      "nativeTools": [],
+      "advertisedTools": [],
+      "apiCalls": 1,
+      "denied": 0,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "literal-checkup-command",
+      "attempts": [],
+      "nativeTools": [],
+      "advertisedTools": [],
+      "apiCalls": 1,
+      "denied": 0,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "literal-bang-command",
+      "attempts": [],
+      "nativeTools": [],
+      "advertisedTools": [],
+      "apiCalls": 1,
+      "denied": 0,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "workflow-keyword-disabled",
+      "attempts": [],
+      "nativeTools": [],
+      "advertisedTools": [],
+      "apiCalls": 1,
+      "denied": 0,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "builtin-denials",
+      "attempts": [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Agent",
+        "Skill",
+        "Skill",
+        "WebFetch",
+        "ToolSearch"
+      ],
+      "nativeTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "advertisedTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "apiCalls": 2,
+      "denied": 11,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "broker-allowed",
+      "attempts": [
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "nativeTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "advertisedTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "apiCalls": 2,
+      "denied": 0,
+      "staged": 1,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    },
+    {
+      "scenario": "broker-escape-denials",
+      "attempts": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__files_write"
+      ],
+      "nativeTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "advertisedTools": [
+        "mcp__agentmixer__files_read",
+        "mcp__agentmixer__files_write",
+        "mcp__agentmixer__messages_propose_text"
+      ],
+      "apiCalls": 2,
+      "denied": 6,
+      "staged": 0,
+      "literalTaskObserved": true,
+      "inheritedInstructions": false,
+      "inheritedDotenv": false,
+      "escapedRead": false,
+      "escapedWriteOrCommand": false
+    }
+  ]
+}

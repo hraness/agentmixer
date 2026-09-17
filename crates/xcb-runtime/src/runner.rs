@@ -38,6 +38,14 @@ pub struct Outcome {
     pub state: State,
 }
 
+pub fn should_idle_export(pane_generation: bool, facts: &TurnFacts, state: State) -> bool {
+    !pane_generation
+        && state == State::Idle
+        && facts.joined
+        && facts.effects != EffectState::Uncertain
+        && facts.terminal == Terminal::Completed
+}
+
 struct Launch {
     command: Command,
     cwd: PathBuf,

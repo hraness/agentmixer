@@ -55,10 +55,10 @@ describe("agentmixer CLI", () => {
     expect(stderr).toContain("claude binary not found");
   });
 
-  test("auth codex reports managed sign-in is not yet available", async () => {
+  test("auth codex refuses when the pinned binary is absent", async () => {
     const { code, stderr } = await cli(["auth", "codex"]);
     expect(code).toBe(2);
-    expect(stderr).toContain("not yet available");
+    expect(stderr).toContain("codex binary not found");
   });
 
   test("run refuses before provider admission", async () => {

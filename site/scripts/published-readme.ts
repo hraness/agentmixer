@@ -11,9 +11,9 @@ export function publishedReadme(source: string, sourceVersion: string, published
     || publishedVersion.split(".").some((part) => BigInt(part) > BigInt(Number.MAX_SAFE_INTEGER))) {
     throw new TypeError("README installation version must be a canonical stable version.");
   }
-  const archive = (version: string) => `https://github.com/hraness/agentmixer/releases/download/v${version}/hraness-agentmixer-${version}.tgz`;
+  const archive = (version: string) => `https://github.com/hraness/xcb/releases/download/v${version}/hraness-agentmixer-${version}.tgz`;
   const escaped = sourceVersion.replaceAll(".", "\\.");
   return source.replaceAll(archive(sourceVersion), archive(publishedVersion))
-    .replace(new RegExp(`hraness/agentmixer#v${escaped}(?![\\w.-])`, "gu"), `hraness/agentmixer#v${publishedVersion}`)
+    .replace(new RegExp(`hraness/xcb#v${escaped}(?![\\w.-])`, "gu"), `hraness/xcb#v${publishedVersion}`)
     .replace(new RegExp(`@hraness/agentmixer@${escaped}(?![\\w.-])`, "gu"), `@hraness/agentmixer@${publishedVersion}`);
 }

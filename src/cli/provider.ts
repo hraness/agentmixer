@@ -3,11 +3,14 @@ import { join } from "node:path";
 import type { AgentTaskAdapter } from "../task-runtime.ts";
 import { createClaudeTaskAdapter, claudeTaskRuntimeIdentity, type ClaudeTaskEvents } from "../claude-task-adapter.ts";
 import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
+import { createCodexManagedTaskAdapter } from "../codex-managed-task-adapter.ts";
 import { CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import type { CapabilityProfile } from "../capabilities.ts";
 
 import { inspectCliBinary, type CliBinaryInspection, type CliProviderName } from "./binaries.ts";
 import { providerAuthDirs, readClaudeOAuthToken } from "./auth.ts";
+import { CLI_CODEX_BUN_DARWIN_ARM64_SHA256, CLI_CODEX_SCHEMA_SHA256, cliCodexRuntimeIdentity,
+  createCliCodexManagedLauncher, qualifyCliCodexRuntime } from "./codex.ts";
 import { claudeCliProcessFactory, prepareCliLinuxSandbox, type CliLinuxSandbox } from "./sandbox.ts";
 import { buildQualificationRecord, readCliQualification, toTaskQualification, writeCliQualification, type CliQualificationRecord } from "./qualification.ts";
 import { privateDirectory } from "./state.ts";
@@ -44,10 +47,20 @@ export async function admitCliProvider(stateRoot: string, provider: CliProviderN
     const hint = provider === "claude" ? ` — install with \`bun add -g @anthropic-ai/claude-code@${required}\`` : "";
     return Object.freeze({ inspection, record: null, detail: `${provider} ${inspection.version} found; pinned ${required} required${hint}` });
   }
-  if (provider !== "claude") {
-    // The managed Codex admission needs the trusted protocol manifest and parent
-    // runtime pin; local binary admission alone is insufficient.
-    return Object.freeze({ inspection, record: null, detail: "codex managed admission is not yet available in the CLI" });
+  if (provider === "codex") {
+    let evidence;
+    try { evidence = await qualifyCliCodexRuntime({ stateRoot, inspection }); }
+    catch (error) {
+      const code = error instanceof Error && /^CLI_CODEX_[A-Z_]+$/u.test(error.message) ? error.message : "CLI_CODEX_QUALIFICATION_FAILED";
+      return Object.freeze({ inspection, record: null, detail: `codex managed admission failed: ${code}` });
+    }
+    const record = await writeCliQualification(await privateDirectory(stateRoot), buildQualificationRecord({
+      provider, route: Object.freeze({ id: CLI_CODEX_ROUTE, provider: "codex", authentication: "subscription" }),
+      executablePath: inspection.executablePath, executableSha256: inspection.sha256,
+      runtimeVersion: evidence.runtime.version, runtimeDigest: evidence.runtime.digest,
+      profileDigest: profile.digest, evidenceDigest: evidence.evidenceDigest, now: Date.now(),
+    }));
+    return Object.freeze({ inspection, record, detail: `admitted ${provider} ${inspection.version}` });
   }
   const identity = claudeTaskRuntimeIdentity(inspection.sha256, "subscription");
   const record = await writeCliQualification(await privateDirectory(stateRoot), buildQualificationRecord({
@@ -73,6 +86,18 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
   const record = await readCliQualification(stateRoot, provider);
   if (record === null || record.executableSha256 !== inspection.sha256 || record.executablePath !== inspection.executablePath) {
     return Object.freeze({ status: "unadmitted", inspection });
+  }
+  if (provider === "codex") {
+    if (process.platform !== "darwin" || process.arch !== "arm64") return Object.freeze({ status: "sandbox-unavailable", inspection });
+    const route = Object.freeze({ id: CLI_CODEX_ROUTE, provider: "codex" as const, authentication: "subscription" as const });
+    const identity = cliCodexRuntimeIdentity({ nativeSha256: inspection.sha256, schemaSha256: CLI_CODEX_SCHEMA_SHA256,
+      parentSha256: CLI_CODEX_BUN_DARWIN_ARM64_SHA256 });
+    const qualification = toTaskQualification(record, { route, profile, runtimeVersion: identity.version, runtimeDigest: identity.digest });
+    if (qualification.status !== "qualified") return Object.freeze({ status: "unadmitted", inspection });
+    const adapter = createCodexManagedTaskAdapter({ route, runtime: identity, qualification,
+      instructions: Object.freeze({ base: CLI_SYSTEM_PROMPT, developer: "" }),
+      launcher: createCliCodexManagedLauncher(stateRoot, inspection, identity), now: Date.now });
+    return Object.freeze({ status: "ready", adapter, inspection, record });
   }
   if (provider === "claude") {
     const { config } = await providerAuthDirs(stateRoot, "claude");

@@ -7,8 +7,8 @@ const sha = "a".repeat(40);
 const workflow = ".github/workflows/release.yml";
 const ref = `refs/tags/${tag}`;
 const identity =
-  `https://github.com/hraness/agentmixer/${workflow}@${ref}`;
-const invocation = "https://github.com/hraness/agentmixer/actions/runs/123/attempts/3";
+  `https://github.com/hraness/xcb/${workflow}@${ref}`;
+const invocation = "https://github.com/hraness/xcb/actions/runs/123/attempts/3";
 const derUtf8String = (value) => Buffer.concat([Buffer.from([0x0c, Buffer.byteLength(value, "utf8")]), Buffer.from(value, "utf8")]);
 
 describe("npm Sigstore release signer policy", () => {
@@ -21,10 +21,10 @@ describe("npm Sigstore release signer policy", () => {
     expect(policy.options.certificateOIDs).toEqual({
       "1.3.6.1.4.1.57264.1.2": "push",
       "1.3.6.1.4.1.57264.1.3": sha,
-      "1.3.6.1.4.1.57264.1.5": "hraness/agentmixer",
+      "1.3.6.1.4.1.57264.1.5": "hraness/xcb",
       "1.3.6.1.4.1.57264.1.6": ref,
       "1.3.6.1.4.1.57264.1.11": derUtf8String("github-hosted"),
-      "1.3.6.1.4.1.57264.1.12": derUtf8String("https://github.com/hraness/agentmixer"),
+      "1.3.6.1.4.1.57264.1.12": derUtf8String("https://github.com/hraness/xcb"),
       "1.3.6.1.4.1.57264.1.13": derUtf8String(sha),
       "1.3.6.1.4.1.57264.1.14": derUtf8String(ref),
       "1.3.6.1.4.1.57264.1.15": derUtf8String("1373635996"),
@@ -34,7 +34,7 @@ describe("npm Sigstore release signer policy", () => {
       "1.3.6.1.4.1.57264.1.21": derUtf8String(invocation),
       "1.3.6.1.4.1.57264.1.22": derUtf8String("public"),
       "1.3.6.1.4.1.57264.1.24": derUtf8String(
-        `repo:hraness@307125679/agentmixer@1373635996:ref:${ref}`,
+        `repo:hraness@307125679/xcb@1373635996:ref:${ref}`,
       ),
     });
   });

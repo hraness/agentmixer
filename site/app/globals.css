@@ -11,7 +11,7 @@
 
 :root {
   --inverse-background: #14202a;
-  --agentmixer-code-foreground: #eef2ea;
+  --xcb-code-foreground: #eef2ea;
   font-synthesis: none;
   line-height: 1.55;
 }
@@ -46,7 +46,7 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
-.agentmixer-marketing-hero .hraness-marketing-hero__heading {
+.xcb-marketing-hero .hraness-marketing-hero__heading {
   max-inline-size: 22ch;
 }
 
@@ -209,7 +209,7 @@ a:focus-visible {
 ::selection { background: var(--hraness-material-warm-plane); color: var(--hraness-material-ink); }
 a { text-underline-offset: 0.2em; }
 
-/* AgentMixer document pages render README Markdown. */
+/* xcb document pages render README Markdown. */
 .document-page {
   margin: 0 auto;
   max-width: 72ch;
@@ -234,9 +234,9 @@ a { text-underline-offset: 0.2em; }
 .document-page article li + li { margin-top: 0.5rem; }
 
 /* The product's command transcript retains its fixed code contrast. */
-.agentmixer-marketing-hero .hraness-marketing-proof-frame {
+.xcb-marketing-hero .hraness-marketing-proof-frame {
   --hraness-marketing-inverse: var(--inverse-background);
-  --hraness-marketing-inverse-ink: var(--agentmixer-code-foreground);
+  --hraness-marketing-inverse-ink: var(--xcb-code-foreground);
 }
 
 /* The existing grammar owns layout and controls. Lantern supplies only material
@@ -270,3 +270,5 @@ a { text-underline-offset: 0.2em; }
   border-color: var(--hraness-material-seam);
   color: var(--hraness-material-ink);
 }
+
+.xcb-topic-icon { display: block; width: 88px; height: 88px; margin: 0 0 18px; }

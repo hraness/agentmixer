@@ -133,7 +133,7 @@ export function assertCodexManagedConfigResponse(raw: unknown, expected: Readonl
     const features = record(config.features);
     for (const name of CODEX_MANAGED_ACCOUNT_FEATURES) if (features[name] !== false) return fail("CODEX_MANAGED_CONFIG_MISMATCH");
   }
-  if (config.agents !== undefined && record(config.agents).enabled !== false) return fail("CODEX_MANAGED_CONFIG_MISMATCH");
+  if (config.agents != null && record(config.agents).enabled !== false) return fail("CODEX_MANAGED_CONFIG_MISMATCH");
   // The native schema permits `apps` and `_default` to be null. The managed
   // account baseline requires both objects, so turn that shape drift into a
   // named admission failure instead of leaking a generic record error.

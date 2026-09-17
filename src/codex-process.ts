@@ -11,7 +11,7 @@ import { inspectCodexScratch } from "./codex-scratch.ts";
 import { createSeatbeltOsSandbox } from "./os-sandbox.ts";
 
 export const CODEX_NATIVE_VERSION = "0.153.4";
-export const CODEX_NATIVE_SHA256 = "87a08119b8effa519f0ecb552dc98043f58a8200bf2ec5da60f76890c33e9c3a";
+export const CODEX_NATIVE_SHA256 = "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3";
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 export type CodexProcessReceipt = Readonly<{
   nativeVersion: string; executableSha256: string; runtimeSnapshotSha256: string;

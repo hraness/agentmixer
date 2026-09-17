@@ -12,7 +12,7 @@ import { createManagedOfflineProtocol, type OfflineProtocolReceipt } from "./cod
 import type { CodexManagedProcessLauncher } from "./codex-managed-config.ts";
 import type { CodexProcessHandle, CodexProcessReceipt } from "./codex-process.ts";
 import { providerProcessWriteResult, type ProviderProcessWriteResult } from "./process-port.ts";
-import { createSeatbeltOsSandbox, type OsSandboxPlan } from "./os-sandbox.ts";
+import { createSeatbeltOsSandbox, createBwrapOsSandbox, type OsSandboxPlan } from "./os-sandbox.ts";
 import { assertCodexHostFileStable, inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRuntime, type CodexParentRuntimeBinding } from "./codex-host.ts";
 import { assertAgentTaskAccountLease, type AgentTaskAccountLease, type AgentTaskBinding } from "./task-runtime.ts";
 import { identifier, safeInteger } from "./validation.ts";
@@ -21,9 +21,16 @@ import { identifier, safeInteger } from "./validation.ts";
  * binds an adapter runtime identity to independently admitted native artifacts;
  * matching these strings does not create qualification or schema evidence. */
 type ManagedSandboxProfile = "managed-task-offline-candidate-v1" | "managed-task-provider-tcp443-dns-candidate-v1";
+/** Pinned bubblewrap artifact and host-admitted library closure; required iff
+ * the admitted parent runtime is Linux. A supplied hash is checked, never
+ * self-admitted as provenance or sandbox qualification. */
+export type CodexManagedSandboxAdmission = Readonly<{
+  executable: string; sha256: string; readOnlyPaths?: readonly string[];
+}>;
 export type CodexManagedProcessOptions = Readonly<{
   stateRoot: string;
-  runtime: Readonly<{ executablePath: string; version: string; sha256: string; schemaSha256: string; parentRuntime: CodexParentRuntimeBinding }>;
+  runtime: Readonly<{ executablePath: string; version: string; sha256: string; schemaSha256: string;
+    parentRuntime: CodexParentRuntimeBinding; sandbox?: CodexManagedSandboxAdmission }>;
   admission: Readonly<{ profile: ManagedSandboxProfile; taskRuntimeVersion: string; taskRuntimeDigest: string;
     nativeSha256: string; schemaSha256: string; parentSha256: string }>;
   startupTimeoutMs?: number;
@@ -62,6 +69,13 @@ function record(value: unknown, keys: readonly string[]): Record<string, unknown
 }
 function path(value: unknown): string {
   check(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "CODEX_MANAGED_PROCESS_PATH_INVALID"); return value;
+}
+function sandboxOf(value: unknown): CodexManagedSandboxAdmission | undefined {
+  if (value === undefined) return undefined;
+  const raw = record(value, ["executable", "sha256", "readOnlyPaths"]);
+  return Object.freeze({ executable: path(raw.executable), sha256: digest(raw.sha256),
+    readOnlyPaths: raw.readOnlyPaths === undefined ? Object.freeze([] as readonly string[])
+      : Object.freeze((check(Array.isArray(raw.readOnlyPaths) && raw.readOnlyPaths.length <= 256, "CODEX_MANAGED_PROCESS_SANDBOX_INVALID"), (raw.readOnlyPaths as unknown[]).map(entry => path(entry)))) });
 }
 async function directory(value: string): Promise<BigIntStats> {
   const metadata = await lstat(value, { bigint: true });
@@ -163,8 +177,11 @@ export function codexManagedProviderSandbox(input: { executable: string; scratch
  * cleanup promise remains owned and no timeout supplies release authority. */
 export function createCodexManagedProcessLauncher(options: CodexManagedProcessOptions, trustedSystem: CodexManagedProcessSystem = system): CodexManagedProcessLauncher {
   const raw = record(options, ["stateRoot", "runtime", "admission", "startupTimeoutMs"]), stateRoot = path(raw.stateRoot);
-  const r = record(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime"]), p = record(r.parentRuntime, ["expectedSha256"]);
-  const runtime = Object.freeze({ executablePath: path(r.executablePath), version: identifier(r.version), sha256: digest(r.sha256), schemaSha256: digest(r.schemaSha256), parentRuntime: Object.freeze({ expectedSha256: digest(p.expectedSha256) }) });
+  const r = record(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime", "sandbox"]), p = record(r.parentRuntime, ["expectedSha256"]);
+  const runtimeSandbox = sandboxOf(r.sandbox);
+  const runtime = Object.freeze({ executablePath: path(r.executablePath), version: identifier(r.version), sha256: digest(r.sha256), schemaSha256: digest(r.schemaSha256),
+    parentRuntime: Object.freeze({ expectedSha256: digest(p.expectedSha256) }),
+    ...(runtimeSandbox === undefined ? {} : { sandbox: runtimeSandbox }) });
   const a = record(raw.admission, ["profile", "taskRuntimeVersion", "taskRuntimeDigest", "nativeSha256", "schemaSha256", "parentSha256"]);
   const sandboxProfile = a.profile;
   check(sandboxProfile === "managed-task-offline-candidate-v1" || sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1", "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
@@ -255,7 +272,9 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       admitted(); await directory(stateRoot); await directory(join(stateRoot, "accounts")); await directory(accountRoot);
       await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "agentmixer.codex-account-home.v1", accountId: owned.accountId }) + "\n");
       const parent = await host.inspectParent(runtime.parentRuntime);
-      check(parent.sha256 === runtime.parentRuntime.expectedSha256 && parent.platform === "darwin" && parent.arch === "arm64" && parent.version === "1.3.14", "CODEX_MANAGED_PROCESS_PARENT_MISMATCH");
+      check(parent.sha256 === runtime.parentRuntime.expectedSha256 && (parent.platform === "darwin" || parent.platform === "linux")
+        && (parent.arch === "arm64" || parent.arch === "x64") && parent.version === "1.3.14", "CODEX_MANAGED_PROCESS_PARENT_MISMATCH");
+      check((parent.platform === "linux") === (runtime.sandbox !== undefined), "CODEX_MANAGED_PROCESS_SANDBOX_MISMATCH");
       admitted(); await inspectCodexHostExecutable(runtime.executablePath, runtime.sha256); admitted(); await directory(runs);
       await mkdir(root, { mode: 0o700 }); await syncDirectory(runs);
       journalFd = openSync(custodyPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); fsyncSync(journalFd); await syncDirectory(root);
@@ -266,10 +285,14 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       await mkdir(runtimeRoot, { mode: 0o700 }); runtimeIdentity = await directory(runtimeRoot);
       for (const name of ["home", "tmp", "work"]) await mkdir(join(scratch, name), { mode: 0o700 });
       await copyExecutable(runtime.executablePath, executable, runtime.sha256); state.runtimeSnapshotSha256 = runtime.sha256;
-      const policyPath = join(root, "sandbox.sb");
-      const sandboxPlan: OsSandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
-        (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
-        .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
+      const policyPath = join(root, parent.platform === "darwin" ? "sandbox.sb" : "sandbox.json");
+      const sandboxPlan: OsSandboxPlan = parent.platform === "darwin"
+        ? await createSeatbeltOsSandbox({ generateProfile: spec =>
+          (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+          .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath })
+        : await createBwrapOsSandbox({ executable: runtime.sandbox!.executable, sha256: runtime.sandbox!.sha256 })
+          .plan({ platform: "linux", executable, scratch, accountHome, readOnlyPaths: runtime.sandbox!.readOnlyPaths ?? [],
+            network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
       state.profileSha256 = sandboxPlan.policySha256;
       await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
       const inspected = await inspectScratch(scratch); state.scratchContentSha256 = inspected.content; state.scratchIdentitySha256 = inspected.identity;
@@ -382,8 +405,11 @@ async function assertNoDiagnosticAuth(accountHome: string): Promise<void> {
 export function runCodexManagedOfflineDiagnostic(options: CodexManagedOfflineDiagnosticOptions, trustedSystem: CodexManagedProcessSystem = system): Promise<CodexManagedOfflineDiagnosticReceipt> {
   const raw = record(options, ["directory", "runtime", "signal", "admission"]), parentDirectory = path(raw.directory), signal = raw.signal as AbortSignal;
   check(signal instanceof AbortSignal, "OFFLINE_DIAGNOSTIC_SIGNAL_INVALID");
-  const r = record(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime"]), p = record(r.parentRuntime, ["expectedSha256"]);
-  const runtime = Object.freeze({ executablePath: path(r.executablePath), version: identifier(r.version), sha256: digest(r.sha256), schemaSha256: digest(r.schemaSha256), parentRuntime: Object.freeze({ expectedSha256: digest(p.expectedSha256) }) });
+  const r = record(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime", "sandbox"]), p = record(r.parentRuntime, ["expectedSha256"]);
+  const runtimeSandbox = sandboxOf(r.sandbox);
+  const runtime = Object.freeze({ executablePath: path(r.executablePath), version: identifier(r.version), sha256: digest(r.sha256), schemaSha256: digest(r.schemaSha256),
+    parentRuntime: Object.freeze({ expectedSha256: digest(p.expectedSha256) }),
+    ...(runtimeSandbox === undefined ? {} : { sandbox: runtimeSandbox }) });
   const admission = record(raw.admission, ["kind", "nativeSha256", "schemaSha256", "parentSha256"]);
   check(admission.kind === "managed-offline-lifecycle-diagnostic-v1" && digest(admission.nativeSha256) === runtime.sha256 && digest(admission.schemaSha256) === runtime.schemaSha256 && digest(admission.parentSha256) === runtime.parentRuntime.expectedSha256, "OFFLINE_DIAGNOSTIC_ADMISSION_MISMATCH");
   const host: ProcessHost = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem), syncDirectory: trustedSystem.syncDirectory?.bind(trustedSystem) ?? syncDirectory });

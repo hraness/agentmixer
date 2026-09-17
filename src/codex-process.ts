@@ -159,6 +159,9 @@ export function createCodexProcessLauncher(options: { executablePath: string; st
     const stateRoot = await privateDirectory(configuredStateRoot);
     input.signal.throwIfAborted();
     const parent = await inspectCodexHostRuntime(parentRuntime);
+    // The loopback relay profile has no bwrap expression: a net-namespace cut
+    // would sever the relay socket itself. This launcher is darwin-only.
+    if (parent.platform !== "darwin") throw new Error("CODEX_HOST_RUNTIME_UNSUPPORTED");
     input.signal.throwIfAborted();
     const bytes = await inspectCodexExecutable(executablePath);
     const root = await mkdtemp(join(stateRoot, "run-")); await chmod(root, 0o700);

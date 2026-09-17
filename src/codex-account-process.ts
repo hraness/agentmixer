@@ -10,14 +10,22 @@ import { inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRunt
 import { identifier, safeInteger } from "./validation.ts";
 import { providerProcessWriteResult, sameProviderProcessBinding, snapshotProviderProcessBinding, type ProviderProcessBinding, type ProviderProcessPort, type ProviderProcessWriteResult } from "./process-port.ts";
 import { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
-import { createSeatbeltOsSandbox } from "./os-sandbox.ts";
+import { createSeatbeltOsSandbox, createBwrapOsSandbox } from "./os-sandbox.ts";
 export { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
 
 /** Trusted distribution inputs. A supplied hash is checked, never self-admitted
  * as provenance, configuration/schema compatibility, or OAuth qualification. */
+export type CodexAccountSandboxAdmission = Readonly<{
+  /** Pinned bubblewrap artifact re-verified at plan time; required iff the
+   * admitted parent runtime is Linux. */
+  executable: string; sha256: string;
+  /** Host-admitted shared-library closure bound read-only inside the
+   * namespace. Canonical absolute paths only. */
+  readOnlyPaths?: readonly string[];
+}>;
 export type CodexAccountRuntimeAdmission = Readonly<{
   executablePath: string; version: string; sha256: string; schemaSha256: string;
-  parentRuntime: CodexParentRuntimeBinding;
+  parentRuntime: CodexParentRuntimeBinding; sandbox?: CodexAccountSandboxAdmission;
 }>;
 /** Supplied only by the trusted host after reviewing this candidate profile for
  * these distribution pins. JSON shape/pin matching is not provenance, a native
@@ -162,9 +170,14 @@ async function bounded<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
 export function createCodexAccountProcess(options: CodexAccountProcessOptions, trustedSystem: CodexAccountProcessSystem = system): CodexAccountOwnedProcessPort {
   const raw = object(options, ["binding", "stateRoot", "runtime", "mode", "startupTimeoutMs", "deviceCodeAdmission"]), owned = binding(raw.binding as CodexAccountBinding);
   assert(raw.mode === "offline" || raw.mode === "device-code", "CODEX_ACCOUNT_PROCESS_OFFLINE_REQUIRED");
-  const stateRoot = path(raw.stateRoot), admission = object(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime"]);
+  const stateRoot = path(raw.stateRoot), admission = object(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime", "sandbox"]);
   const parentRaw = object(admission.parentRuntime, ["expectedSha256"]), parentRuntime = Object.freeze({ expectedSha256: digest(parentRaw.expectedSha256) });
-  const runtime = Object.freeze({ executablePath: path(admission.executablePath), version: identifier(admission.version), sha256: digest(admission.sha256), schemaSha256: digest(admission.schemaSha256), parentRuntime });
+  const sandboxRaw = admission.sandbox === undefined ? undefined : object(admission.sandbox, ["executable", "sha256", "readOnlyPaths"]);
+  const sandbox = sandboxRaw === undefined ? undefined : Object.freeze({
+    executable: path(sandboxRaw.executable), sha256: digest(sandboxRaw.sha256),
+    readOnlyPaths: sandboxRaw.readOnlyPaths === undefined ? Object.freeze([] as readonly string[])
+      : Object.freeze((assert(Array.isArray(sandboxRaw.readOnlyPaths) && sandboxRaw.readOnlyPaths.length <= 256, "CODEX_ACCOUNT_PROCESS_SANDBOX_INVALID"), (sandboxRaw.readOnlyPaths as unknown[]).map(entry => path(entry)))) });
+  const runtime = Object.freeze({ executablePath: path(admission.executablePath), version: identifier(admission.version), sha256: digest(admission.sha256), schemaSha256: digest(admission.schemaSha256), parentRuntime, ...(sandbox === undefined ? {} : { sandbox }) });
   const deviceCode = raw.mode === "device-code";
   let networkProfile: CodexAccountDeviceCodeAdmission["profile"] | undefined;
   if (deviceCode) {
@@ -210,7 +223,9 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
   function alivePreparation() { assert(!closing && Date.now() < startupDeadline, "CODEX_ACCOUNT_PROCESS_START_CANCELLED"); }
   const preparation = Promise.resolve().then(async () => {
     alivePreparation(); await directory(stateRoot); const parent = await host.inspectParent(parentRuntime);
-    assert(parent.sha256 === parentRuntime.expectedSha256 && parent.platform === "darwin" && parent.arch === "arm64" && parent.version === "1.3.14", "CODEX_ACCOUNT_PROCESS_PARENT_MISMATCH"); alivePreparation();
+    assert(parent.sha256 === parentRuntime.expectedSha256 && (parent.platform === "darwin" || parent.platform === "linux")
+      && (parent.arch === "arm64" || parent.arch === "x64") && parent.version === "1.3.14", "CODEX_ACCOUNT_PROCESS_PARENT_MISMATCH");
+    assert((parent.platform === "linux") === (runtime.sandbox !== undefined), "CODEX_ACCOUNT_PROCESS_SANDBOX_MISMATCH"); alivePreparation();
     await inspectCodexHostExecutable(runtime.executablePath, runtime.sha256); alivePreparation();
     const accounts = join(stateRoot, "accounts"), runs = join(stateRoot, "runs"); await ensureDirectory(accounts); await ensureDirectory(runs);
     const accountRoot = join(accounts, owned.accountId); let created = false;
@@ -253,10 +268,13 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
       } finally { await target.close(); }
     } finally { await source.close(); }
     await inspectCodexHostExecutable(executable, runtime.sha256);
-    const policyPath = join(root, "sandbox.sb");
-    const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
-      selectedProfile({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
-      .plan({ platform: "darwin", executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath });
+    const policyPath = join(root, parent.platform === "darwin" ? "sandbox.sb" : "sandbox.json");
+    const sandboxPlan = parent.platform === "darwin"
+      ? await createSeatbeltOsSandbox({ generateProfile: spec =>
+        selectedProfile({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+        .plan({ platform: "darwin", executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath })
+      : await createBwrapOsSandbox({ executable: runtime.sandbox!.executable, sha256: runtime.sandbox!.sha256 })
+        .plan({ platform: "linux", executable, scratch, accountHome, readOnlyPaths: runtime.sandbox!.readOnlyPaths ?? [], network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath });
     state.profileSha256 = sandboxPlan.policySha256;
     await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
     await fixedFile(join(accountHome, "config.toml"), configuration, false); await directory(accountHome); await directory(scratch); alivePreparation();

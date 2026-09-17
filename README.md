@@ -683,6 +683,19 @@ must still join before any lease release. Receipt hash fields remain empty
 until the corresponding snapshots are completed. These synthetic
 custody checks do not prove native tool inventory or auth-home confinement.
 
+The managed and account process owners admit a parent runtime of
+`darwin|linux` × `arm64|x64` and select the sandbox backend from the inspected
+parent platform. Darwin plans through the seatbelt backend exactly as before.
+A Linux parent requires the runtime admission to carry a `sandbox` artifact —
+the pinned `bwrap` executable SHA-256 plus the host-admitted read-only library
+closure the copied runtime needs inside the namespace — and plans through the
+bwrap backend with `network: "denied"`. A Linux parent without that artifact,
+or a Darwin parent carrying one, is refused as a sandbox-admission mismatch;
+provider-egress profiles remain unplannable on Linux until a proxy bridge is
+separately qualified. The `codex-process.ts` loopback relay stays Darwin-only
+because a network-namespace cut would sever the relay socket it exists to
+serve.
+
 `runCodexManagedOfflineDiagnostic()` in the same internal module exercises the
 shared process owner without fabricating task qualification. Its separate
 `managed-offline-lifecycle-diagnostic-v1` admission binds declared native, schema

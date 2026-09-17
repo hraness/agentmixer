@@ -21,8 +21,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createServer as createTlsServer } from "node:tls";
-import { connect as netConnect } from "node:net";
+import { createServer as createNetServer, connect as netConnect, type Server as NetServer } from "node:net";
 import { createEgressBridge } from "../src/egress-bridge.ts";
 
 if (process.platform !== "linux") throw new Error("REQUIRES_LINUX");
@@ -55,98 +54,53 @@ function lddClosure(executable: string): string[] {
   return [...paths].sort();
 }
 
-/** In-namespace forwarder source: CONNECT on loopback → the mounted bridge
- * socket, then spawn the child with standard proxy variables. Plain
- * CommonJS-compatible JavaScript so node and bun both execute it verbatim. */
-const FORWARDER = String.raw`"use strict";
-const net = require("node:net");
-const fs = require("node:fs");
-const { spawn, spawnSync } = require("node:child_process");
-const [, , socketPath, portText, ipPath, separator, ...childArgv] = process.argv;
-const report = (key, value) => { try { fs.writeSync(2, "FWD " + key + "=" + JSON.stringify(value) + "\n"); } catch {} };
-const status = (() => { try { return fs.readFileSync("/proc/self/status", "utf8"); } catch { return ""; } })();
-report("capEff", (/CapEff:\s*([0-9a-f]+)/i.exec(status) || [])[1] ?? null);
-report("loOperstate", (() => { try { return fs.readFileSync("/sys/class/net/lo/operstate", "utf8").trim(); } catch { return null; } })());
-report("loFlags", (() => { try { return fs.readFileSync("/sys/class/net/lo/flags", "utf8").trim(); } catch { return null; } })());
-if (ipPath !== "-") {
-  const raised = spawnSync(ipPath, ["link", "set", "lo", "up"], { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 });
-  report("loUpStatus", raised.status);
-  report("loUpError", raised.error ? String(raised.error.code || raised.error) : null);
-  report("loUpStderr", (raised.stderr || "").toString().slice(0, 200));
-}
-const port = Number(portText);
-const server = net.createServer((inbound) => {
-  let head = Buffer.alloc(0);
-  inbound.on("data", (chunk) => {
-    head = Buffer.concat([head, chunk]);
-    const end = head.indexOf("\r\n\r\n");
-    if (end === -1) { if (head.length > 4096) inbound.destroy(); return; }
-    const request = head.subarray(0, end).toString("latin1").split("\r\n")[0];
-    const match = /^CONNECT ([A-Za-z0-9._-]+):443 HTTP\/1\.[01]$/.exec(request);
-    inbound.pause();
-    if (match === null) { report("refused", request.slice(0, 120)); inbound.destroy(); return; }
-    const upstream = net.createConnection(socketPath, () => {
-      upstream.write(head.subarray(0, end + 4));
-      const clientExtra = head.subarray(end + 4);
-      let replyHead = Buffer.alloc(0);
-      const onReply = (chunk) => {
-        replyHead = Buffer.concat([replyHead, chunk]);
-        const replyEnd = replyHead.indexOf("\r\n\r\n");
-        if (replyEnd === -1) { if (replyHead.length > 4096) { upstream.destroy(); inbound.destroy(); } return; }
-        upstream.removeListener("data", onReply);
-        inbound.write(replyHead.subarray(0, replyEnd + 4));
-        // Reply-head tail belongs to the client; the client's own post-head
-        // bytes belong upstream. Keep the two directions separate.
-        const bridgeExtra = replyHead.subarray(replyEnd + 4);
-        if (bridgeExtra.length) inbound.write(bridgeExtra);
-        if (clientExtra.length) upstream.write(clientExtra);
-        upstream.pipe(inbound); inbound.pipe(upstream);
-        inbound.resume();
-      };
-      upstream.on("data", onReply);
-    });
-    upstream.once("error", () => inbound.destroy());
-  });
-});
-server.listen(port, "127.0.0.1", () => {
-  report("listening", server.address());
-  const env = { ...process.env,
-    http_proxy: "http://127.0.0.1:" + port, HTTP_PROXY: "http://127.0.0.1:" + port,
-    https_proxy: "http://127.0.0.1:" + port, HTTPS_PROXY: "http://127.0.0.1:" + port,
-    all_proxy: "http://127.0.0.1:" + port, ALL_PROXY: "http://127.0.0.1:" + port,
-    no_proxy: "", NO_PROXY: "" };
-  const child = spawn(childArgv[0], childArgv.slice(1), { stdio: "inherit", env });
-  for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => child.kill(signal));
-  child.on("exit", (code, signal) => { report("childExit", { code, signal }); process.exit(code ?? 1); });
-  child.on("error", (error) => { report("childError", String(error)); process.exit(1); });
-});
-server.on("error", (error) => { report("listenError", String(error && error.code || error)); process.exit(1); });
-`;
+/** The probe exercises the shipped forwarder artifact verbatim — the same
+ * file launchers mount — rather than a fixture copy that could drift. */
+const FORWARDER_SOURCE = new URL("../sandbox/loopback-forwarder.cjs", import.meta.url);
 
 const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-linux-loopback-")));
 let bridge: Awaited<ReturnType<typeof createEgressBridge>> | undefined;
+let sServer: ReturnType<typeof Bun.spawn> | undefined;
 try {
   const scratch = join(root, "scratch"), runDir = join(root, "runDir");
   await mkdir(scratch, { mode: 0o700 }); await mkdir(runDir, { mode: 0o700 });
   const socketPath = join(runDir, "egress.sock");
   const forwarderPath = join(runDir, "forwarder.js");
-  await writeFile(forwarderPath, FORWARDER, { mode: 0o444 });
+  await writeFile(forwarderPath, await readFile(FORWARDER_SOURCE), { mode: 0o444 });
   const outerScript = join(runDir, "outer.sh");
   await writeFile(outerScript, `#!/bin/sh\n"${ipTool}" link set lo up && exec "${bwrap}" "$@"\n`, { mode: 0o500 });
 
   // Host-side TLS upstream behind the bridge: curl -k reaches it through
-  // forwarder → unix socket → bridge → this listener. openssl builds a
-  // one-day throwaway cert; nothing about it is a secret.
+  // forwarder → unix socket → bridge → this listener. `openssl s_server` is
+  // the endpoint — a stock TLS implementation, deliberately not the runtime
+  // under test (Bun's TLSSocket.end(data) writes response bytes unencrypted,
+  // which would poison the very tunnel this probe measures). openssl builds
+  // a one-day throwaway cert; nothing about it is a secret.
   const key = join(runDir, "key.pem"), cert = join(runDir, "cert.pem");
   const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", key, "-out", cert,
     "-days", "1", "-nodes", "-subj", "/CN=probe.invalid"], { encoding: "utf8", timeout: 30_000 });
   if (generated.status !== 0) throw new Error("OPENSSL_CERT_UNAVAILABLE");
-  const tlsErrors: string[] = [];
-  const tlsServer = createTlsServer({ key: await readFile(key), cert: await readFile(cert) },
-    (socket) => { socket.end("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nLOOPBACK-OK"); });
-  tlsServer.on("tlsClientError", (error) => tlsErrors.push(String(error).slice(0, 200)));
-  await new Promise<void>((ready) => tlsServer.listen(0, "127.0.0.1", ready));
-  const tlsPort = (tlsServer.address() as { port: number }).port;
+  // Reserve an ephemeral port by binding then releasing — s_server needs a
+  // literal port and the host netns is shared.
+  const reserved = await new Promise<number>((ready, failReserve) => {
+    const probe: NetServer = createNetServer();
+    probe.listen(0, "127.0.0.1", () => { const port = (probe.address() as { port: number }).port; probe.close(() => ready(port)); });
+    probe.once("error", failReserve);
+  });
+  sServer = Bun.spawn(["openssl", "s_server", "-quiet", "-accept", String(reserved),
+    "-key", key, "-cert", cert, "-www"], { stdout: "pipe", stderr: "pipe" });
+  // Wait until the port accepts before handing it to the bridge dialer.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const ready = await new Promise<boolean>((resolvePromise) => {
+      const socket = netConnect({ host: "127.0.0.1", port: reserved });
+      socket.once("connect", () => { socket.destroy(); resolvePromise(true); });
+      socket.once("error", () => resolvePromise(false));
+    });
+    if (ready) break;
+    if (attempt === 49) throw new Error("OPENSSL_S_SERVER_UNAVAILABLE");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  const tlsPort = reserved;
   bridge = await createEgressBridge({ socketPath, allowlist: ["probe.invalid"],
     dialer: { connect: () => new Promise((resolvePromise, reject) => {
       const socket = netConnect({ host: "127.0.0.1", port: tlsPort });
@@ -206,16 +160,18 @@ try {
       bytesIn: -1, bytesOut: -1, listenerClosed: false, socketsJoined: false, socketRemoved: false });
   bridge = undefined;
   progress("bridge closed");
-  await bounded(new Promise<void>((done) => tlsServer.close(() => done())), 10_000, undefined);
-  const passed = (phase: { code: number; stdout: string }) => phase.code === 0 && phase.stdout.includes("LOOPBACK-OK");
+  // Exit 0 plus a response body through the tunnel is the assertion: the only
+  // listener behind the allowlisted target is our s_server.
+  const passed = (phase: { code: number; stdout: string }) => phase.code === 0 && phase.stdout.length > 0;
   console.log(JSON.stringify({ profile: "experimental-linux-loopback-forwarder", blocked: false,
     productionQualificationIssued: false, paidModelRequests: 0,
     runtime, runtimeLibs: runtimeLibs.length, clientLibs: clientLibs.length,
-    phases, M0_passed: passed(m0), M1_passed: passed(m1), M2_passed: passed(m2), tlsErrors,
+    phases, M0_passed: passed(m0), M1_passed: passed(m1), M2_passed: passed(m2),
     bridge: { accepted: receipt.connectionsAccepted, refused: receipt.connectionsRefused,
       listenerClosed: receipt.listenerClosed, socketsJoined: receipt.socketsJoined, socketRemoved: receipt.socketRemoved } }, null, 2));
   if (!(passed(m0) || passed(m1) || passed(m2)) || !(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved)) process.exitCode = 1;
 } finally {
+  sServer?.kill("SIGKILL");
   await bridge?.close().catch(() => {});
   await rm(root, { recursive: true, force: true });
 }

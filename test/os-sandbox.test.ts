@@ -194,6 +194,47 @@ describe("os-sandbox bwrap planning", () => {
       expect(() => planSeatbeltPolicy(f.spec({ network: "provider-tcp443-dns", egressSocket: socket }), "(deny default)")).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
     } finally { await f.cleanup(); }
   });
+  test("routes the namespace entry point through an admitted egress forwarder", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock"), runtime = join(f.root, "bunrt"), script = join(f.root, "forwarder.js");
+      const plan = planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns", egressSocket: socket,
+        egressForward: { runtime, script, port: 48123 } }), join(f.root, "bwrap"));
+      const args = [...plan.wrap({ args: ["--serve"], env: { MODE: "x" }, cwd: "/" }).args];
+      const tail = args.slice(args.indexOf("--") + 1);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", "--", f.executable, "--serve"]);
+      const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
+      expect(pairs("--ro-bind")).toEqual(expect.arrayContaining([runtime, script]));
+      const policy = JSON.parse(plan.policy);
+      expect(policy.egress.forwarder).toEqual({ runtime, script, port: 48123, protocol: "http-connect-loopback" });
+      expect(policy.binds.find((b: { target: string }) => b.target === runtime).mode).toBe("ro");
+      expect(policy.binds.find((b: { target: string }) => b.target === script).mode).toBe("ro");
+      // No proxy keys in the plan env — the forwarder injects them itself.
+      expect(JSON.stringify(args)).not.toContain("HTTPS_PROXY");
+    } finally { await f.cleanup(); }
+  });
+  test("rejects a forwarder without a bridge socket or on a denied network", async () => {
+    const f = await fixture();
+    try {
+      const forwarder = { runtime: join(f.root, "bunrt"), script: join(f.root, "forwarder.js"), port: 48123 };
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "denied", egressForward: forwarder }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
+      const socket = join(f.root, "egress.sock");
+      expect(() => planBwrapPolicy(f.spec({ platform: "linux", network: "denied", egressSocket: socket, egressForward: forwarder }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
+      expect(() => planSeatbeltPolicy(f.spec({ network: "provider-tcp443-dns", egressSocket: socket, egressForward: forwarder }), "(deny default)")).toThrow("OS_SANDBOX_EGRESS_UNEXPECTED");
+    } finally { await f.cleanup(); }
+  });
+  test("rejects forwarder artifacts inside writable roots and out-of-range ports", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock"), script = join(f.root, "forwarder.js");
+      const base = { network: "provider-tcp443-dns" as const, platform: "linux" as const, egressSocket: socket };
+      expect(() => planBwrapPolicy(f.spec({ ...base, egressForward: { runtime: join(f.scratch, "bun"), script, port: 48123 } }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_LAYOUT_INVALID");
+      expect(() => planBwrapPolicy(f.spec({ ...base, egressForward: { runtime: join(f.root, "bun"), script: join(f.accountHome, "f.js"), port: 48123 } }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_LAYOUT_INVALID");
+      for (const port of [0, 65536, 1.5, -1]) {
+        expect(() => planBwrapPolicy(f.spec({ ...base, egressForward: { runtime: join(f.root, "bun"), script, port } }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_EGRESS_PORT_INVALID");
+      }
+    } finally { await f.cleanup(); }
+  });
   test("policy digest tracks bind-set changes", async () => {
     const f = await fixture();
     try {

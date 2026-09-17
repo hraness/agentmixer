@@ -1,4 +1,7 @@
-use crate::{Error, Result, digest, private, store::Store};
+use crate::{
+    Error, Result, digest, private,
+    store::{Store, UsageObservation},
+};
 use aicharts_core::sessions::{MAX_RECORDS, MAX_SESSIONS, PROFILE};
 use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -56,9 +59,11 @@ fn provider(provider: Provider) -> &'static str {
     }
 }
 
-pub fn report(store: &Store) -> Result<Vec<u8>> {
+fn records_from(
+    observations: impl Iterator<Item = UsageObservation>,
+) -> Result<Vec<SessionRecord>> {
     let mut sessions: BTreeMap<Id, (Provider, Vec<UsageRecord>)> = BTreeMap::new();
-    for observation in store.usage(None, 2048)? {
+    for observation in observations {
         observation.counters.total()?;
         let records = sessions
             .entry(observation.session.clone())
@@ -105,15 +110,27 @@ pub fn report(store: &Store) -> Result<Vec<u8>> {
             spans: Vec::new(),
         });
     }
+    Ok(output)
+}
+
+fn serialize(sessions: Vec<SessionRecord>) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(&Report {
         schema_version: 1,
         profile: PROFILE,
-        sessions: output,
+        sessions,
     })?;
     if bytes.len() > MAX_BYTES {
         return Err(xcb_core::Error::Limit("aiCharts export bytes").into());
     }
     Ok(bytes)
+}
+
+pub fn report(store: &Store) -> Result<Vec<u8>> {
+    serialize(records_from(store.usage(None, 2048)?.into_iter())?)
+}
+
+pub fn session_report(store: &Store, session: &Id) -> Result<Vec<u8>> {
+    serialize(records_from(store.usage(Some(session), 2048)?.into_iter())?)
 }
 
 pub fn write(store: &Store) -> Result<PathBuf> {
@@ -131,4 +148,31 @@ pub fn write(store: &Store) -> Result<PathBuf> {
         }
         Err(error) => Err(error),
     }
+}
+
+pub fn write_session(store: &Store, session: &Id, bytes: &[u8]) -> Result<PathBuf> {
+    let directory = private::directory(&store.root().join("exports"))?;
+    let path = directory.join(format!("aicharts-session-{}.json", public_id(session)));
+    match private::create(&path, bytes) {
+        Ok(()) => (),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let current = private::read(&path, MAX_BYTES)?;
+            if current != bytes {
+                private::replace(&path, bytes, &digest(current))?;
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(path)
+}
+
+pub fn export_session(store: &Store, session: &Id) -> Result<Option<PathBuf>> {
+    if store.usage(Some(session), 1)?.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(write_session(
+        store,
+        session,
+        &session_report(store, session)?,
+    )?))
 }

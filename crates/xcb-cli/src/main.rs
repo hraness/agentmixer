@@ -692,6 +692,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     "gobstopper" => fresh.extensions.gobstopper.enabled = enabled,
                     "usage" => fresh.extensions.usage = enabled,
                     "hooks" => fresh.extensions.hooks = enabled,
+                    "aicharts-export" => fresh.extensions.aicharts_export = enabled,
+                    "aicharts" | "aicharts-upload" => {
+                        return Err(Error::Unavailable(
+                            "automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available",
+                        ));
+                    }
                     _ => return Err(Error::Unavailable("unknown or not-yet-available extension")),
                 }
                 fresh.save(store.root(), revision.as_deref())?;

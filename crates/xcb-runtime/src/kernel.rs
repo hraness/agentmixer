@@ -1,7 +1,7 @@
 use crate::{
     Error, Result, attachments, auth,
     config::Config,
-    digest, hooks, new_id, now_ms, panes,
+    digest, exports, hooks, new_id, now_ms, panes,
     process::Pin,
     runner::{self, Observer, Outcome, Progress, RunInput},
     store::Store,
@@ -179,6 +179,16 @@ pub async fn execute(
         let state = result
             .as_ref()
             .map_or(State::Uncertain, |outcome| outcome.state);
+        if config.extensions.aicharts_export
+            && config.extensions.usage
+            && let Ok(ref outcome) = result
+            && runner::should_idle_export(pane_generation, &outcome.facts, outcome.state)
+            && let Err(error) = exports::export_session(&store, &session_id)
+        {
+            observer(Progress::Notice(format!(
+                "aiCharts local idle export failed: {error}"
+            )));
+        }
         fire_hooks(
             &store,
             &config,
@@ -542,7 +552,7 @@ pub async fn serve(
                             Intent::AttachRgba { width, height, bytes } => { let image = attachments::from_rgba(store.root(), width, height, bytes)?; let _ = output.try_send(Update::Attachment(image)); }
                             Intent::Extension { name, enabled } => {
                                 let (mut fresh, revision) = Config::load(store.root())?;
-                                match name.as_str() { "auto-continue" => fresh.extensions.auto_continue.enabled = enabled, "gobstopper" => fresh.extensions.gobstopper.enabled = enabled, "usage" => fresh.extensions.usage = enabled, "hooks" => fresh.extensions.hooks = enabled, "aicharts" | "aicharts-upload" => return Err(Error::Unavailable("automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available")), _ => return Err(Error::Unavailable("unknown built-in extension")) }
+                                match name.as_str() { "auto-continue" => fresh.extensions.auto_continue.enabled = enabled, "gobstopper" => fresh.extensions.gobstopper.enabled = enabled, "usage" => fresh.extensions.usage = enabled, "hooks" => fresh.extensions.hooks = enabled, "aicharts-export" => fresh.extensions.aicharts_export = enabled, "aicharts" | "aicharts-upload" => return Err(Error::Unavailable("automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available")), _ => return Err(Error::Unavailable("unknown built-in extension")) }
                                 fresh.save(store.root(), revision.as_deref())?; config = fresh;
                             }
                             Intent::Quit => (),

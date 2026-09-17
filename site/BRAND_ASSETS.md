@@ -1,6 +1,6 @@
 # AgentMixer website identity
 
-The 🎚️ identity marks AgentMixer: several provider inputs routed through one qualified output. Header marks use the native emoji; browser and touch icons use the generated PNG artwork in `public/`.
+The 🎚️ identity marks AgentMixer: several provider inputs routed through one qualified output. Header and browser marks use the generated PNG artwork in `public/`; the emoji remains product metadata.
 
 The checked PNGs are the website's artwork. Preserve their bytes when updating other branding.
 

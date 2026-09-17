@@ -104,7 +104,7 @@ const navigation = [
 ] as const;
 
 function BrandMark() {
-  return <span aria-hidden="true" className="brand-mark">🎚️</span>;
+  return <img alt="" height={20} src="/icon.png" width={20} />;
 }
 
 export default function Home() {

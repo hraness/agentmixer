@@ -425,6 +425,33 @@ Every receipt reports `productionQualified: false`: this module proves custody
 and launch integrity, not browser provenance, sandbox qualification, or live
 provider authentication. Those remain separate host responsibilities.
 
+## Managed account custody
+
+`createManagedAccountController()` is the provider-neutral account-lifecycle
+port every managed provider controller shares. It owns the custody discipline
+— the shared SQLite account lease, the exact `{provider, accountId, owner,
+leaseGeneration, processGeneration}` binding, a serialized
+unchecked → signing-in → signed-in state machine, unresolved-login recovery,
+and the joined-close barrier that must prove process exit, group absence,
+stream joins and settled requests before the lease is released. A transport
+that loses a `startLogin` response is `recovery-required`, never a retryable
+pending login, and only the proven close retires the possibly-live process.
+
+Providers supply two ports and nothing else: a `ManagedAccountTransport`
+(closed `accountRead`/`startLogin`/`cancelLogin`/`logout`/`close` — no raw
+RPC, token export or turn method) and `ManagedAccountSemantics`, which
+projects the provider's account payload onto the neutral readiness state.
+Login methods are the closed union `provider-native` (the provider's own
+flow) and `browser-session`, which binds sign-in to the caller's per-account
+browser custody session — the session's provider, accountId and owner must
+equal the account's, so one account's cookie jar can never authenticate
+another. `readUsage()` surfaces a bounded, read-only quota observation
+through an optional admitted `ManagedAccountUsageReader`: provider-named
+windows with optional utilization, an exact-response SHA-256, and no
+credentials or raw payloads. A missing reader returns `null` — it is not a
+zero-usage claim. Nothing here is execution or authentication
+qualification; provider runtime admission remains separate host evidence.
+
 ## Ownership boundaries
 
 The account and task consumers accept a structural `ProviderProcessPort` through

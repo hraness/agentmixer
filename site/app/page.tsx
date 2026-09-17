@@ -18,6 +18,12 @@ import { AskAiAboutThis } from "@hraness/ui";
 import { publishedRelease } from "./publication";
 import { readmeLead, readmeTitle } from "./readme.generated";
 
+function TopicIcon({ slug }: Readonly<{ slug: string }>) {
+  return (
+    <img className="agentmixer-topic-icon" src={`/icons/${slug}.svg`} alt="" aria-hidden="true" width="88" height="88" loading="lazy" decoding="async" />
+  );
+}
+
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/agentmixer";
 const archiveUrl = releaseVersion === undefined ? null : `${repository}/releases/download/v${releaseVersion}/hraness-agentmixer-${releaseVersion}.tgz`;
@@ -28,26 +34,32 @@ const footnote =
 
 const primitives = [
   {
+    icon: "provider-adapters",
     label: "Provider adapters",
     summary: "Claude SDK, Claude API, and Codex adapters sit behind one runtime interface. An adapter stays disabled until the host proves the exact runtime, tool inventory, and confinement it claims.",
   },
   {
+    icon: "account-custody",
     label: "Account custody",
     summary: "Provider accounts are opaque host bindings on shared SQLite leases with generation fencing. A failed or ambiguous call retains its lease; recovery needs independent proof the old process stopped.",
   },
   {
+    icon: "tool-broker",
     label: "Tool broker",
     summary: "One workspace and one run get a closed set of file, public-web, and messaging operations. There is no shell, executable, or arbitrary RPC operation for a model to reach for.",
   },
   {
+    icon: "model-selection",
     label: "Model selection",
     summary: "Classifier output is strictly validated and models are selected from a fresh, host-observed catalog — never from a stale index or a model's own claims.",
   },
   {
+    icon: "capability-profiles",
     label: "Capability profiles",
     summary: "Applications define their own tools with createCapabilityProfile() and bind them per workspace and run. The host supplies every descriptor, parser, and handler.",
   },
   {
+    icon: "public-web-port",
     label: "Public web port",
     summary: "createPublicWeb() admits bounded HTTPS GETs only: address pinning, per-redirect validation, no ambient credentials, a 15-second deadline, and a 256 KiB text cap.",
   },
@@ -198,7 +210,11 @@ await broker.invoke("notes.write", { text: "First note." });`}</code></pre>
             heading="Explicit contracts, derived nothing."
             headingId="model-title"
             id="model"
-            items={primitives.map((primitive) => ({ label: primitive.label, summary: primitive.summary }))}
+            items={primitives.map((primitive) => ({
+              example: <TopicIcon slug={primitive.icon} />,
+              label: primitive.label,
+              summary: primitive.summary,
+            }))}
             label=""
             summary="AgentMixer supplies the execution seam: routing, custody, and a closed tool surface. Everything the agent can touch is declared by the host and bounded before the run begins."
           />
@@ -212,21 +228,27 @@ await broker.invoke("notes.write", { text: "First note." });`}</code></pre>
                 label: "Runtime API",
                 summary: "Route one qualified agent run with an explicit request: route, account, profile, model, effort, and limits.",
                 example: (
-                  <pre tabIndex={0}><code>{`import { AgentMixer } from "@hraness/agentmixer";
+                  <>
+                    <TopicIcon slug="sdk" />
+                    <pre tabIndex={0}><code>{`import { AgentMixer } from "@hraness/agentmixer";
 
 const mixer = new AgentMixer({ adapters, catalog });
 const result = await mixer.run(request, broker);`}</code></pre>
+                  </>
                 ),
               },
               {
                 label: "Capability broker",
                 summary: "Define application-owned tools and bind them to one workspace and run, with host-supplied parsers and handlers.",
                 example: (
-                  <pre tabIndex={0}><code>{`const broker = createCapabilityBroker({
+                  <>
+                    <TopicIcon slug="tool-broker" />
+                    <pre tabIndex={0}><code>{`const broker = createCapabilityBroker({
   profile, workspaceId, runId, isActive,
 });
 await broker.invoke("notes.write", input);
 await broker.close();`}</code></pre>
+                  </>
                 ),
               },
               {
@@ -234,6 +256,7 @@ await broker.close();`}</code></pre>
                 summary: "Claude SDK, Claude API, and Codex adapters behind explicit runtime qualification.",
                 example: (
                   <>
+                    <TopicIcon slug="provider-adapters" />
                     {releaseVersion === undefined ? <p>The first AgentMixer release is in preparation.</p> : <pre tabIndex={0}><code>{`bun add @hraness/agentmixer@${releaseVersion}`}</code></pre>}
                     <p className="interface-link"><a href={`${repository}/blob/main/MANAGED-CODEX.md`}>Read the managed Codex contract</a></p>
                   </>

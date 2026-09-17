@@ -86,6 +86,11 @@ enum Commands {
         executable: Option<PathBuf>,
     },
     Config,
+    Recover {
+        run: Option<Id>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -726,6 +731,67 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             print_json(config)?;
             Ok(0)
         }
+        Some(Commands::Recover { run, yes }) => {
+            if let Some(run_id) = run {
+                let (run, run_digest) = store
+                    .recovery_candidate(&run_id)?
+                    .ok_or(Error::Unavailable("run not found"))?;
+                let account = store.account(&run.account)?;
+                let pid = run.pid.ok_or(Error::Conflict(
+                    "run has no process group; recovery requires a running phase with a recorded pid",
+                ))?;
+                if run.phase != "running" {
+                    return Err(Error::Conflict(
+                        "run is not in running phase; recovery requires a recorded process group",
+                    ));
+                }
+                if !yes {
+                    if cli.json {
+                        print_json(
+                            json!({"version":1,"dryRun":true,"run":run.id,"account":account.id,"phase":run.phase,"pid":pid}),
+                        )?;
+                    } else {
+                        println!(
+                            "Would recover run {} · account {} · phase {} · process group {}.\nRepeat with --yes after verifying the process group is absent.",
+                            run.id, account.label, run.phase, pid
+                        );
+                    }
+                    return Ok(0);
+                }
+                process::prove_process_group_absent(pid)?;
+                let settled = store.recover_run(&run_id, &run_digest, now_ms())?;
+                if cli.json {
+                    print_json(
+                        json!({"version":1,"recovered":settled.id,"account":settled.account,"phase":settled.phase,"pid":pid}),
+                    )?;
+                } else {
+                    println!(
+                        "Recovered run {} · account {} · process group {} confirmed absent",
+                        settled.id, account.label, pid
+                    );
+                }
+            } else {
+                let runs = store.unsettled_runs()?;
+                if cli.json {
+                    print_json(json!({"version":1,"runs":runs}))?;
+                } else if runs.is_empty() {
+                    println!("No unsettled runs.");
+                } else {
+                    println!("Unsettled runs:");
+                    for run in runs {
+                        let account = store.account(&run.account)?;
+                        println!(
+                            "  {} · {} · phase {} · pid {:?}",
+                            run.id, account.label, run.phase, run.pid
+                        );
+                    }
+                    println!(
+                        "Use `xcb recover <run-id> --yes` after verifying the process group is absent."
+                    );
+                }
+            }
+            Ok(0)
+        }
     }
 }
 
@@ -763,4 +829,39 @@ async fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_cli_shape_accepts_optional_run_and_yes() {
+        let cli = Cli::try_parse_from(["xcb", "recover"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Recover {
+                run: None,
+                yes: false
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["xcb", "recover", "r_abc123"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Recover {
+                run: Some(_),
+                yes: false
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["xcb", "recover", "r_abc123", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Recover {
+                run: Some(_),
+                yes: true
+            })
+        ));
+    }
 }

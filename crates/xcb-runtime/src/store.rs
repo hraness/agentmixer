@@ -1,4 +1,4 @@
-use crate::{Error, Result, new_id, private};
+use crate::{Error, Result, digest, new_id, private};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -586,6 +586,95 @@ impl Store {
         }
         Ok(runs)
     }
+    pub fn run(&self, id: &Id) -> Result<Option<RunRecord>> {
+        self.recovery_candidate(id)
+            .map(|candidate| candidate.map(|(run, _)| run))
+    }
+    pub fn recovery_candidate(&self, id: &Id) -> Result<Option<(RunRecord, String)>> {
+        let db = self.db()?;
+        let payload: Option<String> = db
+            .query_row(
+                "SELECT payload FROM runs WHERE id=?1",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        payload
+            .map(|payload| {
+                let payload_digest = digest(payload.as_bytes());
+                Ok((decode(&payload)?, payload_digest))
+            })
+            .transpose()
+    }
+    pub fn recover_run(&self, run_id: &Id, expected_digest: &str, now: u64) -> Result<RunRecord> {
+        let mut db = self.db()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let payload: String = tx
+            .query_row(
+                "SELECT payload FROM runs WHERE id=?1",
+                [run_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(Error::Unavailable("run not found"))?;
+        let run: RunRecord = decode(&payload)?;
+        if run.phase != "running" {
+            return Err(Error::Conflict("run is not in running phase"));
+        }
+        let Some(pid) = run.pid else {
+            return Err(Error::Conflict("run has no recorded process group"));
+        };
+        if pid == 0 {
+            return Err(Error::Conflict("recorded process group id must be nonzero"));
+        }
+        let held: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM leases WHERE account=?1 AND run=?2)",
+            params![run.account.as_str(), run_id.as_str()],
+            |row| row.get(0),
+        )?;
+        if !held {
+            return Err(Error::Conflict("run lease is absent"));
+        }
+        if digest(payload.as_bytes()) != expected_digest {
+            return Err(Error::Conflict("run changed since process-group proof"));
+        }
+        if let Some(session_id) = &run.session {
+            let mut session =
+                session_from(&tx, session_id)?.ok_or(Error::Unavailable("session not found"))?;
+            let expected_revision = session.revision;
+            session.revision = expected_revision
+                .checked_add(1)
+                .ok_or(Error::Conflict("revision overflow"))?;
+            session.state = State::Uncertain;
+            session.last_active_at_ms = session.last_active_at_ms.max(now);
+            update_session(&tx, &session, expected_revision)?;
+        }
+        let settled = RunRecord {
+            phase: "settled".into(),
+            ..run.clone()
+        };
+        if tx.execute(
+            "UPDATE runs SET phase='settled', payload=?1 WHERE id=?2 AND account=?3 AND phase='running' AND payload=?4",
+            params![
+                serde_json::to_string(&settled)?,
+                run_id.as_str(),
+                run.account.as_str(),
+                payload
+            ],
+        )? != 1
+        {
+            return Err(Error::Conflict("run no longer matches recovery proof"));
+        }
+        if tx.execute(
+            "DELETE FROM leases WHERE account=?1 AND run=?2",
+            params![run.account.as_str(), run_id.as_str()],
+        )? != 1
+        {
+            return Err(Error::Conflict("lease changed during recovery"));
+        }
+        tx.commit()?;
+        Ok(settled)
+    }
     pub fn remove_session(&self, id: &Id) -> Result<bool> {
         let mut db = self.db()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -869,5 +958,167 @@ impl Store {
             return Err(xcb_core::Error::Limit("quota windows").into());
         }
         Ok(points)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use xcb_core::{
+        Provider,
+        models::{Mode, ModelChoice},
+    };
+
+    fn root() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("work")).unwrap();
+        directory
+    }
+
+    fn choice() -> ModelChoice {
+        ModelChoice {
+            provider: Provider::Claude,
+            id: Id::new("claude-fable-5-1").unwrap(),
+            label: "Fable 5.1".into(),
+            mode: Mode::Fixed,
+            resolved: None,
+            effort: Some(Id::new("max").unwrap()),
+            observed_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn recovery_settles_running_run_and_marks_session_uncertain() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        let digest = digest(serde_json::to_string(&running).unwrap());
+
+        let settled = store.recover_run(&running.id, &digest, 4).unwrap();
+
+        assert_eq!(settled.phase, "settled");
+        assert_eq!(settled.pid, Some(12345));
+        assert!(store.run(&running.id).unwrap().unwrap().phase == "settled");
+        assert!(store.unsettled_runs().unwrap().is_empty());
+        let session = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(session.state, State::Uncertain);
+        assert_eq!(session.revision, 2);
+        assert!(store.recover_run(&running.id, &digest, 5).is_err());
+        assert_eq!(store.session(&session.id).unwrap().unwrap().revision, 2);
+    }
+
+    #[test]
+    fn recovery_digest_binds_the_stored_serialization() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        let payload = format!(" {} ", serde_json::to_string(&running).unwrap());
+        store
+            .db()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET payload=?1 WHERE id=?2",
+                params![payload, running.id.as_str()],
+            )
+            .unwrap();
+        let (candidate, payload_digest) = store.recovery_candidate(&running.id).unwrap().unwrap();
+
+        assert_eq!(candidate.id, running.id);
+        assert_eq!(payload_digest, digest(payload.as_bytes()));
+        assert!(store.recover_run(&running.id, &payload_digest, 4).is_ok());
+    }
+
+    #[test]
+    fn recovery_rejects_prepared_run_with_no_recorded_pid() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let digest = digest(serde_json::to_string(&prepared).unwrap());
+        assert!(store.recover_run(&prepared.id, &digest, 4).is_err());
+        assert_eq!(store.unsettled_runs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recovery_rejects_already_settled_run() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        store
+            .settle(&prepared, State::Failed, 4)
+            .expect("settle prepared run");
+        let digest = digest(serde_json::to_string(&prepared).unwrap());
+        assert!(store.recover_run(&prepared.id, &digest, 5).is_err());
+        assert_eq!(store.unsettled_runs().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn recovery_rejects_run_that_changed_since_proof() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        assert!(store.recover_run(&running.id, "not-the-digest", 4).is_err());
+        assert_eq!(store.run(&running.id).unwrap().unwrap().phase, "running");
+    }
+
+    #[test]
+    fn recovery_rejects_run_when_lease_is_absent() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        let digest = digest(serde_json::to_string(&running).unwrap());
+        store
+            .db()
+            .unwrap()
+            .execute("DELETE FROM leases WHERE run=?1", [running.id.as_str()])
+            .unwrap();
+        assert!(store.recover_run(&running.id, &digest, 4).is_err());
+        assert_eq!(store.run(&running.id).unwrap().unwrap().phase, "running");
     }
 }

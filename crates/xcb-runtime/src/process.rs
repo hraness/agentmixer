@@ -346,6 +346,18 @@ async fn group_absent(group: Pid) -> bool {
     .unwrap_or(false)
 }
 
+pub fn prove_process_group_absent(pid: u32) -> Result<()> {
+    let group = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or(Error::Unavailable("process group id is invalid"))?;
+    match test_kill_process_group(group) {
+        Ok(()) => Err(Error::Conflict("process group is still present")),
+        Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(_) => Err(Error::Unavailable("process group probe failed")),
+    }
+}
+
 async fn drain(mut source: impl AsyncRead + Unpin, max: usize) -> Result<()> {
     let mut buffer = [0u8; 8192];
     let mut count = 0;
@@ -504,5 +516,34 @@ mod tests {
                 "mode 0o{mode:o} should be rejected",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn absent_process_group_is_proven_by_esrch() {
+        let mut command = Command::new("/bin/echo");
+        command.arg("done").env_clear();
+        command.as_std_mut().process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        child.wait_with_output().await.unwrap();
+        assert!(prove_process_group_absent(pid).is_ok());
+    }
+
+    #[tokio::test]
+    async fn present_process_group_is_not_proven_absent() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60").env_clear();
+        command.as_std_mut().process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let proof = prove_process_group_absent(pid);
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+        assert!(proof.is_err());
+    }
+
+    #[test]
+    fn zero_process_group_id_is_rejected_as_absence_proof() {
+        assert!(prove_process_group_absent(0).is_err());
     }
 }

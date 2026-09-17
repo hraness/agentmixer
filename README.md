@@ -25,13 +25,13 @@ Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
 versioned GitHub archive to a Bun project:
 
 ```sh
-bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.2.0/hraness-agentmixer-0.2.0.tgz
+bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz
 ```
 
 The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):
 
 ```sh
-npm install --save-exact --ignore-scripts @hraness/agentmixer@0.2.0
+npm install --save-exact --ignore-scripts @hraness/agentmixer@0.3.0
 ```
 
 ## Standalone package

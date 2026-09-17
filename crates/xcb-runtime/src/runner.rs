@@ -175,11 +175,17 @@ pub fn parse_models(value: &Value, now: u64) -> Result<Vec<ModelChoice>> {
     for model in models {
         let id = Id::new(
             model
-                .get("resolvedModel")
-                .or_else(|| model.get("value"))
+                .get("value")
+                .or_else(|| model.get("resolvedModel"))
                 .and_then(Value::as_str)
                 .ok_or(Error::Protocol("model identifier"))?,
         )?;
+        let resolved = model
+            .get("resolvedModel")
+            .and_then(Value::as_str)
+            .filter(|resolved| *resolved != id.as_str())
+            .map(Id::new)
+            .transpose()?;
         let name = model
             .get("displayName")
             .and_then(Value::as_str)
@@ -211,6 +217,7 @@ pub fn parse_models(value: &Value, now: u64) -> Result<Vec<ModelChoice>> {
                     .map(|effort| format!("{name} · {effort}"))
                     .unwrap_or_else(|| name.to_owned()),
                 mode: Mode::Fixed,
+                resolved: resolved.clone(),
                 effort,
                 observed_at_ms: now,
             };
@@ -377,6 +384,7 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         id: Id::new("claude-fable-5-1")?,
         label: "Fable 5.1".into(),
         mode: Mode::Fixed,
+        resolved: None,
         effort: None,
         observed_at_ms: 0,
     };

@@ -34,7 +34,7 @@ impl Id {
             || !value.as_bytes()[0].is_ascii_alphanumeric()
             || !value
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.[]".contains(&byte))
         {
             return Err(Error::Invalid("identifier"));
         }

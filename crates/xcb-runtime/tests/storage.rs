@@ -16,6 +16,7 @@ fn choice() -> ModelChoice {
         id: Id::new("claude-fable-5-1").unwrap(),
         label: "Fable 5.1".into(),
         mode: Mode::Fixed,
+        resolved: None,
         effort: Some(Id::new("max").unwrap()),
         observed_at_ms: 1,
     }

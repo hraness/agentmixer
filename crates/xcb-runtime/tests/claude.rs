@@ -51,3 +51,37 @@ fn malformed_recognized_events_refuse_and_unknown_events_are_inert() {
     ));
     assert!(parse_event(br#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","utilization":2.0}}"#).is_err());
 }
+
+#[test]
+fn catalog_keeps_selection_token_and_resolved_model_separate() {
+    let catalog = serde_json::json!({"models":[
+        {"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)","supportedEffortLevels":["high","max"]},
+        {"value":"opus[1m]","resolvedModel":"claude-opus-5[1m]","displayName":"Opus (1M context)","supportedEffortLevels":["max"]},
+        {"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku"}
+    ]});
+    let choices = xcb_runtime::runner::parse_models(&catalog, 10).unwrap();
+    let default = choices
+        .iter()
+        .find(|c| {
+            c.id.as_str() == "default" && c.effort.as_ref().is_none_or(|e| e.as_str() == "high")
+        })
+        .unwrap();
+    assert_eq!(
+        default.resolved.as_ref().unwrap().as_str(),
+        "claude-opus-5[1m]"
+    );
+    let opus = choices
+        .iter()
+        .find(|c| c.id.as_str() == "opus[1m]")
+        .unwrap();
+    assert_eq!(
+        opus.resolved.as_ref().unwrap().as_str(),
+        "claude-opus-5[1m]"
+    );
+    let haiku = choices.iter().find(|c| c.id.as_str() == "haiku").unwrap();
+    assert_eq!(
+        haiku.resolved.as_ref().unwrap().as_str(),
+        "claude-haiku-4-5-20251001"
+    );
+    assert!(haiku.effort.is_none());
+}

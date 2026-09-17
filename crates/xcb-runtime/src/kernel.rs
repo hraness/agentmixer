@@ -205,6 +205,7 @@ pub async fn execute(
                 quota_fresh: true,
                 available: false,
             };
+            let claude_admitted = Pin::load(store.root(), Provider::Claude).is_ok();
             let mut candidates = Vec::new();
             for model in &view.models {
                 for account in &view.accounts {
@@ -218,8 +219,7 @@ pub async fn execute(
                     candidates.push(RouteCandidate {
                         account: account.id.clone(),
                         model: model.clone(),
-                        admitted: model.provider == Provider::Claude
-                            && Pin::load(store.root(), Provider::Claude).is_ok(),
+                        admitted: model.provider == Provider::Claude && claude_admitted,
                         quota_fresh: account.remaining_percent.is_some(),
                         available: account
                             .remaining_percent

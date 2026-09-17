@@ -164,7 +164,7 @@ impl App {
             "/quit" | "/exit" => { self.send(output, Intent::Quit); return false; }
             "/new" => self.send(output, Intent::NewSession),
             "/default" => self.send(output, Intent::SetDefault),
-            "/model" | "/models" if arguments.is_empty() => self.picker("Models · fixed, Adaptive, and Fusion", self.view.models.iter().map(|choice| PickItem { label: format!("{} · {} · {:?}", choice.provider, choice.label, choice.mode), action: PickAction::Model(choice.key()) }).collect()),
+            "/model" | "/models" if arguments.is_empty() => self.picker("Models · fixed, Adaptive, and Fusion", self.view.models.iter().map(|choice| PickItem { label: format!("{} · {}{} · {:?}", choice.provider, choice.label, choice.resolved.as_ref().map(|resolved| format!(" → {resolved}")).unwrap_or_default(), choice.mode), action: PickAction::Model(choice.key()) }).collect()),
             "/model" => self.send(output, Intent::Model(arguments.into())),
             "/accounts" => self.picker("Accounts · select an account", self.view.accounts.iter().map(|account| PickItem { label: format!("{} · {} · {} · {}{}", account.label, account.provider, account.subscription, account.remaining_percent.map(|percent| format!("{percent:.0}% left")).unwrap_or_else(|| "quota unknown".into()), if account.busy { " · busy" } else { "" }), action: PickAction::Account(account.id.clone()) }).collect()),
             "/sessions" => self.picker("Sessions", self.view.sessions.iter().map(|session| PickItem { label: format!("{} · {} · {}", session.title, session.model.label, session.state.label()), action: PickAction::Session(session.id.clone()) }).collect()),

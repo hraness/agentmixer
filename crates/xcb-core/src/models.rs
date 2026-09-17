@@ -17,6 +17,8 @@ pub struct ModelChoice {
     pub id: Id,
     pub label: String,
     pub mode: Mode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<Id>,
     pub effort: Option<Id>,
     pub observed_at_ms: u64,
 }
@@ -59,7 +61,7 @@ pub fn default_preferences() -> Vec<Preference> {
         (Provider::Devin, "gpt-6-astra-max", None),
         (Provider::Devin, "gpt-5-6-sol-max", None),
         (Provider::Claude, "claude-fable-5-1", Some("max")),
-        (Provider::Claude, "claude-opus-5", Some("max")),
+        (Provider::Claude, "opus[1m]", Some("max")),
         (Provider::Codex, "gpt-6-astra", Some("ultra")),
         (Provider::Codex, "gpt-5.6-sol", Some("ultra")),
     ]
@@ -135,6 +137,7 @@ pub fn parse_devin_catalog(bytes: &[u8], now: u64) -> Result<Vec<ModelChoice>> {
                 id: Id::new(variant.model_uid)?,
                 label: variant.label,
                 mode,
+                resolved: None,
                 effort: None,
                 observed_at_ms: now,
             };

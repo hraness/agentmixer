@@ -17,6 +17,7 @@ fn app() -> App {
             id: Id::new("gpt-6-astra-max").unwrap(),
             label: "Astra Max".into(),
             mode: Mode::Fixed,
+            resolved: None,
             effort: None,
             observed_at_ms: 1,
         },

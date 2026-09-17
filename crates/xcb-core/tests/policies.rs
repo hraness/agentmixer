@@ -13,6 +13,7 @@ fn route(account: &str, model: &str) -> RouteCandidate {
             id: Id::new(model).unwrap(),
             label: model.into(),
             mode: Mode::Fixed,
+            resolved: None,
             effort: None,
             observed_at_ms: 1,
         },

@@ -1,0 +1,32 @@
+[package]
+name = "xcb-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aicharts-core = { git = "https://github.com/hraness/aicharts", rev = "091433796f7253386c3e3186c67c275fb273b704", version = "0.1.0" }
+base64 = "=0.22.1"
+getrandom = "=0.3.4"
+gobstopper-core = { git = "https://github.com/hraness/gobstopper", rev = "8bf355c4c86027a4d26136a4761979081b7fd8a0", version = "0.1.0" }
+hex = "=0.4.3"
+hmac = "=0.12.1"
+image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg", "webp"] }
+regex = "=1.12.2"
+rusqlite = { version = "=0.40.2", features = ["bundled", "limits"] }
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+tempfile = "=3.23.0"
+thiserror = "=2.0.17"
+time = { version = "=0.3.44", features = ["parsing"] }
+tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "sync", "time", "signal"] }
+uuid = { version = "=1.18.1", features = ["v4", "serde"] }
+xcb-core = { version = "0.1.0", path = "../xcb-core" }
+zeroize = "=1.8.2"

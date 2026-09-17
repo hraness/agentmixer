@@ -79,3 +79,20 @@ empty skills allowlist. The shared production builder also sets the documented
 restrictive settings and keeps the empty catalog assertion intact. The
 [SDK skills documentation](https://code.claude.com/docs/en/agent-sdk/skills) explains
 why discovery metadata and execution authority are different.
+
+## Live Claude subscription smoke
+
+`2026-09-17-live-claude-subscription.json` records one user-operated CLI turn
+against the real Claude subscription service. The exact admitted 2.1.268 runtime
+returned the required text from `claude-sonnet-4-5`; the completed transcript was
+persisted only after the bounded provider process joined, and the per-run runtime
+snapshot and Seatbelt policy were then removed. The receipt binds the public main
+tree, runtime, profile and local admission digests. It records no token, account
+identity, authorization URL, local path or session identifier.
+
+This closes evidence for one authenticated live-provider turn on the tested
+Darwin host. It does not measure subscription usage, qualify other models or
+hosts, activate a production deployment, or turn the local seven-day CLI
+admission into a general production qualification. The synthetic confined fixture
+above remains the independent evidence for effective tool inventory and escape
+denials; the live smoke does not replace it.

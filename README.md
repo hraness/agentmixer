@@ -2,9 +2,10 @@
 # AgentMixer
 
 AgentMixer is a provider-neutral foundation for applications that give an agent
-a small, explicit tool surface. Its first consumer is Textbutler. The package's
-public contract and provider qualification are still being developed; see the
-qualification limits below before relying on any provider adapter.
+a small, explicit tool surface — and a standalone CLI that fronts coding-agent
+subscriptions through one interface. Its first consumer is Textbutler. The
+package's public contract and provider qualification are still being developed;
+see the qualification limits below before relying on any provider adapter.
 <!-- hraness:agentmixer-landing:end -->
 
 It provides:
@@ -24,13 +25,13 @@ Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
 versioned GitHub archive to a Bun project:
 
 ```sh
-bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.1.1/hraness-agentmixer-0.1.1.tgz
+bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.2.0/hraness-agentmixer-0.2.0.tgz
 ```
 
 The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):
 
 ```sh
-npm install --save-exact --ignore-scripts @hraness/agentmixer@0.1.1
+npm install --save-exact --ignore-scripts @hraness/agentmixer@0.2.0
 ```
 
 ## Standalone package
@@ -58,6 +59,57 @@ runtimes. Releases are published through the repository's
 canonical artifact and `@hraness/agentmixer` on npm is an exact-byte mirror
 published with OIDC provenance. See `docs/publishing.md` for the release
 contract.
+
+## Command-line interface
+
+The package ships an `agentmixer` executable — a standalone terminal interface
+that drives the same task runtime the library exposes. Installing the package
+puts `agentmixer` on the PATH:
+
+```sh
+npm install -g --ignore-scripts @hraness/agentmixer
+agentmixer doctor            # inspect provider binaries, admit this runtime
+agentmixer auth claude       # sign in with a Claude subscription
+agentmixer                   # open the chat in the current directory
+agentmixer run -p "task"     # one headless turn
+agentmixer sessions          # list local sessions
+agentmixer resume <id>       # continue a session
+```
+
+`agentmixer` is the kernel layer: one local CLI that keeps provider account
+custody, process lifecycle, brokered workspace tools, and unified responses on
+this machine. Cloud sync and orchestration belong to higher-level products
+built on this package; sessions are local-only.
+
+The chat keeps the model's entire tool surface inside the opened directory:
+`workspace.list`, `workspace.read`, `workspace.search`, `workspace.write`, and
+bounded public `web.fetch`. There is no shell, process, or arbitrary-path
+operation. Writes are atomic and require the file's current revision, so a
+stale or speculative edit fails instead of clobbering. `/help` lists the
+in-session commands; Ctrl-C cancels a running turn and Ctrl-D exits.
+
+State lives under `~/.agentmixer` (mode `0700`, override with
+`AGENTMIXER_STATE`): a SQLite session registry, bounded JSONL transcripts,
+per-provider auth directories, and the local admission records `doctor`
+writes. Credentials never enter a workspace; a Claude subscription sign-in
+populates a dedicated config directory instead of the account's normal Claude
+configuration, so provider hooks, plugins, skills and settings cannot leak
+into a task.
+
+`doctor` inspects the provider binary (explicit `AGENTMIXER_CLAUDE` /
+`AGENTMIXER_CODEX` pin, then PATH and known install locations), requires the
+exact pinned version, records its SHA-256, and writes a time-boxed local
+admission record binding that executable, this runtime build, and the
+capability profile digest. Any drift — a replaced binary, a new release, an
+edited profile — revokes admission until `doctor` runs again. The adapter
+re-proves the effective boundary on every run: `doctor`'s record is a gate,
+not a sandbox attestation.
+
+Claude is the working provider today. Codex discovery is implemented, but
+managed sign-in and task admission stay gated: they require the trusted
+protocol manifest and pinned parent runtime described in
+[MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot
+self-produce. `--provider codex` fails closed until that evidence exists.
 
 ## Application-owned capability profiles
 

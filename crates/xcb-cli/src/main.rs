@@ -736,7 +736,6 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 let (run, run_digest) = store
                     .recovery_candidate(&run_id)?
                     .ok_or(Error::Unavailable("run not found"))?;
-                let account = store.account(&run.account)?;
                 let pid = run.pid.ok_or(Error::Conflict(
                     "run has no process group; recovery requires a running phase with a recorded pid",
                 ))?;
@@ -748,12 +747,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 if !yes {
                     if cli.json {
                         print_json(
-                            json!({"version":1,"dryRun":true,"run":run.id,"account":account.id,"phase":run.phase,"pid":pid}),
+                            json!({"version":1,"dryRun":true,"run":run.id,"phase":run.phase,"pid":pid}),
                         )?;
                     } else {
                         println!(
-                            "Would recover run {} · account {} · phase {} · process group {}.\nRepeat with --yes after verifying the process group is absent.",
-                            run.id, account.label, run.phase, pid
+                            "Would recover run {} · phase {} · process group {}.\nRepeat with --yes after verifying the process group is absent.",
+                            run.id, run.phase, pid
                         );
                     }
                     return Ok(0);
@@ -762,28 +761,26 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 let settled = store.recover_run(&run_id, &run_digest, now_ms())?;
                 if cli.json {
                     print_json(
-                        json!({"version":1,"recovered":settled.id,"account":settled.account,"phase":settled.phase,"pid":pid}),
+                        json!({"version":1,"recovered":settled.id,"phase":settled.phase,"pid":pid}),
                     )?;
                 } else {
                     println!(
-                        "Recovered run {} · account {} · process group {} confirmed absent",
-                        settled.id, account.label, pid
+                        "Recovered run {} · process group {} confirmed absent",
+                        settled.id, pid
                     );
                 }
             } else {
                 let runs = store.unsettled_runs()?;
                 if cli.json {
-                    print_json(json!({"version":1,"runs":runs}))?;
+                    print_json(
+                        json!({"version":1,"runs":runs.iter().map(|run| json!({"id":run.id,"phase":run.phase,"pid":run.pid,"createdAtMs":run.created_at_ms})).collect::<Vec<_>>()}),
+                    )?;
                 } else if runs.is_empty() {
                     println!("No unsettled runs.");
                 } else {
                     println!("Unsettled runs:");
                     for run in runs {
-                        let account = store.account(&run.account)?;
-                        println!(
-                            "  {} · {} · phase {} · pid {:?}",
-                            run.id, account.label, run.phase, run.pid
-                        );
+                        println!("  {} · phase {} · pid {:?}", run.id, run.phase, run.pid);
                     }
                     println!(
                         "Use `xcb recover <run-id> --yes` after verifying the process group is absent."

@@ -33,6 +33,7 @@ pub struct Extensions {
     pub gobstopper: ContextPolicy,
     pub usage: bool,
     pub aicharts_upload: bool,
+    pub aicharts_export: bool,
     pub hooks: bool,
 }
 impl Default for Extensions {
@@ -42,6 +43,7 @@ impl Default for Extensions {
             gobstopper: ContextPolicy::default(),
             usage: true,
             aicharts_upload: false,
+            aicharts_export: false,
             hooks: false,
         }
     }

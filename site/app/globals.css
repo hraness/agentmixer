@@ -270,3 +270,5 @@ a { text-underline-offset: 0.2em; }
   border-color: var(--hraness-material-seam);
   color: var(--hraness-material-ink);
 }
+
+.agentmixer-topic-icon { display: block; width: 88px; height: 88px; margin: 0 0 18px; }

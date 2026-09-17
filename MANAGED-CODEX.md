@@ -105,8 +105,17 @@ removed) before the account lock may release; a failed start or unproven join
 holds custody like any other launch-boundary failure. How a provider runtime
 consumes the socket is its own integration contract — the environment
 variable is admission plumbing, not a native Codex consumption guarantee.
-`qualification/linux-egress.ts` is the kernel-boundary evidence fixture for
-this path.
+Two consumption paths now exist: a cooperative runtime links the public
+`egress-client.ts` surface, and a stock binary rides the spec's
+`egressForward` entry — the shipped `sandbox/loopback-forwarder.cjs` becomes
+the namespace entry point under an admitted JS runtime, serves `CONNECT` on
+a fixed loopback port, and launches the child with standard `HTTPS_PROXY`
+variables. `qualification/linux-egress.ts` is the kernel-boundary evidence
+fixture for the bridge path, and `qualification/linux-loopback.ts` exercises
+the shipped forwarder end-to-end with stock `curl`; the `Qualification`
+workflow runs both on `ubuntu-24.04`. Note that Ubuntu's default AppArmor
+user-namespace restriction denies bwrap outright — the host must lift it
+(`kernel.apparmor_restrict_unprivileged_userns=0`) before any plan can run.
 
 `createManagedCodexAccountFactory()` in Textbutler's `managed-codex.ts` composes
 the controller, stdio transport and process helper. Its admission inputs come

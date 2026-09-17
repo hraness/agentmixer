@@ -114,7 +114,16 @@ process can exec only its own verified snapshot, write only to the per-run
 scratch and the managed config directory, and reach the network only over TCP
 443 and the system resolver — with no keychain, Mach credential service, or
 other-binary execution access (a provider's attempts to spawn `sh`, `git` or
-`security` are denied and observed). Other platforms keep bounded-process
+`security` are denied and observed). On Linux each run plans through an
+admitted `bwrap` artifact: private user/mount/pid/net namespaces, read-only
+binds for the snapshot and its library closure, and egress through the
+session's unix-socket bridge via the shipped in-namespace CONNECT forwarder
+(`sandbox/loopback-forwarder.cjs`), which hands the provider standard
+`HTTPS_PROXY` semantics on a loopback port — no provider cooperation needed.
+When that surface cannot be admitted (no bwrap, or a host that refuses
+unprivileged user namespaces — stock Ubuntu 23.10+ requires
+`sysctl kernel.apparmor_restrict_unprivileged_userns=0`), the CLI refuses to
+run rather than fall back unsandboxed. Other platforms keep bounded-process
 custody without an OS-confinement claim. The sandbox is enforcement on top of
 the broker boundary, not a substitute for it.
 
@@ -591,8 +600,19 @@ DNS or TCP itself — it speaks `CONNECT host:443` over the socket and the host
 bridge resolves and dials, refusing every port but 443 and any host outside
 the admitted exact-host allowlist. The network namespace stays unshared either
 way, so the socket is the child's only egress path; without one, provider
-networking still refuses to plan. The bridge is an internal host seam
-(`src/egress-bridge.ts`), not a public export. There
+networking still refuses to plan.
+
+Two consumption paths exist. A cooperative in-sandbox runtime uses the public
+consumer (`src/egress-client.ts`): `connectEgress` /
+`connectEgressTls` / `createEgressHttpsAgent` / `fetchViaEgress` speak the
+`AGENTMIXER_EGRESS_SOCKET` contract directly, bound CONNECT size and response
+bytes, pin TLS SNI to the target host, and refuse anything but HTTPS on 443.
+A stock binary that does not know the contract gets an `egressForward` spec
+entry instead: an admitted JS runtime and the shipped forwarder script become
+the namespace entry point, the forwarder serves `CONNECT` on a fixed loopback
+port, and the child receives `HTTPS_PROXY` — the private netns is created
+empty, so the fixed port cannot collide. The bridge itself remains an
+internal host seam (`src/egress-bridge.ts`), not a public export. There
 is no fallback — a spec whose admitted platform the backend cannot enforce,
 an unverified artifact, or an unexpressible policy refuses the plan rather
 than launching unsandboxed. The spec's `platform` is admission evidence about
@@ -616,7 +636,13 @@ boundary's companion: the canary asserts the mounted socket answers CONNECT,
 bytes tunnel through it, a foreign unix path and a direct TCP connect are
 denied inside the same namespace, and the join receipt reports listener,
 socket-set and path removal — against a synthetic dialer, with no resolver
-or provider endpoint involved.
+or provider endpoint involved. `qualification/linux-loopback.ts` completes
+the chain: a stock `curl` under `HTTPS_PROXY` traverses forwarder → bridge →
+a local `openssl s_server`, proving the stock-binary path without provider
+cooperation. The `Qualification` workflow runs all three on `ubuntu-24.04`
+CI and uploads the JSON evidence — including the recorded fact that Ubuntu's
+default AppArmor user-namespace restriction blocks bwrap entirely until the
+host lifts it (`kernel.apparmor_restrict_unprivileged_userns=0`).
 
 ## Ownership boundaries
 

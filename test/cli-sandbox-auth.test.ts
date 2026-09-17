@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-import { claudeCliSandboxPolicy, claudeCliProcessFactory, seatbeltAvailable } from "../src/cli/sandbox.ts";
+import { claudeCliSandboxPolicy, claudeCliProcessFactory, seatbeltAvailable, type CliLinuxSandbox } from "../src/cli/sandbox.ts";
+import { planBwrapPolicy, type OsSandboxSpec } from "../src/os-sandbox.ts";
 import { readClaudeOAuthToken, claudeAuthStatus } from "../src/cli/auth.ts";
 import { SqliteAccountLeases } from "../src/accounts.ts";
 import { openAccountDatabase } from "../src/sqlite-port.ts";
@@ -49,6 +50,59 @@ describe("cli claude seatbelt policy", () => {
       expect(claudeCliProcessFactory(base.accountHome)).toBeUndefined();
       expect(await seatbeltAvailable()).toBe(false);
     }
+  });
+});
+
+describe("cli claude linux sandbox", () => {
+  test("linux without a prepared sandbox never produces a factory", () => {
+    expect(claudeCliProcessFactory("/var/acct", undefined, "linux")).toBeUndefined();
+    expect(claudeCliProcessFactory("/var/acct", undefined, "freebsd")).toBeUndefined();
+  });
+
+  test("linux factory plans through the forwarder, persists the policy, and defaults the sandbox env", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-cli-linux-")));
+    try {
+      const runDir = join(dir, "run"), account = join(dir, "acct");
+      await mkdir(runDir, { recursive: true }); await mkdir(account, { recursive: true });
+      const executable = join(runDir, "provider");
+      await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o500 });
+      const socket = join(dir, "egress.sock"), runtime = join(dir, "rt"), script = join(dir, "fwd.js");
+      // /bin/true exists on every host the tests run on; the bwrap argv it
+      // receives is irrelevant since it exits immediately.
+      const wrapper = "/bin/true";
+      let specSeen: OsSandboxSpec | undefined;
+      let envSeen: Readonly<Record<string, string>> | undefined;
+      const linux: CliLinuxSandbox = {
+        socketPath: socket,
+        plan(input) {
+          specSeen = { platform: "linux", executable: input.executable, scratch: input.scratch,
+            accountHome: input.accountHome, network: "provider-tcp443-dns", egressSocket: socket,
+            egressForward: { runtime, script, port: 48123 }, policyPath: input.policyPath };
+          const real = planBwrapPolicy(specSeen, wrapper);
+          return { ...real, wrap(w) { envSeen = w.env; return real.wrap(w); } };
+        },
+        close: () => Promise.resolve({} as never),
+      };
+      const factory = claudeCliProcessFactory(account, linux, "linux")!;
+      expect(typeof factory).toBe("function");
+      const handle = factory({ executable, args: ["--serve"], env: { MARKER: "1" }, cwd: runDir,
+        onViolation: () => {}, binding: { runId: "r", accountId: "a", workspaceId: "w" } });
+      await handle.stopAndJoin().catch(() => {});
+      // The policy artifact lands outside the writable scratch, recording the
+      // forwarder entry point in canonical form.
+      const policy = JSON.parse(await readFile(join(runDir, "sandbox.json"), "utf8"));
+      expect(policy.backend).toBe("bwrap");
+      expect(policy.egress).toEqual({ socket, protocol: "connect-tcp443",
+        forwarder: { runtime, script, port: 48123, protocol: "http-connect-loopback" } });
+      expect(specSeen!.scratch).toBe(join(runDir, "scratch"));
+      expect(specSeen!.accountHome).toBe(account);
+      // --clearenv drops everything absent: PATH/HOME/TMPDIR default in, and
+      // the adapter-closed map rides through.
+      expect(envSeen!.PATH).toBe("/usr/bin:/bin");
+      expect(envSeen!.HOME).toBe(join(runDir, "scratch"));
+      expect(envSeen!.TMPDIR).toBe(join(runDir, "scratch"));
+      expect(envSeen!.MARKER).toBe("1");
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });
 

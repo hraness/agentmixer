@@ -27,7 +27,7 @@ function compare(left: readonly [bigint, bigint, bigint], right: readonly [bigin
   return 0;
 }
 
-describe("AgentMixer site source contract", () => {
+describe("xcb site source contract", () => {
   test("advertises only a verified published release that does not exceed the source version", async () => {
     const [home, publication, packageSource] = await Promise.all([
       read("app/page.tsx"),
@@ -45,7 +45,7 @@ describe("AgentMixer site source contract", () => {
     const published = stableVersion(admitted.version, "published version");
     const source = stableVersion(packageJson.version, "source version");
     expect(compare(published, source)).toBeLessThanOrEqual(0);
-    expect(publishedRelease.verificationRun).toMatch(/^https:\/\/github\.com\/hraness\/agentmixer\/actions\/runs\/[1-9][0-9]*$/u);
+    expect(publishedRelease.verificationRun).toMatch(/^https:\/\/github\.com\/hraness\/xcb\/actions\/runs\/[1-9][0-9]*$/u);
     expect(home).toContain('import { publishedRelease } from "./publication"');
     expect(home).toContain("const releaseVersion = publishedRelease?.version;");
     expect(home).not.toContain("package.json");
@@ -62,9 +62,9 @@ describe("AgentMixer site source contract", () => {
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.13"');
     expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.10.0"');
     expect(home).toContain('import { AskAiAboutThis } from "@hraness/ui"');
-    expect(home).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev" />');
-    expect(docs).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev/docs" />');
-    expect(generated).toContain('export const readmeTitle = "AgentMixer";');
+    expect(home).toContain('<AskAiAboutThis className="ask-ai" url="https://xcb.dev" />');
+    expect(docs).toContain('<AskAiAboutThis className="ask-ai" url="https://xcb.dev/docs" />');
+    expect(generated).toContain('export const readmeTitle = "xcb";');
     expect(generated).toContain("export const readmeHtml = ");
   });
 
@@ -78,17 +78,17 @@ describe("AgentMixer site source contract", () => {
 
   test("keeps the sitemap and robots on the canonical origin", async () => {
     const [sitemap, robots] = await Promise.all([read("public/sitemap.xml"), read("public/robots.txt")]);
-    expect(sitemap).toContain("<loc>https://agentmixer.dev/</loc>");
-    expect(sitemap).toContain("<loc>https://agentmixer.dev/docs</loc>");
-    expect(robots).toContain("Sitemap: https://agentmixer.dev/sitemap.xml");
+    expect(sitemap).toContain("<loc>https://xcb.dev/</loc>");
+    expect(sitemap).toContain("<loc>https://xcb.dev/docs</loc>");
+    expect(robots).toContain("Sitemap: https://xcb.dev/sitemap.xml");
   });
 
   test("keeps the llms.txt map and docs social metadata on the canonical origin", async () => {
     const [llms, docs] = await Promise.all([read("public/llms.txt"), read("app/docs/page.tsx")]);
-    expect(llms).toContain("https://agentmixer.dev/");
-    expect(llms).toContain("https://agentmixer.dev/docs");
+    expect(llms).toContain("https://xcb.dev/");
+    expect(llms).toContain("https://xcb.dev/docs");
     expect(llms).not.toContain("http://");
-    expect(docs).toContain('siteName: "AgentMixer"');
+    expect(docs).toContain('siteName: "xcb"');
     expect(docs).toContain('card: "summary_large_image"');
   });
 });
@@ -96,7 +96,7 @@ describe("AgentMixer site source contract", () => {
 
 test("publication metadata fails closed on malformed or partially verified releases", () => {
   expect(parsePublishedRelease({ version: null, verificationRun: null })).toBeNull();
-  const verificationRun = "https://github.com/hraness/agentmixer/actions/runs/123";
+  const verificationRun = "https://github.com/hraness/xcb/actions/runs/123";
   expect(parsePublishedRelease({ version: "0.20.0", verificationRun })).toEqual({ version: "0.20.0", verificationRun });
   for (const value of [null, {}, { version: "0.20.0", verificationRun: null }, { version: "0.20.0", verificationRun: "https://example.com" }, { version: "9007199254740992.0.0", verificationRun }, { version: "0.20.0", verificationRun, extra: true }]) {
     expect(() => parsePublishedRelease(value)).toThrow();

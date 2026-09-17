@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "AgentMixer — One qualified seam between your application and its agents";
+export const alt = "xcb — Excalibur. Your agents. Your terminal. Your edge.";
 export const size = { height: 630, width: 1200 };
 export const contentType = "image/png";
 
@@ -21,17 +21,17 @@ export default function OpengraphImage() {
         }}
       >
         <div style={{ color: "#8a857e", fontSize: 28, letterSpacing: 2, textTransform: "uppercase" }}>
-          AgentMixer
+          xcb / Excalibur
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <div style={{ fontSize: 64, fontWeight: 700, lineHeight: 1.1 }}>
-            One qualified seam between your application and its agents
+            Your agents. Your terminal. Your edge.
           </div>
           <div style={{ color: "#4a463f", fontSize: 30, lineHeight: 1.35 }}>
-            Provider-neutral routing, shared account custody, and a bounded tool broker.
+            A local, composable workspace for coding agents.
           </div>
         </div>
-        <div style={{ color: "#8a857e", fontSize: 26 }}>agentmixer.dev</div>
+        <div style={{ color: "#8a857e", fontSize: 26 }}>xcb.dev</div>
       </div>
     ),
     size,

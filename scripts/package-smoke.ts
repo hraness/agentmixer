@@ -169,7 +169,7 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
     const repository = manifest.repository as JsonRecord | undefined;
     if (
       repository?.type !== "git"
-      || repository.url !== "git+https://github.com/hraness/agentmixer.git"
+      || repository.url !== "git+https://github.com/hraness/xcb.git"
       || repository.directory !== undefined
     ) problems.push("packed repository must bind this repository for npm provenance");
     const files = manifest.files;

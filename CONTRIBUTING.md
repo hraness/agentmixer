@@ -1,6 +1,6 @@
 # Contributing
 
-AgentMixer is early and the contract is deliberately narrow. Contributions are
+xcb is early and the contract is deliberately narrow. Contributions are
 welcome; the bar is that the custody, qualification, and tool-surface
 invariants stay checkable.
 

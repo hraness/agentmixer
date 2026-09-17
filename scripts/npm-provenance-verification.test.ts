@@ -13,7 +13,7 @@ const sha512 = "a".repeat(128);
 
 function audit(
   overrides: Readonly<Record<string, unknown>> = {},
-  invocation = "https://github.com/hraness/agentmixer/actions/runs/123/attempts/3",
+  invocation = "https://github.com/hraness/xcb/actions/runs/123/attempts/3",
   releasePackage: ReleasePackage = rootReleasePackage,
 ): unknown {
   const tag = `${releasePackage.tagPrefix}${version}`;
@@ -31,7 +31,7 @@ function audit(
           workflow: {
             path: releasePackage.workflowPath,
             ref: `refs/tags/${tag}`,
-            repository: "https://github.com/hraness/agentmixer",
+            repository: "https://github.com/hraness/xcb",
           },
         },
         internalParameters: {
@@ -42,7 +42,7 @@ function audit(
         },
         resolvedDependencies: [{
           digest: { gitCommit: verifiedSha },
-          uri: `git+https://github.com/hraness/agentmixer@refs/tags/${tag}`,
+          uri: `git+https://github.com/hraness/xcb@refs/tags/${tag}`,
         }],
       },
       runDetails: {
@@ -127,7 +127,7 @@ describe("npm provenance verification policy", () => {
       requiredRunId: "123",
     })).toThrow("allowed workflow run attempt");
     expect(() => parseVerifiedNpmProvenance(
-      audit({}, "https://github.com/hraness/agentmixer/actions/runs/123/attempts/0"),
+      audit({}, "https://github.com/hraness/xcb/actions/runs/123/attempts/0"),
       coordinate,
     )).toThrow("invocation");
   });
@@ -141,19 +141,19 @@ describe("npm provenance verification policy", () => {
             workflow: {
               path: ".github/workflows/release.yml",
               ref: `refs/tags/${verifiedTag}`,
-              repository: "https://github.com/hraness/agentmixer",
+              repository: "https://github.com/hraness/xcb",
             },
           },
           internalParameters: { github: { event_name: "push", repository_id: "1373635996" } },
           resolvedDependencies: [{
             digest: { gitCommit: "c".repeat(40) },
-            uri: `git+https://github.com/hraness/agentmixer@refs/tags/${verifiedTag}`,
+            uri: `git+https://github.com/hraness/xcb@refs/tags/${verifiedTag}`,
           }],
         },
         runDetails: {
           builder: { id: "https://github.com/actions/runner/github-hosted" },
           metadata: {
-            invocationId: "https://github.com/hraness/agentmixer/actions/runs/123/attempts/3",
+            invocationId: "https://github.com/hraness/xcb/actions/runs/123/attempts/3",
           },
         },
       },

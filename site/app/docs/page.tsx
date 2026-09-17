@@ -6,19 +6,19 @@ import { readmeHtml, readmeTitle } from "../readme.generated";
 
 export const metadata: Metadata = {
   title: `${readmeTitle} documentation`,
-  description: "The complete AgentMixer README: adapters, qualification, account custody, capability profiles, and release notes.",
+  description: "xcb documentation: the native terminal direction, local accounts, panes, extensions, and the retained AgentMixer compatibility package.",
   alternates: { canonical: "/docs" },
   openGraph: {
     title: `${readmeTitle} documentation`,
-    description: "The complete AgentMixer README.",
+    description: "The complete xcb README.",
     type: "article",
-    siteName: "AgentMixer",
+    siteName: "xcb",
     url: "/docs",
   },
   twitter: {
     card: "summary_large_image",
     title: `${readmeTitle} documentation`,
-    description: "The complete AgentMixer README.",
+    description: "The complete xcb README.",
   },
 };
 
@@ -28,14 +28,14 @@ export default function Docs() {
       <a className="skip-link" href="#main">Skip to content</a>
       <main id="main" tabIndex={-1} className="document-page">
         <nav aria-label="Site" className="document-nav">
-          <a href="/">AgentMixer home</a>
-          <a href="https://github.com/hraness/agentmixer">Source on GitHub</a>
-          <a href="https://github.com/hraness/agentmixer/releases">Releases</a>
+          <a href="/">xcb home</a>
+          <a href="https://github.com/hraness/xcb">Source on GitHub</a>
+          <a href="https://github.com/hraness/xcb/releases">Releases</a>
         </nav>
-        {publishedRelease === null && <p>Release preview: the installation examples below target the forthcoming AgentMixer release. <a href="https://github.com/hraness/agentmixer/releases">Check published releases before installing</a>.</p>}
+        {publishedRelease === null && <p>Release preview: the installation examples below target the forthcoming xcb release. <a href="https://github.com/hraness/xcb/releases">Check published releases before installing</a>.</p>}
         <article dangerouslySetInnerHTML={{ __html: readmeHtml }} />
       </main>
-      <AskAiAboutThis className="ask-ai" url="https://agentmixer.dev/docs" />
+      <AskAiAboutThis className="ask-ai" url="https://xcb.dev/docs" />
     </>
   );
 }

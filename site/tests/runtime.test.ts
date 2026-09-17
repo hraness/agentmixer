@@ -96,13 +96,14 @@ describe("built AgentMixer site", () => {
   test("serves the homepage, docs, and static discovery files through Next", async () => {
     const server = await startBuiltSite();
     try {
-      const [homeResponse, docsResponse, robotsResponse, missingResponse] = await Promise.all([
+      const [homeResponse, docsResponse, robotsResponse, llmsResponse, missingResponse] = await Promise.all([
         fetch(`${server.origin}/`, { redirect: "manual" }),
         fetch(`${server.origin}/docs`, { redirect: "manual" }),
         fetch(`${server.origin}/robots.txt`, { redirect: "manual" }),
+        fetch(`${server.origin}/llms.txt`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
       ]);
-      const [home, docs, robots] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text()]);
+      const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
       expect(homeResponse.status).toBe(200);
       expect(home).toContain(publishedRelease === null ? "First AgentMixer release in preparation" : `Current verified release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://agentmixer.dev"');
@@ -112,6 +113,11 @@ describe("built AgentMixer site", () => {
       expect(docs).toContain('id="standalone-package"');
       expect(robotsResponse.status).toBe(200);
       expect(robots).toContain("Sitemap: https://agentmixer.dev/sitemap.xml");
+      expect(llmsResponse.status).toBe(200);
+      expect(llms).toContain("https://agentmixer.dev/docs");
+      expect(docs).toContain('og:site_name" content="AgentMixer"');
+      expect(docs).toContain('twitter:title" content="AgentMixer documentation"');
+      expect(docs).toContain('twitter:card" content="summary_large_image"');
       expect(missingResponse.status).toBe(404);
     } finally {
       await stopBuiltSite(server);

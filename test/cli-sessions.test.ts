@@ -60,6 +60,39 @@ describe("cli session store", () => {
     }
   });
 
+  test("remove deletes the row and transcript file, and is false when absent", async () => {
+    const { open } = await fixture();
+    const store = await open();
+    try {
+      const session = await store.create({ provider: "claude", accountId: "local", workspace: "/w", model: "m", now: 1 });
+      await store.record(session, [{ role: "user" as const, text: "hello", at: 2 }], 3);
+      expect(await store.transcript(session.id)).toHaveLength(1);
+      expect(await store.remove(session.id)).toBe(true);
+      expect(store.get(session.id)).toBeNull();
+      expect(await store.transcript(session.id)).toHaveLength(0);
+      expect(await store.remove(session.id)).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("prune removes only sessions idle before the cutoff", async () => {
+    const { open } = await fixture();
+    const store = await open();
+    try {
+      const old = await store.create({ provider: "claude", accountId: "local", workspace: "/w", model: "m", now: 1 });
+      await store.record(old, [{ role: "user" as const, text: "old", at: 2 }], 2);
+      const fresh = await store.create({ provider: "claude", accountId: "local", workspace: "/w", model: "m", now: 10_000 });
+      await store.record(fresh, [{ role: "user" as const, text: "new", at: 10_000 }], 10_000);
+      expect(await store.prune(5_000)).toBe(1);
+      expect(store.get(old.id)).toBeNull();
+      expect(store.get(fresh.id)?.id).toBe(fresh.id);
+      expect(await store.prune(0)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
   test("state root requires a physical private directory", async () => {
     const { base } = await fixture();
     await chmod(join(base), 0o755);

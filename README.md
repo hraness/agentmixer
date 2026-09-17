@@ -75,6 +75,8 @@ agentmixer auth logout       # remove the stored credential
 agentmixer                   # open the chat in the current directory
 agentmixer run -p "task"     # one headless turn (--cwd picks the workspace)
 agentmixer sessions          # list local sessions
+agentmixer sessions rm <id>  # remove a session and its transcript
+agentmixer sessions prune    # drop sessions idle over 30 days (or N days)
 agentmixer resume [id]       # continue a session (default: most recent)
 ```
 

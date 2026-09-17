@@ -135,6 +135,22 @@ describe("agentmixer CLI", () => {
     expect(stdout.trim()).toBe("");
   });
 
+  test("sessions rm requires an id and reports a missing session", async () => {
+    expect((await cli(["sessions", "rm"])).stderr).toContain("usage:");
+    const missing = await cli(["sessions", "rm", "s_nonexistent"]);
+    expect(missing.code).toBe(2);
+    expect(missing.stderr).toContain("session not found");
+  });
+
+  test("sessions prune validates days and prunes nothing fresh", async () => {
+    const empty = await cli(["sessions", "prune"]);
+    expect(empty.code).toBe(0);
+    expect(empty.stdout).toContain("pruned 0 sessions");
+    const bad = await cli(["sessions", "prune", "bogus"]);
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain("invalid days");
+  });
+
   test("unknown option fails with usage error", async () => {
     const { code, stderr } = await cli(["chat", "--bogus"]);
     expect(code).toBe(2);

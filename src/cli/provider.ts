@@ -5,7 +5,8 @@ import { CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import type { CapabilityProfile } from "../capabilities.ts";
 
 import { inspectCliBinary, type CliBinaryInspection, type CliProviderName } from "./binaries.ts";
-import { providerAuthDirs } from "./auth.ts";
+import { providerAuthDirs, readClaudeOAuthToken } from "./auth.ts";
+import { claudeCliProcessFactory } from "./sandbox.ts";
 import { buildQualificationRecord, readCliQualification, toTaskQualification, writeCliQualification, type CliQualificationRecord } from "./qualification.ts";
 import { privateDirectory } from "./state.ts";
 
@@ -77,9 +78,20 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
     const runtime = Object.freeze({ executablePath: inspection.executablePath, executableSha256: inspection.sha256 });
     const identity = claudeTaskRuntimeIdentity(inspection.sha256, "subscription");
     const qualification = toTaskQualification(record, { route, profile, runtimeVersion: identity.version, runtimeDigest: identity.digest });
+    // On darwin the provider process is wrapped in seatbelt: writable access
+    // is confined to the per-run scratch and the managed auth directory, and
+    // egress is limited to TCP 443 plus the system resolver. Off-darwin keeps
+    // the existing bounded-process custody (no OS sandbox claim).
+    const processFactory = claudeCliProcessFactory(config);
     const adapter = createClaudeTaskAdapter({
       route, runtime, stateRoot, authDirectory: config,
       authentication: "subscription", qualification, systemPrompt: CLI_SYSTEM_PROMPT,
+      subscriptionToken: async () => {
+        const token = await readClaudeOAuthToken(stateRoot);
+        if (token === null) throw new Error("CLAUDE_OAUTH_TOKEN_REQUIRED");
+        return token;
+      },
+      ...(processFactory === undefined ? {} : { processFactory }),
     });
     if (qualification.status !== "qualified") return Object.freeze({ status: "unadmitted", inspection });
     return Object.freeze({ status: "ready", adapter, inspection, record });

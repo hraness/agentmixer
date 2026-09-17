@@ -10,6 +10,7 @@ import { boundedText } from "./validation.ts";
 import { ensureCliState } from "./cli/state.ts";
 import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, type CliProviderName } from "./cli/binaries.ts";
 import { claudeLogin, claudeAuthStatus } from "./cli/auth.ts";
+import { seatbeltAvailable } from "./cli/sandbox.ts";
 import { admitCliProvider, openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./cli/provider.ts";
 import { CliSessionStore } from "./cli/sessions.ts";
 import { createCliWorkspace, createCliWorkspaceProfile } from "./cli/workspace.ts";
@@ -92,6 +93,10 @@ async function commandDoctor(stateRoot: string): Promise<number> {
     const detail = admission.record !== null ? green(admission.detail) : yellow(admission.detail);
     process.stdout.write(`${admission.record !== null ? green("✓") : yellow("!")} ${provider}: ${admission.inspection.version} ${dim(admission.inspection.sha256.slice(0, 16) + "…")} — ${detail}\n`);
     if (admission.record !== null) admitted += 1;
+  }
+  if (process.platform === "darwin") {
+    const seatbelt = await seatbeltAvailable();
+    process.stdout.write(`${seatbelt ? green("✓") : yellow("!")} sandbox: seatbelt ${seatbelt ? "available" : "unavailable"} ${dim("(claude runs confined; availability is not attestation)")}\n`);
   }
   // Doctor succeeds when at least one provider is admitted; an absent optional
   // provider is a diagnostic line, not a failure.

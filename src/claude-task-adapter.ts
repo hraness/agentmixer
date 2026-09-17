@@ -28,6 +28,11 @@ const hash = (data: string | Uint8Array) => createHash("sha256").update(data).di
 
 export type ClaudeTaskAuthentication = "api" | "subscription";
 
+/** Returns the account's long-lived Claude subscription OAuth token
+ * (`sk-ant-oat…`) for one task, or fails closed. The host owns storage; the
+ * token reaches the provider only through CLAUDE_CODE_OAUTH_TOKEN env. */
+export type ClaudeSubscriptionTokenResolver = (accountId: string, signal: AbortSignal) => Promise<string>;
+
 export type ClaudeTaskAdapterOptions = Readonly<{
   route: AgentTaskRoute;
   runtime: Readonly<{ executablePath: string; executableSha256: string }>;
@@ -38,6 +43,8 @@ export type ClaudeTaskAdapterOptions = Readonly<{
   authDirectory: string;
   /** Required when `authentication` is `"api"`. */
   credentials?: ClaudeApiKeyResolver;
+  /** Required when `authentication` is `"subscription"`. */
+  subscriptionToken?: ClaudeSubscriptionTokenResolver;
   authentication: ClaudeTaskAuthentication;
   qualification: TaskRuntimeQualification;
   /** System prompt for the host's own product surface. */
@@ -165,6 +172,7 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
   if (options.route.provider !== "claude") throw Error("CLAUDE_TASK_ROUTE_INVALID");
   if (options.authentication !== "api" && options.authentication !== "subscription") throw Error("CLAUDE_TASK_AUTH_INVALID");
   if (options.authentication === "api" && typeof options.credentials?.withApiKey !== "function") throw Error("CLAUDE_TASK_CREDENTIALS_REQUIRED");
+  if (options.authentication === "subscription" && typeof options.subscriptionToken !== "function") throw Error("CLAUDE_TASK_CREDENTIALS_REQUIRED");
   const authentication = options.authentication;
   const route = Object.freeze({ id: identifier(options.route.id), provider: "claude" as const, authentication });
   if (route.authentication !== options.route.authentication) throw Error("CLAUDE_TASK_ROUTE_INVALID");
@@ -231,7 +239,11 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
             usage: Object.freeze({ inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null }),
             outcome: Object.freeze({ status: "completed", code: null }) });
         } catch (error) {
-          const code = error instanceof Error ? boundedText(error.message, 160) : "CLAUDE_TASK_FAILED";
+          // outcome.code must be identifier-shaped — coerce any message into
+          // a bounded [A-Za-z0-9_.:-] code.
+          const code = error instanceof Error
+            ? (error.message.replaceAll(/[^A-Za-z0-9_.:-]/gu, "_").replaceAll(/^_+|_+$/gu, "").slice(0, 140) || "CLAUDE_TASK_FAILED")
+            : "CLAUDE_TASK_FAILED";
           return Object.freeze({ ...slot.binding, output: null,
             usage: Object.freeze({ inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null }),
             outcome: Object.freeze({ status: "failed", code }) });
@@ -277,7 +289,11 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
     runSignal.addEventListener("abort", abort, { once: true });
     let joined = true;
     try {
-      const cwd = join(directory, "work"), home = join(directory, "home"), temp = join(directory, "tmp");
+      // One writable scratch root so an OS sandbox can admit rw access to
+      // exactly one subtree; the executable snapshot and any policy artifact
+      // stay siblings outside it.
+      const scratch = join(directory, "scratch");
+      const cwd = join(scratch, "work"), home = join(scratch, "home"), temp = join(scratch, "tmp");
       for (const path of [cwd, home, temp]) await mkdir(path, { mode: 0o700, recursive: true });
       const executable = join(directory, "provider");
       const source = await open(runtime.executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -322,6 +338,7 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
         let output: string | undefined;
         let resultSeen = false;
         let failure = false;
+        let detail = "CLAUDE_RUN_FAILED";
         try {
           response = query({ prompt: literalClaudePrompt(request.prompt), options: sdkOptions });
           let received = 0;
@@ -333,14 +350,24 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
               assertTaskInitialization(event, request, broker, cwd, authentication);
               admitted = true;
             } else if (event.type === "result") {
-              if (!admitted || resultSeen || event.subtype !== "success" || event.is_error
-                || Buffer.byteLength(event.result) > request.limits.maxOutputBytes) throw new Error("CLAUDE_RESULT_INVALID");
+              if (!admitted || resultSeen) throw new Error("CLAUDE_RESULT_INVALID");
+              // A provider-declared error result carries a typed subtype (or a
+              // success envelope flagged is_error) — surface an identifier-safe
+              // code rather than collapsing to a bare failure.
+              if (event.is_error || event.subtype !== "success") {
+                const subtype = String(event.subtype).toUpperCase().replaceAll(/[^A-Z0-9_]/gu, "_").slice(0, 60);
+                throw new Error(subtype === "SUCCESS" ? "CLAUDE_TASK_ERROR" : `CLAUDE_TASK_${subtype}`);
+              }
+              if (Buffer.byteLength(event.result) > request.limits.maxOutputBytes) throw new Error("CLAUDE_RESULT_INVALID");
               output = event.result;
               resultSeen = true;
             }
           }
           if (!resultSeen || output === undefined) throw new Error("CLAUDE_RESULT_MISSING");
-        } catch {
+        } catch (runError) {
+          // The thrown message becomes the identifier-shaped outcome code.
+          detail = (runError instanceof Error ? runError.message : "CLAUDE_RUN_FAILED")
+            .replaceAll(/[^A-Za-z0-9_.:-]/gu, "_").replaceAll(/^_+|_+$/gu, "").slice(0, 140) || "CLAUDE_RUN_FAILED";
           failure = true;
         } finally {
           admitted = false;
@@ -352,11 +379,12 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
             }
           } finally {
             delete env.ANTHROPIC_API_KEY;
+            delete env.CLAUDE_CODE_OAUTH_TOKEN;
           }
         }
         slot.processStopped = joined;
         if (!joined) throw new Error("CLAUDE_PROCESS_EXIT_UNPROVEN");
-        if (failure || slot.controller.signal.aborted) throw new Error("CLAUDE_RUN_FAILED");
+        if (failure || slot.controller.signal.aborted) throw new Error(detail);
         return output!;
       };
       const env: Record<string, string> = {
@@ -371,6 +399,9 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
           return await invoke(env);
         });
       }
+      const token = await options.subscriptionToken!(request.accountId, slot.controller.signal);
+      if (typeof token !== "string" || !/^sk-ant-oat\d{2}-[A-Za-z0-9_-]{16,1024}$/u.test(token)) throw new Error("CLAUDE_OAUTH_TOKEN_REQUIRED");
+      env.CLAUDE_CODE_OAUTH_TOKEN = token;
       return await invoke(env);
     } finally {
       clearTimeout(timer);

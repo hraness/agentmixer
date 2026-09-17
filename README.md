@@ -90,11 +90,26 @@ in-session commands; Ctrl-C cancels a running turn and Ctrl-D exits.
 
 State lives under `~/.agentmixer` (mode `0700`, override with
 `AGENTMIXER_STATE`): a SQLite session registry, bounded JSONL transcripts,
-per-provider auth directories, and the local admission records `doctor`
-writes. Credentials never enter a workspace; a Claude subscription sign-in
-populates a dedicated config directory instead of the account's normal Claude
-configuration, so provider hooks, plugins, skills and settings cannot leak
-into a task.
+per-provider config directories, the local admission records `doctor` writes,
+and the subscription credential `auth` stores.
+
+`agentmixer auth claude` runs `claude setup-token` to mint a long-lived
+(one-year) subscription OAuth token, captured and stored mode-0600 in the
+private state root — not the shared login keychain, so it cannot overwrite or
+be overwritten by a normal `claude` sign-in. The token reaches the provider
+only as `CLAUDE_CODE_OAUTH_TOKEN` inside the run's environment; it is never
+written into a workspace or the managed config directory. Claude's config
+directory is still redirected so provider hooks, plugins, skills and settings
+cannot leak into a task.
+
+On macOS each Claude run executes under a seatbelt profile: the provider
+process can exec only its own verified snapshot, write only to the per-run
+scratch and the managed config directory, and reach the network only over TCP
+443 and the system resolver — with no keychain, Mach credential service, or
+other-binary execution access (a provider's attempts to spawn `sh`, `git` or
+`security` are denied and observed). Other platforms keep bounded-process
+custody without an OS-confinement claim. The sandbox is enforcement on top of
+the broker boundary, not a substitute for it.
 
 `doctor` inspects the provider binary (explicit `AGENTMIXER_CLAUDE` /
 `AGENTMIXER_CODEX` pin, then PATH and known install locations), requires the

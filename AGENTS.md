@@ -1,8 +1,10 @@
 # Contents
 
-- `src/` owns provider-neutral routing, account leases, model selection and
-  scoped tool contracts, including the unqualified Devin ACP task adapter
-  (`devin-acp.ts`, `devin-client.ts`, `devin-adapter.ts`, `devin-mcp.ts`).
+- `src/` owns provider-neutral routing, account leases, model selection,
+  scoped tool contracts, the unqualified Devin ACP task adapter
+  (`devin-acp.ts`, `devin-client.ts`, `devin-adapter.ts`, `devin-mcp.ts`),
+  per-account browser-session custody (`browser-session.ts`), and the
+  provider-neutral managed-account controller (`managed-account.ts`).
   `src/index.ts` is the package's complete public surface.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling

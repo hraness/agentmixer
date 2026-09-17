@@ -12,6 +12,7 @@ import { createManagedOfflineProtocol, type OfflineProtocolReceipt } from "./cod
 import type { CodexManagedProcessLauncher } from "./codex-managed-config.ts";
 import type { CodexProcessHandle, CodexProcessReceipt } from "./codex-process.ts";
 import { providerProcessWriteResult, type ProviderProcessWriteResult } from "./process-port.ts";
+import { createSeatbeltOsSandbox, type OsSandboxPlan } from "./os-sandbox.ts";
 import { assertCodexHostFileStable, inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRuntime, type CodexParentRuntimeBinding } from "./codex-host.ts";
 import { assertAgentTaskAccountLease, type AgentTaskAccountLease, type AgentTaskBinding } from "./task-runtime.ts";
 import { identifier, safeInteger } from "./validation.ts";
@@ -27,7 +28,7 @@ export type CodexManagedProcessOptions = Readonly<{
     nativeSha256: string; schemaSha256: string; parentSha256: string }>;
   startupTimeoutMs?: number;
 }>;
-export type CodexManagedSpawn = Readonly<{ executable: "/usr/bin/sandbox-exec"; args: readonly string[]; cwd: string;
+export type CodexManagedSpawn = Readonly<{ executable: string; args: readonly string[]; cwd: string;
   env: Readonly<Record<string, string>>; detached: true; stdio: readonly ["pipe", "pipe", "pipe"] }>;
 /** Synthetic host seam; never exposed through configuration, plugins or tools. */
 export interface CodexManagedProcessSystem {
@@ -265,15 +266,21 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       await mkdir(runtimeRoot, { mode: 0o700 }); runtimeIdentity = await directory(runtimeRoot);
       for (const name of ["home", "tmp", "work"]) await mkdir(join(scratch, name), { mode: 0o700 });
       await copyExecutable(runtime.executablePath, executable, runtime.sha256); state.runtimeSnapshotSha256 = runtime.sha256;
-      const profile = (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable, scratch, accountHome }), profilePath = join(root, "sandbox.sb"); state.profileSha256 = hash(profile);
-      await durableFile(profilePath, profile); await syncDirectory(runtimeRoot);
+      const policyPath = join(root, "sandbox.sb");
+      const sandboxPlan: OsSandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
+        (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+        .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath });
+      state.profileSha256 = sandboxPlan.policySha256;
+      await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
       const inspected = await inspectScratch(scratch); state.scratchContentSha256 = inspected.content; state.scratchIdentitySha256 = inspected.identity;
       await fixedFile(join(accountHome, "config.toml"), configuration); await fixedFile(lockPath, lockContents); await directory(accountHome); admitted();
       state.phase = "launch-pending"; state.launchAttempted = true; persist();
       // This pending record intentionally leaves PID unknown across the spawn
       // crash gap. A thrown spawn is uncertainty, never proof that none started.
-      child = host.spawn(Object.freeze({ executable: "/usr/bin/sandbox-exec", args: Object.freeze(["-f", profilePath, executable, "app-server", "--strict-config", "--listen", "stdio://"]), cwd,
-        env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }), detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
+      const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd,
+        env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }) });
+      child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd,
+        env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
       state.pid = child.pid ?? null;
       child.once("spawn", () => { spawnEvent = true; });
       child.once("exit", (code, signal) => { state.rootExited = true; state.nativeExitCode = code; state.nativeExitSignal = signal; resolveExit(); });

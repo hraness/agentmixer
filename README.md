@@ -487,6 +487,51 @@ credentials or raw payloads. A missing reader returns `null` — it is not a
 zero-usage claim. Nothing here is execution or authentication
 qualification; provider runtime admission remains separate host evidence.
 
+## OS-confinement port
+
+`src/os-sandbox.ts` is the provider-neutral boundary between a closed launch
+specification and the platform sandbox mechanism. A backend turns an
+`OsSandboxSpec` — the admitted executable snapshot, the per-run scratch root,
+an optional persistent account root, a closed read-only file list, a network
+policy label and the durable policy-artifact path — into an `OsSandboxPlan`.
+Planning is asynchronous so a backend can re-verify its own wrapper artifact
+from a checked descriptor; the plan's `wrap()` is synchronous so it can run
+inside provider SDKs that spawn from a synchronous callback. The spec rejects
+relative paths, control bytes, undeclared fields, writable roots that contain
+or enclose the executable, overlapping writable roots, and a policy artifact
+placed inside a writable root.
+
+Two backends ship with the port. `createSeatbeltOsSandbox()` (macOS) accepts a
+host-owned reviewed SBPL generator and wraps argv as the fixed literal
+`/usr/bin/sandbox-exec -f <policy> <executable> ...` — the managed Codex
+launchers now plan through it, byte-identically to their previous inline
+behavior. `createBwrapOsSandbox()` (Linux) re-verifies the admitted `bwrap`
+binary's SHA-256 at plan time and emits private user/mount/pid/ipc/uts/cgroup/
+net namespaces, per-file `--ro-bind` entries, `--bind` for the writable roots,
+`--die-with-parent`, `--new-session`, `--clearenv`, and the closed environment
+rebuilt in sorted `--setenv` order. On Linux only `network: "denied"` is
+plannable: bubblewrap cannot express per-destination egress, so provider
+TCP/443 parity requires a separately qualified unix-socket proxy bridge. There
+is no fallback — a spec whose admitted platform the backend cannot enforce,
+an unverified artifact, or an unexpressible policy refuses the plan rather
+than launching unsandboxed. The spec's `platform` is admission evidence about
+the runtime being launched, not the build host: a backend refuses a spec whose
+declared platform it cannot enforce, so synthetic custody tests exercise the
+real launch path on any host.
+
+`createSandboxedProviderProcessFactory(plan)` composes a plan onto the
+unchanged bounded-provider custody — stdout/stderr bounds, the detached
+process group and SIGTERM/SIGKILL join are identical underneath every backend
+— and `verifyOsSandboxExecutable()` re-checks an admitted artifact's owner,
+file identity, no-follow canonical path and SHA-256. A plan proves policy
+construction and artifact admission only, never kernel enforcement; receipts
+continue to report `productionQualified: false`. `qualification/linux-sandbox.ts`
+is the explicit kernel-boundary fixture for the bwrap backend: a statically
+linked synthetic canary asserts scratch writes, foreign-path absence, a
+routeless network namespace and PID-namespace isolation on the host that runs
+it, and reports blocked evidence instead of guessing when the toolchain or
+namespaces are unavailable.
+
 ## Ownership boundaries
 
 The account and task consumers accept a structural `ProviderProcessPort` through

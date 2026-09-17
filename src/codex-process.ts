@@ -8,6 +8,7 @@ import { Transform, type Readable, type Writable } from "node:stream";
 import { identifier, object, safeInteger } from "./validation.ts";
 import { inspectCodexHostRuntime, type CodexParentRuntimeBinding } from "./codex-host.ts";
 import { inspectCodexScratch } from "./codex-scratch.ts";
+import { createSeatbeltOsSandbox } from "./os-sandbox.ts";
 
 export const CODEX_NATIVE_VERSION = "0.153.4";
 export const CODEX_NATIVE_SHA256 = "87a08119b8effa519f0ecb552dc98043f58a8200bf2ec5da60f76890c33e9c3a";
@@ -191,20 +192,26 @@ export function createCodexProcessLauncher(options: { executablePath: string; st
       await writeFile(executable, bytes, { mode: 0o500, flag: "wx" });
       value.runtimeSnapshotSha256 = hash(await inspectCodexExecutable(executable));
       await writeFile(join(scratch, "state", "config.toml"), input.configuration, { mode: 0o600, flag: "wx" });
-      const profile = codexMacSandbox({ executable, scratch, relayPort: input.relayPort }); value.profileSha256 = hash(profile);
-      const profilePath = join(root, "sandbox.sb"); await writeFile(profilePath, profile, { mode: 0o600, flag: "wx" });
+      const policyPath = join(root, "sandbox.sb");
+      const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
+        codexMacSandbox({ executable: spec.executable, scratch: spec.scratch, relayPort: input.relayPort }) })
+        .plan({ platform: "darwin", executable, scratch, network: "loopback", policyPath });
+      value.profileSha256 = sandboxPlan.policySha256;
+      await writeFile(policyPath, sandboxPlan.policy, { mode: 0o600, flag: "wx" });
       const inspectedScratch = await inspectCodexScratch({ scratch, configuration: input.configuration });
       if (inspectedScratch.configurationSha256 !== value.configSha256) throw new Error("CODEX_SCRATCH_CONFIGURATION_MISMATCH");
       value.scratchContentSha256 = inspectedScratch.contentSha256;
       value.scratchIdentitySha256 = inspectedScratch.identitySha256;
       custodyFd = openSync(custodyPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); persist();
       input.signal.throwIfAborted();
-      child = spawn("/usr/bin/sandbox-exec", ["-f", profilePath, executable, "app-server", "--strict-config", "--listen", "stdio://"], {
-        cwd: join(scratch, "work"), detached: true, stdio: ["pipe", "pipe", "pipe"],
+      const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
         // Exact pinned CLI consumes this before runtime startup, selecting
         // DisabledEphemeral instead of consulting persisted remote-control state.
         env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: join(scratch, "state"), TMPDIR: join(scratch, "tmp"), NO_COLOR: "1",
-          CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" },
+          CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" } });
+      child = spawn(sandboxPlan.executable, [...wrapped.args], {
+        cwd: join(scratch, "work"), detached: true, stdio: ["pipe", "pipe", "pipe"],
+        env: { ...wrapped.env },
       });
     } catch (error) {
       if (custodyFd !== undefined) closeSync(custodyFd);

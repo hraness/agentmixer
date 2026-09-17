@@ -10,6 +10,7 @@ import { inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRunt
 import { identifier, safeInteger } from "./validation.ts";
 import { providerProcessWriteResult, sameProviderProcessBinding, snapshotProviderProcessBinding, type ProviderProcessBinding, type ProviderProcessPort, type ProviderProcessWriteResult } from "./process-port.ts";
 import { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
+import { createSeatbeltOsSandbox } from "./os-sandbox.ts";
 export { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
 
 /** Trusted distribution inputs. A supplied hash is checked, never self-admitted
@@ -31,7 +32,7 @@ export type CodexAccountProcessOptions = Readonly<{
 } & ({ mode: "offline"; deviceCodeAdmission?: never }
   | { mode: "device-code"; deviceCodeAdmission: CodexAccountDeviceCodeAdmission })>;
 export type CodexAccountSpawn = Readonly<{
-  executable: "/usr/bin/sandbox-exec"; args: readonly string[]; cwd: string;
+  executable: string; args: readonly string[]; cwd: string;
   env: Readonly<Record<string, string>>; detached: true; stdio: readonly ["pipe", "pipe", "pipe"];
 }>;
 /** Trusted system seam for synthetic process tests. This is not a plugin, agent
@@ -252,14 +253,20 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
       } finally { await target.close(); }
     } finally { await source.close(); }
     await inspectCodexHostExecutable(executable, runtime.sha256);
-    const profile = selectedProfile({ executable, scratch, accountHome }); state.profileSha256 = hash(profile);
-    const profilePath = join(root, "sandbox.sb"); await durableFile(profilePath, profile); await syncDirectory(runtimeRoot);
+    const policyPath = join(root, "sandbox.sb");
+    const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
+      selectedProfile({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+      .plan({ platform: "darwin", executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath });
+    state.profileSha256 = sandboxPlan.policySha256;
+    await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
     await fixedFile(join(accountHome, "config.toml"), configuration, false); await directory(accountHome); await directory(scratch); alivePreparation();
     alivePreparation(); state.phase = "launch-pending"; state.launchAttempted = true; persist();
     // The preceding durable record deliberately leaves the PID unknown. A
     // crash here requires independent recovery, even if no child was created.
-    child = host.spawn(Object.freeze({ executable: "/usr/bin/sandbox-exec", args: Object.freeze(["-f", profilePath, executable, "app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
-      env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }), detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
+    const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
+      env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }) });
+    child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd: join(scratch, "work"),
+      env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
     state.pid = child.pid ?? null;
     child.once("spawn", () => { spawnEvent = true; });
     child.once("exit", () => { state.rootExited = true; resolveExit(); });

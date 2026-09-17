@@ -4,12 +4,15 @@
   scoped tool contracts, the unqualified Devin ACP task adapter
   (`devin-acp.ts`, `devin-client.ts`, `devin-adapter.ts`, `devin-mcp.ts`),
   per-account browser-session custody (`browser-session.ts`), and the
-  provider-neutral managed-account controller (`managed-account.ts`).
+  provider-neutral managed-account controller (`managed-account.ts`), and
+  the OS-confinement port every provider launcher plans through
+  (`os-sandbox.ts`; never add a silent unsandboxed fallback).
   `src/index.ts` is the package's complete public surface.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
-  Textbutler import.
+  Textbutler import. `linux-sandbox.ts` is the bwrap kernel-boundary probe and
+  is evidence, not activation.
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
 - `site/` is the informational public project page (Next.js, deployed to

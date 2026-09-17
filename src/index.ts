@@ -52,3 +52,7 @@ export type { ManagedAccountBinding, ManagedAccountCloseReceipt, ManagedAccountC
   ManagedAccountLoginChallenge, ManagedAccountLoginMethod, ManagedAccountOptions, ManagedAccountProjection,
   ManagedAccountRequest, ManagedAccountResponse, ManagedAccountSemantics, ManagedAccountSnapshot, ManagedAccountState,
   ManagedAccountTransport, ManagedAccountUsage, ManagedAccountUsageReader, ManagedAccountUsageWindow } from "./managed-account.ts";
+export { createSeatbeltOsSandbox, createBwrapOsSandbox, planSeatbeltPolicy, planBwrapPolicy,
+  verifyOsSandboxExecutable, createSandboxedProviderProcessFactory } from "./os-sandbox.ts";
+export type { OsSandboxBackend, OsSandboxBackendName, OsSandboxNetworkPolicy, OsSandboxPlan,
+  OsSandboxPlatform, OsSandboxSpec, OsSandboxWrapInput } from "./os-sandbox.ts";

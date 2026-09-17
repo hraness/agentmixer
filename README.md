@@ -386,6 +386,44 @@ qualification, effective tool inventory, stdio bridge custody, failure custody
 and account transport/model admission are all unresolved. `test/devin-acp.test.ts`
 and `test/devin-adapter.test.ts` exercise the codec, client, relay and spawned
 bridge against synthetic peers only; they establish no live provider evidence.
+## Per-account browser sessions
+
+`createBrowserSession()` is the provider-neutral custody substrate for
+browser-based sign-in. Each provider account gets one dedicated, persistent
+Chromium-family profile under
+`<stateRoot>/browser-sessions/<provider>/<accountId>/profile/` — cookies and
+site state survive restarts inside that directory only, so adding or rotating
+an account never touches another account's session. The profile directory is
+the custody boundary: cookie contents are never exported, logged, synced, or
+included in receipts.
+
+A session binds to the exact `{provider, accountId, owner, leaseGeneration,
+processGeneration}` and holds an exclusive `O_EXCL` lock for the life of the
+process. A lock that outlives its process is never taken over silently — the
+next launch refuses with `BROWSER_SESSION_RECOVERY_REQUIRED`, and
+`recoverBrowserSession()` proceeds only after a caller-supplied
+`proveStopped(binding)` returns true. Recovery removes the Chromium
+`SingletonLock`/`SingletonSocket`/`SingletonCookie` trio so the profile opens
+cleanly; it never deletes cookies, history, or the binding marker.
+`purgeBrowserSession()` is the sign-out/revocation boundary: it destroys the
+account's whole browser-session directory as a unit, and likewise requires
+stop proof while any lock is held.
+
+Launch admits only a caller-pinned executable whose SHA-256 is re-verified
+from a checked descriptor before spawn. The argv is fixed: the account's
+`--user-data-dir`, `--password-store=basic` (profile-local secrets, no keyring
+prompts), `--disable-sync` (no vendor account bleed), and at most one
+https-only navigation URL. The environment is an allowlist — locale,
+identity, and GUI-attach keys only — with `HOME`/`TMPDIR` overridden to
+private per-run scratch. The browser runs in its own detached process group
+with bounded stdout/stderr; close escalates SIGTERM (so the profile flushes)
+then SIGKILL, and the lock is released only after root exit, group absence,
+stream joins, and a durable hash-chained custody journal record. An unproven
+cleanup keeps the lock and the journal as recovery evidence.
+
+Every receipt reports `productionQualified: false`: this module proves custody
+and launch integrity, not browser provenance, sandbox qualification, or live
+provider authentication. Those remain separate host responsibilities.
 
 ## Ownership boundaries
 

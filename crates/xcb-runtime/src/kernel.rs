@@ -1,7 +1,7 @@
 use crate::{
     Error, Result, attachments, auth,
     config::Config,
-    digest, new_id, now_ms, panes,
+    digest, hooks, new_id, now_ms, panes,
     process::Pin,
     runner::{self, Observer, Outcome, Progress, RunInput},
     store::Store,
@@ -117,7 +117,82 @@ fn ready(store: &Store, session: &Session) -> Result<()> {
     Ok(())
 }
 
+async fn fire_hooks(
+    store: &Store,
+    config: &Config,
+    event: hooks::Event,
+    session: &Session,
+    state: State,
+    observer: &Observer,
+) {
+    if !config.extensions.hooks {
+        return;
+    }
+    match hooks::fire(
+        store.root(),
+        event,
+        &hooks::HookInput::new(event, session, state),
+    )
+    .await
+    {
+        Ok(notices) => notices
+            .into_iter()
+            .for_each(|notice| observer(Progress::Notice(notice))),
+        Err(error) => observer(Progress::Notice(format!("Hook dispatch failed: {error}"))),
+    }
+}
+
 pub async fn execute(
+    store: Arc<Store>,
+    session_id: Id,
+    text: String,
+    attachments: Vec<xcb_core::session::Attachment>,
+    pane_generation: bool,
+    cancel: watch::Receiver<bool>,
+    observer: Observer,
+) -> Result<Outcome> {
+    let config = Config::load(store.root())?.0;
+    let session = store
+        .session(&session_id)?
+        .ok_or(Error::Unavailable("session not found"))?;
+    fire_hooks(
+        &store,
+        &config,
+        hooks::Event::SessionStart,
+        &session,
+        session.state,
+        &observer,
+    )
+    .await;
+    let result = execute_inner(
+        store.clone(),
+        session_id.clone(),
+        text,
+        attachments,
+        pane_generation,
+        cancel,
+        observer.clone(),
+    )
+    .await;
+    if let Some(session) = store.session(&session_id)? {
+        let config = Config::load(store.root())?.0;
+        let state = result
+            .as_ref()
+            .map_or(State::Uncertain, |outcome| outcome.state);
+        fire_hooks(
+            &store,
+            &config,
+            hooks::Event::SessionEnd,
+            &session,
+            state,
+            &observer,
+        )
+        .await;
+    }
+    result
+}
+
+async fn execute_inner(
     store: Arc<Store>,
     session_id: Id,
     text: String,
@@ -151,10 +226,19 @@ pub async fn execute(
             at_ms: now_ms(),
         };
         let current = store.append_message(&session_id, session.revision, &message)?;
-        let outcome = runner::run(
+        fire_hooks(
+            &store,
+            &config,
+            hooks::Event::TurnStart,
+            &current,
+            State::Working,
+            &observer,
+        )
+        .await;
+        let result = runner::run(
             store.clone(),
             RunInput {
-                session: current,
+                session: current.clone(),
                 message,
                 config: config.clone(),
                 pane_generation,
@@ -162,7 +246,20 @@ pub async fn execute(
             cancel.clone(),
             observer.clone(),
         )
-        .await?;
+        .await;
+        let state = result
+            .as_ref()
+            .map_or(State::Uncertain, |outcome| outcome.state);
+        fire_hooks(
+            &store,
+            &config,
+            hooks::Event::TurnEnd,
+            &current,
+            state,
+            &observer,
+        )
+        .await;
+        let outcome = result?;
         if pane_generation || *cancel.borrow() {
             return Ok(outcome);
         }
@@ -437,7 +534,7 @@ pub async fn serve(
                             Intent::AttachRgba { width, height, bytes } => { let image = attachments::from_rgba(store.root(), width, height, bytes)?; let _ = output.try_send(Update::Attachment(image)); }
                             Intent::Extension { name, enabled } => {
                                 let (mut fresh, revision) = Config::load(store.root())?;
-                                match name.as_str() { "auto-continue" => fresh.extensions.auto_continue.enabled = enabled, "gobstopper" => fresh.extensions.gobstopper.enabled = enabled, "usage" => fresh.extensions.usage = enabled, "aicharts" | "aicharts-upload" => return Err(Error::Unavailable("automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available")), _ => return Err(Error::Unavailable("unknown built-in extension")) }
+                                match name.as_str() { "auto-continue" => fresh.extensions.auto_continue.enabled = enabled, "gobstopper" => fresh.extensions.gobstopper.enabled = enabled, "usage" => fresh.extensions.usage = enabled, "hooks" => fresh.extensions.hooks = enabled, "aicharts" | "aicharts-upload" => return Err(Error::Unavailable("automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available")), _ => return Err(Error::Unavailable("unknown built-in extension")) }
                                 fresh.save(store.root(), revision.as_deref())?; config = fresh;
                             }
                             Intent::Quit => (),

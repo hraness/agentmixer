@@ -15,7 +15,7 @@ use xcb_core::{
 use xcb_runtime::{
     Error, Result, auth,
     config::Config,
-    kernel, now_ms, panes, private,
+    hooks, kernel, now_ms, panes, private,
     process::{self, Pin},
     runner::{self, Observer, Progress},
     store::Store,
@@ -74,6 +74,10 @@ enum Commands {
     Plugins {
         #[command(subcommand)]
         command: Option<PluginCommand>,
+    },
+    Hooks {
+        #[command(subcommand)]
+        command: Option<HookCommand>,
     },
     Doctor {
         #[arg(long)]
@@ -161,6 +165,21 @@ enum PaneCommand {
 enum PluginCommand {
     Enable { name: String },
     Disable { name: String },
+}
+#[derive(Subcommand)]
+enum HookCommand {
+    Add {
+        event: String,
+        executable: PathBuf,
+        #[arg(long, default_value_t = 5_000)]
+        timeout_ms: u64,
+    },
+    Enable {
+        id: Id,
+    },
+    Disable {
+        id: Id,
+    },
 }
 
 fn stdin(max: usize) -> Result<Vec<u8>> {
@@ -658,12 +677,35 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     "auto-continue" => fresh.extensions.auto_continue.enabled = enabled,
                     "gobstopper" => fresh.extensions.gobstopper.enabled = enabled,
                     "usage" => fresh.extensions.usage = enabled,
+                    "hooks" => fresh.extensions.hooks = enabled,
                     _ => return Err(Error::Unavailable("unknown or not-yet-available extension")),
                 }
                 fresh.save(store.root(), revision.as_deref())?;
                 config = fresh;
             }
             print_json(&config.extensions)?;
+            Ok(0)
+        }
+        Some(Commands::Hooks { command }) => {
+            match command {
+                None => print_json(hooks::list(store.root())?)?,
+                Some(HookCommand::Add {
+                    event,
+                    executable,
+                    timeout_ms,
+                }) => {
+                    let hook = hooks::add(store.root(), event.parse()?, &executable, timeout_ms)?;
+                    print_json(
+                        json!({"hook":hook,"enabled":false,"next":format!("xcb hooks enable {}", hook.id)}),
+                    )?;
+                }
+                Some(HookCommand::Enable { id }) => {
+                    print_json(hooks::set_enabled(store.root(), &id, true)?)?
+                }
+                Some(HookCommand::Disable { id }) => {
+                    print_json(hooks::set_enabled(store.root(), &id, false)?)?
+                }
+            }
             Ok(0)
         }
         Some(Commands::Config) => {

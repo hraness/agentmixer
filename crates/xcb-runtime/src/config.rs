@@ -33,6 +33,7 @@ pub struct Extensions {
     pub gobstopper: ContextPolicy,
     pub usage: bool,
     pub aicharts_upload: bool,
+    pub hooks: bool,
 }
 impl Default for Extensions {
     fn default() -> Self {
@@ -41,6 +42,7 @@ impl Default for Extensions {
             gobstopper: ContextPolicy::default(),
             usage: true,
             aicharts_upload: false,
+            hooks: false,
         }
     }
 }

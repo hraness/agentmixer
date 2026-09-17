@@ -341,6 +341,71 @@ async fn drain(mut source: impl AsyncRead + Unpin, max: usize) -> Result<()> {
     }
 }
 
+pub async fn capture_with_input(
+    mut command: Command,
+    input: &[u8],
+    max: usize,
+    deadline: Duration,
+) -> Result<Vec<u8>> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command.as_std_mut().process_group(0);
+    let mut child = command.spawn()?;
+    let group = child
+        .id()
+        .filter(|pid| *pid > 1)
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(Pid::from_raw)
+        .ok_or(Error::Protocol("child process identity"))?;
+    let mut stdin = child.stdin.take().ok_or(Error::Protocol("child stdin"))?;
+    let mut stdout = child.stdout.take().ok_or(Error::Protocol("child stdout"))?;
+    let stderr = child.stderr.take().ok_or(Error::Protocol("child stderr"))?;
+    let result = tokio::time::timeout(deadline, async {
+        stdin.write_all(input).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+        let output = async {
+            let mut bytes = Vec::new();
+            (&mut stdout)
+                .take(max as u64 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > max {
+                return Err(Error::Protocol("command output limit"));
+            }
+            Ok(bytes)
+        };
+        let (bytes, _) = tokio::try_join!(output, drain(stderr, 1024 * 1024))?;
+        Ok::<_, Error>(bytes)
+    })
+    .await;
+    let timed_out = result.is_err();
+    if timed_out {
+        let _ = kill_process_group(group, Signal::KILL);
+    }
+    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(status) => status?,
+        Err(_) => {
+            let _ = kill_process_group(group, Signal::KILL);
+            let _ = child.wait().await;
+            return Err(Error::Unavailable("child did not join"));
+        }
+    };
+    if test_kill_process_group(group) != Err(rustix::io::Errno::SRCH) {
+        return Err(Error::Unavailable("process group did not join"));
+    }
+    if timed_out {
+        return Err(Error::Unavailable("command timed out"));
+    }
+    if !status.success() {
+        return Err(Error::Unavailable("command failed"));
+    }
+    result.expect("timeout handled")
+}
+
 pub async fn capture(mut command: Command, max: usize, deadline: Duration) -> Result<Vec<u8>> {
     command
         .stdin(Stdio::null())

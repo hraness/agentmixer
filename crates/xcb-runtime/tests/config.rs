@@ -8,6 +8,7 @@ fn useful_local_extensions_default_on_and_publishing_defaults_off() {
     assert!(config.extensions.gobstopper.enabled);
     assert!(config.extensions.usage);
     assert!(!config.extensions.aicharts_upload);
+    assert!(!config.extensions.hooks);
 }
 
 #[test]

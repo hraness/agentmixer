@@ -181,7 +181,7 @@ impl App {
             "/plugin" => {
                 let pieces: Vec<_> = arguments.split_whitespace().collect();
                 if pieces.len() == 2 && ["on", "off"].contains(&pieces[1]) { self.send(output, Intent::Extension { name: pieces[0].into(), enabled: pieces[1] == "on" }); }
-                else { self.notice = "/plugin auto-continue|gobstopper|usage on|off".into(); }
+                else { self.notice = "/plugin auto-continue|gobstopper|usage|hooks on|off".into(); }
             }
             "/reload" => self.send(output, Intent::Refresh),
             _ => self.notice = "Unknown command. /help lists commands; no command text was sent to the model.".into(),

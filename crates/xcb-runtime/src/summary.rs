@@ -146,6 +146,15 @@ pub fn snapshot(store: &Store, current: Option<&Id>, config: &Config, now: u64) 
             .into(),
         ),
         (
+            "hooks".into(),
+            if config.extensions.hooks {
+                "on · explicit trust"
+            } else {
+                "off"
+            }
+            .into(),
+        ),
+        (
             "aiCharts upload".into(),
             if config.extensions.aicharts_upload {
                 "waiting for supported enrolled ingress"

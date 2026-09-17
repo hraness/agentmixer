@@ -12,6 +12,7 @@ import {
   MarketingTrustBoundary,
   ProductHero,
 } from "@hraness/design-kit/react/server";
+import { ThemeMenuButton } from "@hraness/design-kit/react";
 import { AskAiAboutThis } from "@hraness/ui";
 
 import { publishedRelease } from "./publication";
@@ -143,6 +144,7 @@ export default function Home() {
         brand={<><BrandMark />AgentMixer</>}
         brandLabel="AgentMixer home"
         links={navigation}
+        trailing={<ThemeMenuButton aria-label="Appearance" />}
       />
 
       <main id="main" tabIndex={-1}>

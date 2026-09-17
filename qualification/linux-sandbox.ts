@@ -2,7 +2,8 @@
  * and loopback only; no accounts, credentials or model calls. It proves — or
  * honestly reports against — the exact kernel boundaries the `bwrap` plan
  * claims: foreign paths absent (ENOENT, not merely EPERM), a fresh network
- * namespace with no usable route, a fresh PID namespace (getpid()==1), and a
+ * namespace with no usable route, a fresh PID namespace (getpid()<=2 — the
+ * --die-with-parent monitor may hold pid 1), and a
  * writable scratch root. It never launches unsandboxed: if the toolchain,
  * wrapper artifact or namespaces are unavailable the probe reports blocked
  * evidence and exits nonzero. Exit 0 means every assertion held on this host.
@@ -53,7 +54,7 @@ int main(int argc, char **argv) {
     netDenied = connect(sock, (struct sockaddr*)&a, sizeof(a)) < 0;
     close(sock);
   }
-  int pidIsolated = getpid() == 1;
+  int pidIsolated = getpid() <= 2;
   printf("{\\"ownWrite\\":%s,\\"foreignReadDenied\\":%s,\\"foreignWriteDenied\\":%s,\\"foreignDirDenied\\":%s,\\"netDenied\\":%s,\\"pidIsolated\\":%s}\\n",
     own?"true":"false", foreignReadDenied?"true":"false", foreignWriteDenied?"true":"false",
     foreignDirDenied?"true":"false", netDenied?"true":"false", pidIsolated?"true":"false");

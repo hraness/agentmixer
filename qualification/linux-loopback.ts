@@ -87,7 +87,7 @@ const server = net.createServer((inbound) => {
     if (match === null) { report("refused", request.slice(0, 120)); inbound.destroy(); return; }
     const upstream = net.createConnection(socketPath, () => {
       upstream.write(head.subarray(0, end + 4));
-      const extra = head.subarray(end + 4);
+      const clientExtra = head.subarray(end + 4);
       let replyHead = Buffer.alloc(0);
       const onReply = (chunk) => {
         replyHead = Buffer.concat([replyHead, chunk]);
@@ -95,8 +95,11 @@ const server = net.createServer((inbound) => {
         if (replyEnd === -1) { if (replyHead.length > 4096) { upstream.destroy(); inbound.destroy(); } return; }
         upstream.removeListener("data", onReply);
         inbound.write(replyHead.subarray(0, replyEnd + 4));
-        const replyExtra = Buffer.concat([replyHead.subarray(replyEnd + 4), extra]);
-        if (replyExtra.length) upstream.write(replyExtra);
+        // Reply-head tail belongs to the client; the client's own post-head
+        // bytes belong upstream. Keep the two directions separate.
+        const bridgeExtra = replyHead.subarray(replyEnd + 4);
+        if (bridgeExtra.length) inbound.write(bridgeExtra);
+        if (clientExtra.length) upstream.write(clientExtra);
         upstream.pipe(inbound); inbound.pipe(upstream);
         inbound.resume();
       };
@@ -138,8 +141,10 @@ try {
   const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-keyout", key, "-out", cert,
     "-days", "1", "-nodes", "-subj", "/CN=probe.invalid"], { encoding: "utf8", timeout: 30_000 });
   if (generated.status !== 0) throw new Error("OPENSSL_CERT_UNAVAILABLE");
+  const tlsErrors: string[] = [];
   const tlsServer = createTlsServer({ key: await readFile(key), cert: await readFile(cert) },
     (socket) => { socket.end("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nLOOPBACK-OK"); });
+  tlsServer.on("tlsClientError", (error) => tlsErrors.push(String(error).slice(0, 200)));
   await new Promise<void>((ready) => tlsServer.listen(0, "127.0.0.1", ready));
   const tlsPort = (tlsServer.address() as { port: number }).port;
   bridge = await createEgressBridge({ socketPath, allowlist: ["probe.invalid"],
@@ -170,7 +175,7 @@ try {
     ...mounts, "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", scratch,
     "--chdir", scratch, "--",
     runtime, forwarderPath, socketPath, "48123", loUpPath, "--",
-    client, "-skx", "http://127.0.0.1:48123", "--max-time", "10", "https://probe.invalid/",
+    client, "-skvx", "http://127.0.0.1:48123", "--max-time", "10", "https://probe.invalid/",
   ];
 
   const phases: Record<string, unknown> = {};
@@ -190,7 +195,7 @@ try {
   console.log(JSON.stringify({ profile: "experimental-linux-loopback-forwarder", blocked: false,
     productionQualificationIssued: false, paidModelRequests: 0,
     runtime, runtimeLibs: runtimeLibs.length, clientLibs: clientLibs.length,
-    phases, M0_passed: passed(m0), M1_passed: passed(m1), M2_passed: passed(m2),
+    phases, M0_passed: passed(m0), M1_passed: passed(m1), M2_passed: passed(m2), tlsErrors,
     bridge: { accepted: receipt.connectionsAccepted, refused: receipt.connectionsRefused,
       listenerClosed: receipt.listenerClosed, socketsJoined: receipt.socketsJoined, socketRemoved: receipt.socketRemoved } }, null, 2));
   if (!(passed(m0) || passed(m1) || passed(m2)) || !(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved)) process.exitCode = 1;

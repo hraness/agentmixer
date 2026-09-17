@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { Duplex } from "node:stream";
 import { createBwrapOsSandbox } from "../src/os-sandbox.ts";
 import { createEgressBridge } from "../src/egress-bridge.ts";
 
@@ -38,9 +38,19 @@ try {
 
   // The upstream pair is synthetic: the probe records client bytes and feeds a
   // fixed reply token, so no real resolver or provider endpoint is involved.
-  const upstream = new PassThrough();
+  // One-way Duplex: client bytes sink into `_write` (a PassThrough would echo
+  // the reply into itself), and the reply is pushed once without ending the
+  // stream — ending inline would race the bridge's forwarding before close.
   const clientBytes: Buffer[] = [];
-  upstream.on("data", chunk => { clientBytes.push(chunk); upstream.write("PROBE-TOKEN"); upstream.end(); });
+  let replied = false;
+  const upstream = new Duplex({
+    write(chunk, _encoding, callback) {
+      clientBytes.push(chunk);
+      if (!replied) { replied = true; upstream.push("PROBE-TOKEN"); }
+      callback();
+    },
+    read() {},
+  });
   bridge = await createEgressBridge({ socketPath, allowlist: ["probe.invalid"],
     dialer: { connect: () => Promise.resolve(upstream) } });
 
@@ -86,7 +96,9 @@ int main(int argc, char **argv) {
     directDenied = connect(sock, (struct sockaddr*)&a, sizeof(a)) < 0;
     close(sock);
   }
-  int pidIsolated = getpid() == 1;
+  // --die-with-parent keeps a bwrap monitor as pid 1 inside the namespace, so
+  // a fresh pidns shows the canary at pid 1 or 2 — never a host-scale pid.
+  int pidIsolated = getpid() <= 2;
   printf("{\\"bridgeConnect\\":%s,\\"connectEstablished\\":%s,\\"tunneledReply\\":%s,\\"absentSocketDenied\\":%s,\\"directTcpDenied\\":%s,\\"pidIsolated\\":%s}\\n",
     connected?"true":"false", bridged?"true":"false", tunneled?"true":"false",
     absentDenied?"true":"false", directDenied?"true":"false", pidIsolated?"true":"false");

@@ -1,5 +1,10 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use xcb_tui::composer::{Composer, ComposerAction};
+use std::sync::mpsc::sync_channel;
+use xcb_core::session::Attachment;
+use xcb_tui::{
+    App, Modal,
+    composer::{Composer, ComposerAction},
+};
 
 #[test]
 fn bracketed_paste_preserves_multiline_text_without_submitting() {
@@ -49,4 +54,66 @@ fn cancelling_never_submits_and_clipboard_has_its_own_action() {
         ))),
         ComposerAction::Clipboard
     ));
+}
+
+#[test]
+fn help_and_tail_navigation_do_not_modify_the_draft() {
+    let (tx, _rx) = sync_channel(1);
+    let mut app = App::default();
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        &tx,
+    );
+    assert!(matches!(app.modal, Some(Modal::Help)));
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+        &tx,
+    );
+    assert_eq!(app.scroll, 0, "the help modal must capture unrelated keys");
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        &tx,
+    );
+    assert!(app.modal.is_none(), "? must close help as advertised");
+
+    app.composer.set_text("draft stays");
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+        &tx,
+    );
+    assert_eq!(app.scroll, 10);
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+        &tx,
+    );
+    assert_eq!(app.scroll, 0);
+    app.scroll = 30;
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        &tx,
+    );
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.composer.text(), "draft stays");
+}
+
+#[test]
+fn removing_an_attachment_retains_the_prompt() {
+    let (tx, _rx) = sync_channel(1);
+    let mut app = App::default();
+    app.composer.set_text("keep this prompt");
+    app.attachments.push(Attachment {
+        digest: "a".repeat(64),
+        media_type: "image/png".into(),
+        bytes: 2048,
+        width: 640,
+        height: 480,
+    });
+
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)),
+        &tx,
+    );
+
+    assert!(app.attachments.is_empty());
+    assert_eq!(app.composer.text(), "keep this prompt");
 }

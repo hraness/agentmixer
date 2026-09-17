@@ -57,6 +57,7 @@ pub enum Modal {
         kind: EditorKind,
         error: Option<String>,
     },
+    Help,
 }
 
 #[derive(Default)]
@@ -224,12 +225,20 @@ impl App {
                 }
             }
             match key.code {
+                KeyCode::Char('?') if self.composer.text().is_empty() => {
+                    self.modal = Some(Modal::Help);
+                    return true;
+                }
                 KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(10);
+                    self.scroll = self.scroll.saturating_add(10);
                     return true;
                 }
                 KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_add(10);
+                    self.scroll = self.scroll.saturating_sub(10);
+                    return true;
+                }
+                KeyCode::End => {
+                    self.scroll = 0;
                     return true;
                 }
                 KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -355,7 +364,17 @@ impl App {
         }
     }
     fn modal_event(&mut self, event: Event, output: &SyncSender<Intent>) {
-        if matches!(&event, Event::Key(key) if key.code == KeyCode::Esc) {
+        if matches!(
+            (&self.modal, &event),
+            (
+                Some(Modal::Help),
+                Event::Key(key)
+            ) if key.kind != KeyEventKind::Release
+                && matches!(key.code, KeyCode::Char('?') | KeyCode::Esc)
+        ) || matches!(
+            &event,
+            Event::Key(key) if key.kind != KeyEventKind::Release && key.code == KeyCode::Esc
+        ) {
             self.modal = None;
             return;
         }
@@ -402,6 +421,7 @@ impl App {
                         }
                     }
                 }
+                Modal::Help => {}
                 Modal::Editor {
                     textarea,
                     kind,

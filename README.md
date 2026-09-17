@@ -1,14 +1,70 @@
-<!-- hraness:agentmixer-landing:start -->
-# AgentMixer
+<!-- hraness:xcb-landing:start -->
+# xcb
 
-AgentMixer is a provider-neutral foundation for applications that give an agent
-a small, explicit tool surface — and a standalone CLI that fronts coding-agent
-subscriptions through one interface. Its first consumer is Textbutler. The
-package's public contract and provider qualification are still being developed;
-see the qualification limits below before relying on any provider adapter.
-<!-- hraness:agentmixer-landing:end -->
+xcb (Excalibur) is a local, terminal-first workspace for coding agents. Bring
+your accounts, choose your models, and shape the interface around your work.
+Small, composable extensions handle usage, continuation, and context management;
+the kernel keeps sessions, credentials, and execution under explicit custody.
+<!-- hraness:xcb-landing:end -->
 
-It provides:
+[Project site](https://xcb.dev) · [Native interface](#native-xcb) · [Compatibility package](#standalone-package)
+
+## Native xcb
+
+xcb is the new name and direction for AgentMixer. The native Rust kernel and
+Ratatui interface are in development. The published
+`@hraness/agentmixer@0.3.0` package below is the retained TypeScript compatibility
+release, not a release of the new native interface. Existing AgentMixer account
+state, transcripts, imports, and release coordinates are not silently renamed
+or overwritten.
+
+The native design is deliberately local. There is no required daemon, cloud
+account, synchronization service, or task-shape router. Pick a provider and model,
+set your favorites, and keep working in one terminal.
+
+- **Accounts and subscriptions.** Named accounts, compact quota windows, observed
+  token velocity, and estimated runway. Missing or stale quota stays unknown;
+  token counts are not treated as a provider's billing statement.
+- **A quiet session view.** Your latest input and the selected model stay visible.
+  Thinking and older responses collapse; tool activity stays out of the way.
+  Subagent state, a semantic status badge, and a live usage meter carry the signal.
+- **Userspace panes.** `/pane` selects a preset or a local declaration. Edit or
+  generate a pane without rebuilding the terminal. Reload validates the whole
+  candidate and retains the last working view on error.
+- **Optional behavior.** Auto-continue and Gobstopper context management default
+  on, with bounded execution and explicit off switches. Hooks extend named
+  lifecycle events; a view is never permission to execute a hook.
+- **Simple model choice.** Favorites precede the rest of the observed provider
+  catalog. Limit failover uses your order and a settled handoff, never a blind
+  replay of an uncertain turn.
+- **aiCharts integration.** Reuse its local measurement formats. Publishing is
+  separate and opt-in at idle boundaries; no session text or credentials belong
+  in numeric exports. The upstream usage service is not yet live-qualified.
+
+The implementation references Pi's malleable extensions, Codex's native terminal
+foundation, Ghostget's named capability boundaries, and Oompa's usage and recovery
+lessons. It does not inherit Oompa's cloud control plane or make promises about
+provider features that have not been admitted.
+
+### Devin model modes
+
+Fixed models, Adaptive, and Fusion are different selections. Adaptive delegates
+routing to Devin. Fusion pairs a frontier lead with a sidekick; its supported
+pairings have provider-issued model identifiers. xcb must select those exact
+observed identifiers, not synthesize combinations or assign a single capability
+score to every pairing. The selected mode and any provider-reported serving
+models remain separate usage dimensions. Promotional prices are not a durable
+subscription contract.
+
+The source behavior was checked against Devin CLI 3000.10.31's model catalog
+and the public [Adaptive documentation](https://docs.devin.ai/cli/adaptive) and
+[Fusion architecture](https://cognition.com/blog/local-fusion). Catalog presence
+proves a selection exists; native adapter admission and live behavior remain
+separate checks.
+
+## TypeScript compatibility
+
+The retained application package provides:
 
 - A Codex/Claude/Devin adapter interface with explicit runtime qualification.
 - Shared SQLite account custody, generation fencing and process-aware recovery.
@@ -25,7 +81,7 @@ Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
 versioned GitHub archive to a Bun project:
 
 ```sh
-bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz
+bun add --exact --ignore-scripts https://github.com/hraness/xcb/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz
 ```
 
 The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):

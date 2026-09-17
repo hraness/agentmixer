@@ -14,23 +14,22 @@ import "./globals.css";
  */
 const initialPalette = getDesignPaletteTheme("paper", "light");
 
-const title = "AgentMixer: a qualified execution seam for coding agents";
+const title = "xcb — Excalibur for your coding agents";
 const description =
-  "AgentMixer gives applications provider-neutral routing, shared account custody, and a bounded tool broker for Codex and Claude agents under explicit runtime qualification.";
+  "A local, terminal-first workspace for coding agents. Bring your accounts, choose your models, and shape your interface with composable panes and extensions.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://agentmixer.dev"),
+  metadataBase: new URL("https://xcb.dev"),
   title,
   description,
   alternates: { canonical: "/" },
   icons: {
-    apple: [{ url: "/apple-icon.png", sizes: "180x180", type: "image/png" }],
-    icon: [{ type: "image/png", url: "/icon.png", sizes: "512x512" }],
+    icon: [{ type: "image/svg+xml", url: "/xcb.svg" }],
   },
   openGraph: {
     title,
     description,
-    siteName: "AgentMixer",
+    siteName: "xcb",
     type: "website",
     url: "/",
   },

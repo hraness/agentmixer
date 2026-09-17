@@ -1,8 +1,8 @@
-const REPOSITORY_BLOB_ROOT = "https://github.com/hraness/agentmixer/blob/main/";
-const REPOSITORY_RAW_ROOT = "https://raw.githubusercontent.com/hraness/agentmixer/main/";
+const REPOSITORY_BLOB_ROOT = "https://github.com/hraness/xcb/blob/main/";
+const REPOSITORY_RAW_ROOT = "https://raw.githubusercontent.com/hraness/xcb/main/";
 
-export const LANDING_START = "<!-- hraness:agentmixer-landing:start -->";
-export const LANDING_END = "<!-- hraness:agentmixer-landing:end -->";
+export const LANDING_START = "<!-- hraness:xcb-landing:start -->";
+export const LANDING_END = "<!-- hraness:xcb-landing:end -->";
 
 function decodeCharacterReferences(value: string): string {
   return value

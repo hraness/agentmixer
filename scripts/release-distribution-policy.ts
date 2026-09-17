@@ -20,7 +20,7 @@ export type ReleasePackage = Readonly<{
 }>;
 
 export const publicPackageName = "@hraness/agentmixer";
-export const publicRepository = "hraness/agentmixer";
+export const publicRepository = "hraness/xcb";
 export const rootReleasePackage: ReleasePackage = Object.freeze({
   name: publicPackageName,
   repository: publicRepository,

@@ -16,7 +16,7 @@ function renderedClasses(slot: string): string[] {
   const classes: string[] = [];
   new HTMLRewriter().on(`[data-slot="${slot}"]`, {
     element(element) { classes.push(...(element.getAttribute("class") ?? "").split(/\s+/u)); },
-  }).transform(renderToStaticMarkup(<AskAiAboutThis url="https://agentmixer.dev" />));
+  }).transform(renderToStaticMarkup(<AskAiAboutThis url="https://xcb.dev" />));
   // Match the classes emitted by the installed component rather than freezing StyleX hashes.
   return [...new Set(classes)].filter(name => /^x[a-z0-9]+$/u.test(name));
 }

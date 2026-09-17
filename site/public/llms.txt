@@ -1,16 +1,11 @@
-# AgentMixer
+# xcb
 
-> AgentMixer gives applications provider-neutral routing, shared account custody, and a bounded tool broker for Codex and Claude agents under explicit runtime qualification.
+> xcb (Excalibur) is a local, terminal-first workspace for coding agents. Bring accounts, choose models, and shape the interface with composable panes and extensions.
 
-When to use this site:
-- Use agentmixer.dev to learn what AgentMixer is, which providers it supports, and how the tool broker bounds what an agent can reach.
-- Use /docs for the complete README: install, adapters, qualification, account custody, capability profiles, and release notes.
+The native Rust interface is in development. The published AgentMixer TypeScript package is a retained compatibility surface, not a native xcb release. No cloud synchronization or required daemon is part of the native design.
 
 ## Pages
 
-- [AgentMixer](https://agentmixer.dev/): a qualified execution seam for coding agents — provider-neutral routing, shared account custody, and a scoped tool broker.
-- [AgentMixer documentation](https://agentmixer.dev/docs): the complete AgentMixer README.
-
-## Optional
-
-- [sitemap](https://agentmixer.dev/sitemap.xml): Indexable HTML URLs.
+- [xcb](https://xcb.dev/): product direction, local boundaries, panes, accounts, and model modes.
+- [xcb documentation](https://xcb.dev/docs): native direction and the retained package reference, installation, and qualification limits.
+- [Sitemap](https://xcb.dev/sitemap.xml): indexable HTML pages.

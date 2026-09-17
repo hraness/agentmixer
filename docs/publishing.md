@@ -1,6 +1,6 @@
 # Publishing
 
-AgentMixer publishes one package, `@hraness/agentmixer`, from one tag channel.
+xcb publishes one package, `@hraness/agentmixer`, from one tag channel.
 An immutable annotated `v<version>` tag at a reviewed commit in current `main`
 history is a release request. The tag version must equal `package.json`'s
 `version`; no other tag shape is admitted.
@@ -53,7 +53,7 @@ pre-npm job only admits a retry that is an exact continuation of the same run.
 
 ## Site deployment
 
-`site/` deploys to Vercel as `agentmixer.dev` through the standard Git
+`site/` deploys to Vercel as `xcb.dev` through the standard Git
 integration on `main`. The site is informational only; it carries no product
 runtime and no release authority.
 
@@ -62,8 +62,8 @@ runtime and no release authority.
 `site/published-release.json` starts with `version` and `verificationRun` both
 null. The homepage then shows the first-release preparation state and offers
 no archive download. After the canonical GitHub release has passed public
-verification, set both fields to the exact stable AgentMixer version and its
-successful `https://github.com/hraness/agentmixer/actions/runs/<run-id>` URL.
+verification, set both fields to the exact stable release version and its
+successful `https://github.com/hraness/xcb/actions/runs/<run-id>` URL.
 Keep both fields null if publication or verification is incomplete. Regenerate
 the README projection with `cd site && bun run sync:readme` and validate the
 site with `bun run check` before deploying the update.

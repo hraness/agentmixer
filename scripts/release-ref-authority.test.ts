@@ -14,7 +14,7 @@ import {
   verifyReleaseRefAuthority,
 } from "./release-ref-authority";
 
-const repositoryUrl = "https://github.com/hraness/agentmixer.git";
+const repositoryUrl = "https://github.com/hraness/xcb.git";
 const temporaryRoots: string[] = [];
 
 afterEach(() => {

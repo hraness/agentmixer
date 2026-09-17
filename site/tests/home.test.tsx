@@ -11,7 +11,7 @@ test("every public route has one optional support footer without product signup"
     const html = renderToStaticMarkup(<RootLayout><Page /></RootLayout>);
     expect(html.match(/<footer\b/gu)).toHaveLength(1);
     expect(html).toContain("https://account.hraness.com/support?product=agentmixer&amp;source=web#support");
-    expect(html).toContain("Support ongoing development of qualified, bounded execution seams for coding agents.");
+    expect(html).toContain("Support ongoing development of a local, composable terminal workspace for coding agents.");
     expect(html).not.toContain('type="email"');
     expect(html).not.toContain('source=web#updates');
   }
@@ -20,7 +20,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage leads with the README identity and the verified install command", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("One qualified seam between your application and its agents");
+  expect(html).toContain("Your agents. Your terminal. Your edge.");
   if (publishedRelease === null) {
     expect(html).toContain("First AgentMixer release in preparation");
     expect(html).not.toContain(".tgz");
@@ -52,6 +52,6 @@ test("scopes the editorial preset to the homepage header and real contract examp
     })
     .transform(html);
   expect(elements).toEqual(["header", "proof"]);
-  expect(html).toContain("createCapabilityProfile");
-  expect(html).toContain("host-defined capability profile");
+  expect(html).toContain("The pane is a declaration, not a fork of the harness.");
+  expect(html).toContain("Less activity. More signal.");
 });

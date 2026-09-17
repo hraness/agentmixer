@@ -1,0 +1,147 @@
+import { constants, statSync } from "node:fs";
+import { chmod, lstat, open, realpath } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { delimiter, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+
+import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
+import { CODEX_NATIVE_SHA256, CODEX_NATIVE_VERSION } from "../codex-process.ts";
+import { boundedText } from "../validation.ts";
+
+export const CLI_CODEX_ENV = "AGENTMIXER_CODEX";
+export const CLI_CLAUDE_ENV = "AGENTMIXER_CLAUDE";
+
+export type CliProviderName = "codex" | "claude";
+export type CliBinaryInspection = Readonly<{
+  provider: CliProviderName;
+  executablePath: string;
+  version: string;
+  sha256: string;
+  pinnedSha256: string | null;
+  versionMatches: boolean;
+  digestMatches: boolean;
+}>;
+
+const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
+
+/** Absolute, physical, user-owned executable file; bounded read for hashing. */
+export async function inspectCliExecutable(rawPath: unknown): Promise<{ executablePath: string; sha256: string; bytes: Uint8Array }> {
+  if (typeof rawPath !== "string" || !isAbsolute(rawPath) || /[\x00-\x1f\x7f]/u.test(rawPath)) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+  const executablePath = await realpath(rawPath);
+  const stat = await lstat(executablePath);
+  const uid = process.getuid?.();
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || ![0, uid].includes(stat.uid)
+    || (stat.mode & 0o022) !== 0 || (stat.mode & 0o111) === 0 || (stat.mode & 0o6000) !== 0
+    || stat.size < 1 || stat.size > MAX_EXECUTABLE_BYTES) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+  const handle = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const bytes = await handle.readFile();
+    if (bytes.byteLength > MAX_EXECUTABLE_BYTES) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+    return { executablePath, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: new Uint8Array(bytes) };
+  } finally {
+    await handle.close();
+  }
+}
+
+function executableExists(path: string): boolean {
+  try {
+    // Discovery may legitimately meet a shim symlink (bun/npm global bins); the
+    // strict target check happens in inspectCliExecutable on the resolved path.
+    const stat = statSync(path);
+    return stat.isFile() && (stat.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+function pathEntries(env: (name: string) => string | undefined): string[] {
+  const raw = env("PATH");
+  if (typeof raw !== "string") return [];
+  return raw.split(delimiter).filter((entry) => isAbsolute(entry) && entry.length <= 512).slice(0, 64);
+}
+
+/** Closed discovery order: explicit env pin, PATH, then known install locations. */
+export function cliBinaryCandidates(provider: CliProviderName, env: (name: string) => string | undefined = (name) => process.env[name]): readonly string[] {
+  const pinned = env(provider === "codex" ? CLI_CODEX_ENV : CLI_CLAUDE_ENV);
+  const command = provider === "codex" ? "codex" : "claude";
+  const home = homedir();
+  const known = provider === "claude"
+    ? [join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude")]
+    : [join(home, ".codex", "bin", "codex"), join(home, ".local", "bin", "codex")];
+  const found = [
+    ...(pinned !== undefined ? [pinned] : []),
+    ...pathEntries(env).map((entry) => join(entry, command)),
+    ...known,
+  ];
+  return Object.freeze([...new Set(found)].filter((path) => isAbsolute(path) && path.length <= 512).slice(0, 32));
+}
+
+function reportedVersion(executablePath: string): string | null {
+  let result;
+  try {
+    result = spawnSync(executablePath, ["--version"], {
+      timeout: 15_000, encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return null;
+  }
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  const match = /(?:^|\s)(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+.][0-9A-Za-z.-]*)?/u.exec(result.stdout.trim());
+  return match === null ? null : boundedText(match[0].trim(), 160);
+}
+
+/** Explicit admission-time repair only: tighten a user-owned discovered
+ * executable to 0755 so it passes the strict file-shape check. Never applied to
+ * root-owned or foreign-owned files and never loosens anything. */
+export async function repairCliExecutableMode(rawPath: unknown): Promise<boolean> {
+  if (typeof rawPath !== "string" || !isAbsolute(rawPath)) return false;
+  let resolved: string;
+  try {
+    resolved = await realpath(rawPath);
+  } catch {
+    return false;
+  }
+  const uid = process.getuid?.();
+  try {
+    const stat = await lstat(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o6000) !== 0) return false;
+    if ((stat.mode & 0o022) === 0) return false;
+    await chmod(resolved, 0o755);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Inspect a discovered provider binary. Fails closed on any shape, ownership,
+ * or version mismatch; the digest pin is reported separately because Claude's
+ * is host-admitted rather than source-pinned. */
+export async function inspectCliBinary(provider: CliProviderName, env: (name: string) => string | undefined = (name) => process.env[name], repair = false): Promise<CliBinaryInspection | null> {
+  for (const candidate of cliBinaryCandidates(provider, env)) {
+    if (!executableExists(candidate)) continue;
+    let inspected;
+    try {
+      inspected = await inspectCliExecutable(candidate);
+    } catch {
+      if (!repair || !(await repairCliExecutableMode(candidate))) continue;
+      try {
+        inspected = await inspectCliExecutable(candidate);
+      } catch {
+        continue;
+      }
+    }
+    const version = reportedVersion(inspected.executablePath);
+    if (version === null) continue;
+    const expectedVersion = provider === "codex" ? CODEX_NATIVE_VERSION : CLAUDE_CODE_VERSION;
+    const pinnedSha256 = provider === "codex" ? CODEX_NATIVE_SHA256 : null;
+    return Object.freeze({
+      provider, executablePath: inspected.executablePath, version, sha256: inspected.sha256,
+      pinnedSha256, versionMatches: version === expectedVersion,
+      digestMatches: pinnedSha256 === null ? true : inspected.sha256 === pinnedSha256,
+    });
+  }
+  return null;
+}

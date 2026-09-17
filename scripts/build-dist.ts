@@ -31,6 +31,7 @@ export async function buildDist(): Promise<void> {
     process.execPath,
     "build",
     "src/index.ts",
+    "src/cli.ts",
     "--outdir",
     outdir,
     "--root",

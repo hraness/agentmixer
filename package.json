@@ -29,6 +29,9 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "agentmixer": "dist/cli.js"
+  },
   "files": [
     "dist",
     "MANAGED-CODEX.md"

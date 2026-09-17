@@ -379,6 +379,7 @@ async fn handshake(
 }
 
 pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec<ModelChoice>> {
+    let now = now_ms();
     let model = ModelChoice {
         provider: Provider::Claude,
         id: Id::new("claude-fable-5-1")?,
@@ -386,7 +387,7 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         mode: Mode::Fixed,
         resolved: None,
         effort: None,
-        observed_at_ms: 0,
+        observed_at_ms: now,
     };
     let token = account.map(|id| auth::token(store, id)).transpose()?;
     let launch = prepare(
@@ -397,7 +398,7 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         false,
     )?;
     let run = account
-        .map(|id| store.prepare_probe(id, now_ms()))
+        .map(|id| store.prepare_probe(id, Some(model.clone()), now))
         .transpose()?;
     let mut process = match StreamProcess::spawn(launch.command) {
         Ok(process) => process,

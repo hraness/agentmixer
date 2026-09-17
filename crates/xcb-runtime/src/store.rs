@@ -47,6 +47,17 @@ pub struct RunRecord {
     pub phase: String,
     pub pid: Option<u32>,
     pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelChoice>,
+}
+
+impl RunRecord {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(model) = &self.model {
+            model.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,6 +483,7 @@ impl Store {
             phase: "prepared".into(),
             pid: None,
             created_at_ms: now,
+            model: Some(session.model.clone()),
         };
         tx.execute(
             "INSERT INTO runs VALUES(?1,?2,?3,?4,?5)",
@@ -491,9 +503,21 @@ impl Store {
         tx.commit()?;
         Ok(run)
     }
-    pub(crate) fn prepare_probe(&self, account: &Id, now: u64) -> Result<RunRecord> {
-        if !self.account(account)?.enabled {
+    pub(crate) fn prepare_probe(
+        &self,
+        account: &Id,
+        model: Option<ModelChoice>,
+        now: u64,
+    ) -> Result<RunRecord> {
+        let target = self.account(account)?;
+        if !target.enabled {
             return Err(Error::Conflict("account is disabled"));
+        }
+        if let Some(model) = &model {
+            model.validate()?;
+            if model.provider != target.provider {
+                return Err(Error::Conflict("probe model provider mismatch"));
+            }
         }
         let mut db = self.db()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -513,6 +537,7 @@ impl Store {
             phase: "prepared".into(),
             pid: None,
             created_at_ms: now,
+            model,
         };
         tx.execute(
             "INSERT INTO runs VALUES(?1,NULL,?2,'prepared',?3)",
@@ -582,7 +607,9 @@ impl Store {
         let rows = query.query_map([], |row| row.get::<_, String>(0))?;
         let mut runs = Vec::new();
         for row in rows {
-            runs.push(decode(&row?)?);
+            let run: RunRecord = decode(&row?)?;
+            run.validate()?;
+            runs.push(run);
         }
         Ok(runs)
     }
@@ -602,7 +629,9 @@ impl Store {
         payload
             .map(|payload| {
                 let payload_digest = digest(payload.as_bytes());
-                Ok((decode(&payload)?, payload_digest))
+                let run: RunRecord = decode(&payload)?;
+                run.validate()?;
+                Ok((run, payload_digest))
             })
             .transpose()
     }
@@ -618,6 +647,7 @@ impl Store {
             .optional()?
             .ok_or(Error::Unavailable("run not found"))?;
         let run: RunRecord = decode(&payload)?;
+        run.validate()?;
         if run.phase != "running" {
             return Err(Error::Conflict("run is not in running phase"));
         }
@@ -1120,5 +1150,201 @@ mod tests {
             .unwrap();
         assert!(store.recover_run(&running.id, &digest, 4).is_err());
         assert_eq!(store.run(&running.id).unwrap().unwrap().phase, "running");
+    }
+
+    #[test]
+    fn run_record_roundtrip_persists_session_model() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let expected = session.model.clone();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        assert_eq!(prepared.model, Some(expected.clone()));
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        assert_eq!(running.model, Some(expected.clone()));
+        store.settle(&running, State::Idle, 4).unwrap();
+        let settled = store.run(&running.id).unwrap().unwrap();
+        assert_eq!(settled.model.as_ref().unwrap().id, expected.id);
+        assert_eq!(settled.model.as_ref().unwrap().provider, expected.provider);
+        assert_eq!(settled.model.as_ref().unwrap().effort, expected.effort);
+        assert!(store.unsettled_runs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebind_after_settlement_preserves_run_record_model() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let personal = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let work = store
+            .add_account(Provider::Claude, "Work", "Team", 1)
+            .unwrap();
+        let original = choice();
+        let session = store
+            .create_session(&personal.id, original.clone(), &base.join("work"), 2)
+            .unwrap();
+        let run = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        store.settle(&run, State::Idle, 4).unwrap();
+        let next_model = ModelChoice {
+            provider: Provider::Claude,
+            id: Id::new("claude-sonnet-4").unwrap(),
+            label: "Sonnet 4".into(),
+            mode: Mode::Fixed,
+            resolved: None,
+            effort: Some(Id::new("high").unwrap()),
+            observed_at_ms: 5,
+        };
+        let current = store.session(&session.id).unwrap().unwrap();
+        store
+            .rebind(&session.id, current.revision, &work.id, next_model.clone())
+            .unwrap();
+        let settled = store.run(&run.id).unwrap().unwrap();
+        assert_eq!(settled.account, personal.id);
+        assert_eq!(settled.model, Some(original));
+        let rebound = store.session(&session.id).unwrap().unwrap();
+        assert_eq!(rebound.account, work.id);
+        assert_eq!(rebound.model.id, next_model.id);
+    }
+
+    #[test]
+    fn legacy_run_record_deserializes_without_model_field() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let run_id = Id::new("r_legacy001").unwrap();
+        let payload = format!(
+            "{{\"id\":\"{}\",\"session\":\"{}\",\"account\":\"{}\",\"revision\":1,\"phase\":\"running\",\"pid\":12345,\"created_at_ms\":1}}",
+            run_id, session.id, account.id
+        );
+        store
+            .db()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs(id,session,account,phase,payload) VALUES(?1,?2,?3,'running',?4)",
+                params![
+                    run_id.as_str(),
+                    session.id.as_str(),
+                    account.id.as_str(),
+                    payload
+                ],
+            )
+            .unwrap();
+        let run = store.run(&run_id).unwrap().unwrap();
+        assert_eq!(run.model, None);
+        assert_eq!(run.phase, "running");
+        assert_eq!(run.pid, Some(12345));
+    }
+
+    #[test]
+    fn probe_run_records_model_or_none() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let model = choice();
+        let run = store
+            .prepare_probe(&account.id, Some(model.clone()), 1)
+            .unwrap();
+        assert_eq!(run.model, Some(model.clone()));
+        store.settle(&run, State::Idle, 2).unwrap();
+        let stored = store.run(&run.id).unwrap().unwrap();
+        assert_eq!(stored.model, Some(model));
+        let unresolved = store.prepare_probe(&account.id, None, 3).unwrap();
+        assert_eq!(unresolved.model, None);
+        let devin = ModelChoice {
+            provider: Provider::Devin,
+            id: Id::new("x").unwrap(),
+            label: "X".into(),
+            mode: Mode::Fixed,
+            resolved: None,
+            effort: None,
+            observed_at_ms: 1,
+        };
+        assert!(store.prepare_probe(&account.id, Some(devin), 4).is_err());
+    }
+
+    #[test]
+    fn recovery_digest_matches_stored_payload_for_new_record() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let expected = session.model.clone();
+        let prepared = store.prepare_run(&session.id, session.revision, 3).unwrap();
+        let running = store.mark_spawned(&prepared, 12345).unwrap();
+        let expected_digest = digest(serde_json::to_string(&running).unwrap());
+        let (candidate, stored_digest) = store.recovery_candidate(&running.id).unwrap().unwrap();
+        assert_eq!(candidate.model, Some(expected.clone()));
+        assert_eq!(stored_digest, expected_digest);
+        let settled = store.recover_run(&running.id, &stored_digest, 4).unwrap();
+        assert_eq!(settled.model, Some(expected));
+    }
+
+    #[test]
+    fn recovery_digest_matches_stored_payload_for_legacy_record() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = store
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let run_id = Id::new("r_legacy002").unwrap();
+        let payload = format!(
+            "{{\"id\":\"{}\",\"session\":\"{}\",\"account\":\"{}\",\"revision\":1,\"phase\":\"running\",\"pid\":12345,\"created_at_ms\":1}}",
+            run_id, session.id, account.id
+        );
+        store
+            .db()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs(id,session,account,phase,payload) VALUES(?1,?2,?3,'running',?4)",
+                params![
+                    run_id.as_str(),
+                    session.id.as_str(),
+                    account.id.as_str(),
+                    &payload
+                ],
+            )
+            .unwrap();
+        store
+            .db()
+            .unwrap()
+            .execute(
+                "INSERT INTO leases(account,run) VALUES(?1,?2)",
+                params![account.id.as_str(), run_id.as_str()],
+            )
+            .unwrap();
+        let expected_digest = digest(payload.as_bytes());
+        let (candidate, stored_digest) = store.recovery_candidate(&run_id).unwrap().unwrap();
+        assert_eq!(candidate.model, None);
+        assert_eq!(stored_digest, expected_digest);
+        let settled = store.recover_run(&run_id, &stored_digest, 4).unwrap();
+        assert_eq!(settled.model, None);
+        assert_eq!(settled.phase, "settled");
+        assert!(store.unsettled_runs().unwrap().is_empty());
     }
 }

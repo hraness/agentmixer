@@ -23,7 +23,7 @@ export * from "./codex-account.ts";
 export { createCodexAccountStdioTransport } from "./codex-account-transport.ts";
 export type { CodexAccountTransportOptions, CodexAccountProcessPort, CodexAccountProcessCloseReceipt } from "./codex-account-transport.ts";
 export { bindCodexAccountProcess, createCodexAccountProcess } from "./codex-account-process.ts";
-export type { CodexAccountProcessOptions, CodexAccountRuntimeAdmission, CodexAccountDeviceCodeAdmission, CodexAccountProcessReceipt } from "./codex-account-process.ts";
+export type { CodexAccountProcessOptions, CodexAccountRuntimeAdmission, CodexAccountSandboxAdmission, CodexAccountDeviceCodeAdmission, CodexAccountProcessReceipt } from "./codex-account-process.ts";
 export type { ProviderProcessBinding, ProviderProcessPort, ProviderProcessSettlement, ProviderProcessWriteResult } from "./process-port.ts";
 export { createCodexManagedTaskAdapter } from "./codex-managed-task-adapter.ts";
 export type { CodexManagedTaskAdapterOptions } from "./codex-managed-task-adapter.ts";

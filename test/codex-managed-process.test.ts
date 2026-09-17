@@ -371,3 +371,49 @@ test("policy rejects overlapping writable roots and any injected path syntax", (
   expect(() => codexManagedOfflineSandbox({ executable: "/safe/runtime/codex", scratch: "/safe/state", accountHome: "/safe/state/account" })).toThrow("LAYOUT_INVALID");
   expect(() => codexManagedOfflineSandbox({ executable: "/safe/runtime/codex", scratch: "/safe/scratch\"", accountHome: "/safe/account" })).toThrow("PATH_INVALID");
 });
+
+test("a linux parent launches through the admitted bwrap artifact instead of seatbelt", async () => {
+  const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "x64", sha256: parentSha };
+  const f = await fixture({ parent: Promise.resolve(linuxParent) });
+  const wrapper = join(f.root, "synthetic-bwrap"), library = join(f.root, "lib");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 }); await mkdir(library, { mode: 0o700 });
+  const launcher = createCodexManagedProcessLauncher({ ...f.options,
+    runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), readOnlyPaths: [library] } } }, f.system);
+  await f.owned(async request => { const handle = await f.launch(request, undefined, launcher); await handle.ready;
+    const spawn = f.spawns[0]!;
+    expect(spawn.executable).toBe(wrapper);
+    expect(spawn.args).toContain("--unshare-all"); expect(spawn.args).toContain("--die-with-parent"); expect(spawn.args).not.toContain("-f");
+    const inner = spawn.args.indexOf("--");
+    expect(spawn.args.slice(inner + 1, inner + 5)).toEqual([spawn.args[inner + 1]!, "app-server", "--strict-config", "--listen"]);
+    const binds: string[] = [];
+    for (let index = 0; index < spawn.args.length; index++) if (spawn.args[index] === "--ro-bind") binds.push(spawn.args[index + 1]!);
+    expect(binds).toContain(library); expect(binds).toContain(spawn.args[inner + 1]!);
+    const policy = JSON.parse(await readFile(join(dirname(handle.receipt().custodyPath), "sandbox.json"), "utf8"));
+    expect(policy).toMatchObject({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap" });
+    expect(handle.receipt()).toMatchObject({ productionQualified: false, network: "denied", phase: "running" });
+    joined(await handle.stopAndJoin());
+  });
+});
+
+test("a linux parent without a sandbox admission is refused, and a darwin parent refuses an admitted wrapper", async () => {
+  const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "arm64", sha256: parentSha };
+  const f = await fixture({ parent: Promise.resolve(linuxParent) });
+  await f.owned(async request => { const handle = await f.launch(request); await unavailable(handle); expect(f.spawns).toHaveLength(0); });
+  expect(f.inspections()).toBeGreaterThan(0);
+
+  const darwin = await fixture(), wrapper = join(darwin.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const mismatched = createCodexManagedProcessLauncher({ ...darwin.options,
+    runtime: { ...darwin.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } }, darwin.system);
+  await darwin.owned(async request => { const handle = await darwin.launch(request, undefined, mismatched); await unavailable(handle); expect(darwin.spawns).toHaveLength(0); });
+});
+
+test("a linux launch refuses a provider-egress profile because bwrap cannot express it", async () => {
+  const linuxParent: CodexHostRuntime = { executablePath: "/synthetic-parent", version: "1.3.14", platform: "linux", arch: "x64", sha256: parentSha };
+  const f = await fixture({ parent: Promise.resolve(linuxParent), sandboxProfile: providerProfile });
+  const wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const launcher = createCodexManagedProcessLauncher({ ...f.options,
+    runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } }, f.system);
+  await f.owned(async request => { const handle = await f.launch(request, undefined, launcher); await unavailable(handle); expect(f.spawns).toHaveLength(0); });
+});

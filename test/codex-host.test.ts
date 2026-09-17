@@ -48,8 +48,11 @@ test("runtime fact admission requires exact Bun identity and the supported platf
   const facts = { version: "1.3.14", reportedVersion: "1.3.14", platform: "darwin", arch: "arm64", uid: 501, effectiveUid: 501 };
   expect(() => assertCodexHostRuntimeFacts(facts)).not.toThrow();
   expect(() => assertCodexHostRuntimeFacts({ ...facts, uid: 0, effectiveUid: 0 })).not.toThrow();
+  for (const admitted of [{ platform: "linux" }, { arch: "x64" }, { platform: "linux", arch: "x64" }, { platform: "linux", arch: "arm64" }, { arch: "x64" }]) {
+    expect(() => assertCodexHostRuntimeFacts({ ...facts, ...admitted })).not.toThrow();
+  }
   for (const change of [{ version: undefined }, { version: "1.3.15" }, { version: "1.3.14-debug" },
-    { reportedVersion: undefined }, { reportedVersion: "1.3.13" }, { platform: "linux" }, { arch: "x64" },
+    { reportedVersion: undefined }, { reportedVersion: "1.3.13" }, { platform: "win32" }, { platform: "freebsd" }, { arch: "ia32" }, { arch: "s390x" },
     { uid: undefined }, { uid: -1 }, { uid: 1.5 }, { uid: Number.NaN }, { uid: Number.MAX_SAFE_INTEGER + 1 },
     { effectiveUid: undefined }, { effectiveUid: 0 }]) {
     expect(() => assertCodexHostRuntimeFacts({ ...facts, ...change })).toThrow("CODEX_HOST_RUNTIME_UNSUPPORTED");

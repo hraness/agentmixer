@@ -381,3 +381,45 @@ test("device-code policy generation preserves the offline path-confinement valid
     expect(() => generate({ executable: "/private/runtime/codex", scratch: "/private/scratch", accountHome: '/private/account"' })).toThrow("PATH_INVALID");
   }
 });
+
+test("a linux parent launches through the admitted bwrap artifact instead of seatbelt", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap"), library = join(f.root, "lib");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 }); await mkdir(library, { mode: 0o700 });
+  const port = f.create({ runtime: { ...f.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), readOnlyPaths: [library] } } },
+    { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux", arch: "x64" }) });
+  await port.ready;
+  const request = f.spawns[0]!;
+  expect(request.executable).toBe(wrapper);
+  expect(request.args).toContain("--unshare-all"); expect(request.args).toContain("--die-with-parent");
+  expect(request.args).not.toContain("-f");
+  const inner = request.args.indexOf("--");
+  expect(request.args.slice(inner + 1, inner + 5)).toEqual([request.args[inner + 1]!, "app-server", "--strict-config", "--listen"]);
+  const binds: string[] = [];
+  for (let index = 0; index < request.args.length; index++) if (request.args[index] === "--ro-bind") binds.push(request.args[index + 1]!);
+  expect(binds).toContain(library);
+  const policyPath = join(dirname(port.receipt().journalPath!), "sandbox.json");
+  const policy = JSON.parse(await readFile(policyPath, "utf8"));
+  expect(policy).toMatchObject({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap", executable: request.args[inner + 1]! });
+  expect(port.receipt()).toMatchObject({ productionQualified: false, network: "denied", phase: "running" });
+  expectJoined(await f.stop(port));
+});
+
+test("a linux parent without a sandbox admission is refused, and a darwin parent refuses an admitted wrapper", async () => {
+  const linux = await fixture();
+  const refused = linux.create({}, { ...linux.host, inspectParent: () => Promise.resolve({ ...linux.parent, platform: "linux", arch: "x64" }) });
+  await expect(refused.ready).rejects.toThrow("UNAVAILABLE"); expectJoined(await linux.stop(refused), refused.binding); expect(linux.spawns).toHaveLength(0);
+
+  const darwin = await fixture(), wrapper = join(darwin.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const mismatched = darwin.create({ runtime: { ...darwin.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } });
+  await expect(mismatched.ready).rejects.toThrow("UNAVAILABLE"); expectJoined(await darwin.stop(mismatched), mismatched.binding); expect(darwin.spawns).toHaveLength(0);
+});
+
+test("a linux device-code launch refuses because provider egress has no bwrap plan", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const port = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } },
+    { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux", arch: "x64" }) });
+  await expect(port.ready).rejects.toThrow("UNAVAILABLE"); expect(f.spawns).toHaveLength(0);
+});

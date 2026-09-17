@@ -30,6 +30,8 @@ Usage:
   agentmixer auth logout       remove the stored credential
   agentmixer doctor            inspect provider binaries and admit this runtime
   agentmixer sessions          list local sessions
+  agentmixer sessions rm <id>  remove one session and its transcript
+  agentmixer sessions prune    remove sessions idle over 30 days (or N days)
   agentmixer resume [id]       continue a session (default: most recent)
   agentmixer run [-p text]     run one task headlessly (or pipe the task on stdin)
   agentmixer --version
@@ -147,16 +149,34 @@ async function latestSessionId(stateRoot: string): Promise<string | undefined> {
   }
 }
 
-async function commandSessions(stateRoot: string): Promise<number> {
+async function commandSessions(stateRoot: string, rest: readonly string[]): Promise<number> {
+  const [sub, ...args] = rest;
   const sessions = await CliSessionStore.open(join(stateRoot, "sessions"));
   try {
-    for (const session of sessions.list(64)) {
-      process.stdout.write(`${session.id}  ${dim(session.provider)}  ${dim(session.model)}  ${session.title || "(untitled)"}  ${dim(new Date(session.lastActiveAt).toISOString())}\n`);
+    if (sub === undefined) {
+      for (const session of sessions.list(64)) {
+        process.stdout.write(`${session.id}  ${dim(session.provider)}  ${dim(session.model)}  ${session.title || "(untitled)"}  ${dim(new Date(session.lastActiveAt).toISOString())}\n`);
+      }
+      return 0;
     }
+    if (sub === "rm") {
+      if (args.length !== 1) return fail("usage: agentmixer sessions rm <id>");
+      if (!await sessions.remove(args[0]!)) return fail(`session not found: ${args[0]}`);
+      process.stdout.write(`removed ${args[0]}\n`);
+      return 0;
+    }
+    if (sub === "prune") {
+      if (args.length > 1) return fail("usage: agentmixer sessions prune [days]");
+      const days = args[0] === undefined ? 30 : Number(args[0]);
+      if (!Number.isInteger(days) || days < 1 || days > 3650) return fail(`invalid days: ${args[0]}`);
+      const removed = await sessions.prune(Date.now() - days * 86_400_000);
+      process.stdout.write(`pruned ${removed} session${removed === 1 ? "" : "s"} idle over ${days} day${days === 1 ? "" : "s"}\n`);
+      return 0;
+    }
+    return fail(`unknown sessions subcommand ${sub} — supported: rm, prune`);
   } finally {
     sessions.close();
   }
-  return 0;
 }
 
 async function commandRun(prompt: string, workspace: string, stateRoot: string, provider: CliProviderName, model: string | undefined): Promise<number> {
@@ -229,7 +249,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (rest.length > 1) return fail("usage: agentmixer auth <claude|status|logout>");
     return await commandAuth(sub, stateRoot);
   }
-  if (command === "sessions") return await commandSessions(stateRoot);
+  if (command === "sessions") return await commandSessions(stateRoot, rest);
   if (command === "run") {
     const flags = parseFlags(rest);
     let prompt = flags.prompt ?? (flags.positional.length ? flags.positional.join(" ") : undefined);

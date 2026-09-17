@@ -60,7 +60,7 @@ describe("AgentMixer site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.13"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.8.0"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.10.0"');
     expect(home).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(home).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev" />');
     expect(docs).toContain('<AskAiAboutThis className="ask-ai" url="https://agentmixer.dev/docs" />');

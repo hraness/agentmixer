@@ -46,13 +46,6 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
-.brand-mark {
-  display: inline-block;
-  font-size: 1.25em;
-  line-height: 1;
-  color: var(--hraness-site-accent);
-}
-
 .agentmixer-marketing-hero .hraness-marketing-hero__heading {
   max-inline-size: 22ch;
 }

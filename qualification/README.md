@@ -20,18 +20,23 @@ fork and other executable paths remain denied. This is an explicit diagnostic
 for the current Mac, not a portable sandbox guarantee. Production use also needs
 a reviewed provider relay and exact distribution/account admission.
 
-Current result on the tested Darwin 25.5.0 ARM64 host: the converged kernel helper
-passes its nine checks. The actual pinned Claude fixture fails before its first
-initialization event, with zero model requests and no effective tool inventory.
-Consequently there is no native production qualification. A separate bounded
-`macos-native-bootstrap.ts` diagnostic runs the pinned executable's `--version`.
-Its first attempt was rejected by automatic approval review because of a reported
-usage limit. After the approval service recovered, the identical invocation was
-accepted normally and passed: exit zero, version 2.1.268. Basic executable startup
-therefore works inside the profile. The optional `--initialize` diagnostic
-captures the SDK control handshake and native stderr without sending a user
-prompt. Do not treat version output or the kernel helper as proof that the full
-native agent can run within this profile.
+Current result on the tested Darwin ARM64 host (re-verified 2026-09-17): the
+converged kernel helper passes its nine checks, the bounded
+`macos-native-bootstrap.ts` diagnostic runs the pinned executable's `--version`
+and completes the SDK `--initialize` control handshake under the experimental
+profile, and the full `claude-native.ts` fixture passes all seven scenarios under
+`--os-sandbox` — see `2026-09-17-darwin-arm64.json`. The experimental profile
+learned three grants the real binary needs that the earlier revision lacked:
+`file-read-metadata` on the `/tmp`/`/private/tmp` literals (Claude's mkdirp
+stat-walk for its per-user `claude-<uid>` dir — Seatbelt evaluates metadata ops
+on the unresolved path while data ops report canonicalized paths), ancestor
+metadata for each scratch root, and the reviewed resolver surface
+(`/etc`/`timezone`/`usr/share` reads, opendirectoryd + DNSConfiguration lookups,
+mDNSResponder/syslog sockets) behind a `runtimeSurface` flag. Egress stays
+pinned to the synthetic loopback port; `git`/`sh` exec and real-home reads
+remain denied and are part of what the fixture proves. All evidence stays
+synthetic — zero paid model requests, no real credentials — and remains no
+native production qualification.
 
 Run the explicit fixture on macOS ARM64 through the installed host scheduler:
 

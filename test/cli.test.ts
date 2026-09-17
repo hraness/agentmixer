@@ -19,7 +19,7 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
     env: {
       ...process.env, AGENTMIXER_STATE: root, NO_COLOR: "1",
       AGENTMIXER_CLAUDE: join(root, "no-such-claude"), AGENTMIXER_CODEX: join(root, "no-such-codex"),
-      PATH: join(root, "empty-path"),
+      PATH: join(root, "empty-path"), HOME: root,
     },
     stdin: input === undefined ? "ignore" : "pipe",
     stdout: "pipe", stderr: "pipe",

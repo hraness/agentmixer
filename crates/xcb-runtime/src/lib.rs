@@ -4,6 +4,7 @@ pub mod broker;
 pub mod claude;
 pub mod config;
 pub mod context;
+pub mod exports;
 pub mod hooks;
 pub mod kernel;
 pub mod panes;

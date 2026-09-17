@@ -15,7 +15,7 @@ use xcb_core::{
 use xcb_runtime::{
     Error, Result, auth,
     config::Config,
-    hooks, kernel, now_ms, panes, private,
+    exports, hooks, kernel, now_ms, panes, private,
     process::{self, Pin},
     runner::{self, Observer, Progress},
     store::Store,
@@ -136,6 +136,7 @@ enum ModelCommand {
 }
 #[derive(Subcommand)]
 enum SessionCommand {
+    Export,
     Rm {
         id: Id,
         #[arg(long)]
@@ -588,6 +589,19 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                                 session.title
                             );
                         }
+                    }
+                }
+                Some(SessionCommand::Export) => {
+                    let path = exports::write(&store)?;
+                    if cli.json {
+                        print_json(
+                            json!({"version":1,"profile":"session-observations-v1","path":path}),
+                        )?;
+                    } else {
+                        println!(
+                            "Exported local aiCharts session observations to {}",
+                            path.display()
+                        );
                     }
                 }
                 Some(SessionCommand::Rm { id, yes }) => {

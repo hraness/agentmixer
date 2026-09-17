@@ -1918,7 +1918,6 @@ name = "xcb-runtime"
 version = "0.1.0"
 dependencies = [
  "aicharts-core",
- "aicharts-protocol",
  "base64",
  "getrandom",
  "gobstopper-core",

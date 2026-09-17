@@ -11,7 +11,6 @@ workspace = true
 
 [dependencies]
 aicharts-core = { git = "https://github.com/hraness/aicharts", rev = "091433796f7253386c3e3186c67c275fb273b704", version = "0.1.0" }
-aicharts-protocol = { git = "https://github.com/hraness/aicharts", rev = "091433796f7253386c3e3186c67c275fb273b704", version = "0.1.0" }
 base64 = "=0.22.1"
 getrandom = "=0.3.4"
 gobstopper-core = { git = "https://github.com/hraness/gobstopper", rev = "8bf355c4c86027a4d26136a4761979081b7fd8a0", version = "0.1.0" }

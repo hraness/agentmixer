@@ -390,7 +390,7 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
       const env: Record<string, string> = {
         HOME: home, CLAUDE_CONFIG_DIR: authDirectoryResolved, TMPDIR: temp, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8",
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.2.0", NO_COLOR: "1",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.3.0", NO_COLOR: "1",
       };
       if (authentication === "api") {
         return await credentials!.withApiKey(request.accountId, slot.controller.signal, async (apiKey) => {

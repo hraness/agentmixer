@@ -401,16 +401,25 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
             ));
         }
         Source::Activity => {
-            lines.push(Line::from(Span::styled("Tool activity", muted())));
-            lines.extend(
-                app.view
-                    .activity
-                    .iter()
-                    .rev()
-                    .take(32)
-                    .rev()
-                    .map(|text| Line::from(clean(text))),
-            );
+            lines.push(Line::from(Span::styled(
+                if app.show_activity {
+                    "Tool activity · Ctrl-U hides"
+                } else {
+                    "Tool activity hidden · Ctrl-U reveals"
+                },
+                muted(),
+            )));
+            if app.show_activity {
+                lines.extend(
+                    app.view
+                        .activity
+                        .iter()
+                        .rev()
+                        .take(32)
+                        .rev()
+                        .map(|text| Line::from(clean(text))),
+                );
+            }
         }
         Source::Extensions => {
             lines.extend(

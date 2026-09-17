@@ -414,10 +414,18 @@ fn start(
                 activity.tools.push(name);
             }
         }
-        Progress::Subagent(agent) => {
+        Progress::Subagent(mut agent) => {
             if let Ok(mut activity) = activity_copy.lock()
                 && (activity.subagents.len() < 64 || activity.subagents.contains_key(&agent.id))
             {
+                if let Some(previous) = activity.subagents.get(&agent.id) {
+                    if agent.label == "Subagent" {
+                        agent.label.clone_from(&previous.label);
+                    }
+                    if agent.model.is_none() {
+                        agent.model.clone_from(&previous.model);
+                    }
+                }
                 activity.subagents.insert(agent.id.clone(), agent);
             }
         }

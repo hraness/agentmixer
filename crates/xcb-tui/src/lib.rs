@@ -70,6 +70,7 @@ pub struct App {
     pub modal: Option<Modal>,
     pub show_thinking: bool,
     pub show_history: bool,
+    pub show_activity: bool,
     pub scroll: u16,
     pending_image: bool,
 }
@@ -160,7 +161,7 @@ impl App {
         let (command, arguments) = input.split_once(' ').unwrap_or((input, ""));
         let arguments = arguments.trim();
         match command {
-            "/help" => self.notice = "/model · /accounts · /sessions · /new · /default · /pane [edit|generate ...] · /attach path · /plugin name on|off · /quit".into(),
+            "/help" => self.notice = "/model · /accounts · /sessions · /new · /default · /pane [edit|generate ...] · /attach path · /plugin name on|off · Ctrl-T thinking · Ctrl-O history · Ctrl-U tools · /quit".into(),
             "/quit" | "/exit" => { self.send(output, Intent::Quit); return false; }
             "/new" => self.send(output, Intent::NewSession),
             "/default" => self.send(output, Intent::SetDefault),
@@ -205,6 +206,10 @@ impl App {
                     }
                     KeyCode::Char('o') => {
                         self.show_history = !self.show_history;
+                        return true;
+                    }
+                    KeyCode::Char('u') => {
+                        self.show_activity = !self.show_activity;
                         return true;
                     }
                     KeyCode::Char('p') => {

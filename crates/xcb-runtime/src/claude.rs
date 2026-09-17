@@ -36,6 +36,7 @@ pub enum Event {
         id: String,
         status: String,
         label: String,
+        model: Option<String>,
     },
     Notice,
 }
@@ -48,6 +49,13 @@ fn string<'a>(value: &'a Value, key: &str, max: usize) -> Result<&'a str> {
         return Err(Error::Protocol("oversized string"));
     }
     Ok(text)
+}
+fn optional_string(value: &Value, key: &str, max: usize) -> Result<Option<String>> {
+    value
+        .get(key)
+        .filter(|value| !value.is_null())
+        .map(|_| string(value, key, max).map(str::to_owned))
+        .transpose()
 }
 fn number(value: &Value, key: &str) -> Result<u64> {
     value
@@ -101,11 +109,13 @@ pub fn parse_event(bytes: &[u8]) -> Result<Event> {
                         .unwrap_or("Subagent"),
                     160,
                 ),
+                model: optional_string(&value, "model", 160)?,
             }),
             Some("task_notification") => Ok(Event::Subagent {
                 id: string(&value, "task_id", 160)?.to_owned(),
                 status: string(&value, "status", 40)?.to_owned(),
                 label: "Subagent".into(),
+                model: optional_string(&value, "model", 160)?,
             }),
             _ => Ok(Event::Notice),
         },

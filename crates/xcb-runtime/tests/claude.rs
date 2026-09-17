@@ -53,6 +53,20 @@ fn malformed_recognized_events_refuse_and_unknown_events_are_inert() {
 }
 
 #[test]
+fn subagent_events_preserve_reported_model_metadata() {
+    let event = br#"{"type":"system","subtype":"task_started","task_id":"agent_1","description":"Review tests","model":"claude-fable-5-1"}"#;
+    assert!(matches!(
+        parse_event(event).unwrap(),
+        Event::Subagent { ref model, .. } if model.as_deref() == Some("claude-fable-5-1")
+    ));
+    let oversized = format!(
+        "{{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"agent_1\",\"model\":\"{}\"}}",
+        "x".repeat(161)
+    );
+    assert!(parse_event(oversized.as_bytes()).is_err());
+}
+
+#[test]
 fn catalog_keeps_selection_token_and_resolved_model_separate() {
     let catalog = serde_json::json!({"models":[
         {"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)","supportedEffortLevels":["high","max"]},

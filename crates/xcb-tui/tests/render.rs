@@ -58,6 +58,38 @@ fn every_preset_and_narrow_terminal_retains_model_and_status_chrome() {
 }
 
 #[test]
+fn tool_activity_is_hidden_until_explicitly_revealed() {
+    let mut app = app();
+    app.view.pane = Pane::presets().remove(2);
+    app.view.activity = vec!["private tool detail".into()];
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let hidden: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(hidden.contains("Tool activity hidden"));
+    assert!(!hidden.contains("private tool detail"));
+    app.show_activity = true;
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let shown: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(shown.contains("private tool detail"));
+}
+
+#[test]
 fn tiny_terminal_and_large_text_cannot_panic_the_renderer() {
     for (width, height) in [(0, 0), (1, 1), (20, 5), (40, 8), (200, 60)] {
         let mut app = app();

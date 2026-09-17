@@ -716,19 +716,22 @@ pub async fn run(
                     }
                     return Ok((terminal, models));
                 }
-                Event::Subagent { id, status, label } if admitted => {
-                    observer(Progress::Subagent(Subagent {
-                        id: Id::new(id)?,
-                        label,
-                        state: match status.as_str() {
-                            "working" | "running" => State::Working,
-                            "completed" => State::Idle,
-                            "failed" => State::Failed,
-                            _ => State::Uncertain,
-                        },
-                        model: None,
-                    }))
-                }
+                Event::Subagent {
+                    id,
+                    status,
+                    label,
+                    model,
+                } if admitted => observer(Progress::Subagent(Subagent {
+                    id: Id::new(id)?,
+                    label,
+                    state: match status.as_str() {
+                        "working" | "running" => State::Working,
+                        "completed" => State::Idle,
+                        "failed" => State::Failed,
+                        _ => State::Uncertain,
+                    },
+                    model,
+                })),
                 Event::Notice | Event::ControlResponse(_) => (),
                 _ => {
                     return Err(Error::Protocol(

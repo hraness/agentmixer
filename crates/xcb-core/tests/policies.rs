@@ -23,12 +23,15 @@ fn route(account: &str, model: &str) -> RouteCandidate {
     }
 }
 fn facts(failure: Failure) -> TurnFacts {
+    facts_with_terminal(Terminal::Failed, Some(failure))
+}
+fn facts_with_terminal(terminal: Terminal, failure: Option<Failure>) -> TurnFacts {
     TurnFacts {
-        terminal: Terminal::Failed,
+        terminal,
         joined: true,
         effects: EffectState::Settled,
         pending_attention: false,
-        failure: Some(failure),
+        failure,
     }
 }
 
@@ -141,6 +144,37 @@ fn unadmitted_stale_or_already_tried_targets_are_excluded() {
             &[target],
             &tried,
             &facts(Failure::AccountQuota),
+            true
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn quota_failover_only_happens_at_failed_terminal_boundary() {
+    let current = route("personal", "swe-2-high");
+    let candidates = [route("work", "gpt-6-astra-max")];
+    for terminal in [
+        Terminal::TokenLimit,
+        Terminal::TurnLimit,
+        Terminal::Completed,
+        Terminal::Cancelled,
+    ] {
+        for failure in [Some(Failure::AccountQuota), Some(Failure::ModelQuota)] {
+            let stale = facts_with_terminal(terminal, failure);
+            assert!(
+                next_route(&current, &candidates, &BTreeSet::new(), &stale, true).is_none(),
+                "{terminal:?} with {failure:?} should not trigger failover",
+            );
+        }
+    }
+    let failed_no_failure = facts_with_terminal(Terminal::Failed, None);
+    assert!(
+        next_route(
+            &current,
+            &candidates,
+            &BTreeSet::new(),
+            &failed_no_failure,
             true
         )
         .is_none()

@@ -1919,10 +1919,8 @@ version = "0.1.0"
 dependencies = [
  "aicharts-core",
  "base64",
- "getrandom",
  "gobstopper-core",
  "hex",
- "hmac",
  "image",
  "regex",
  "rusqlite",

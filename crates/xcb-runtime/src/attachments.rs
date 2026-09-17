@@ -1,7 +1,7 @@
 use crate::{Error, Result, digest, private};
 use image::{GenericImageView, ImageFormat, ImageReader, Limits};
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{Cursor, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
@@ -57,11 +57,20 @@ pub fn store(root: &Path, bytes: &[u8]) -> Result<Attachment> {
     Ok(attachment)
 }
 
-pub fn from_path(root: &Path, path: &Path) -> Result<Attachment> {
-    let file = OpenOptions::new()
+fn open_image_file(path: &Path) -> Result<File> {
+    Ok(OpenOptions::new()
         .read(true)
-        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
-        .open(path)?;
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(path)?)
+}
+
+pub fn from_path(root: &Path, path: &Path) -> Result<Attachment> {
+    let file = open_image_file(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() || meta.nlink() != 1 || meta.len() > MAX_BYTES as u64 {
         return Err(xcb_core::Error::Invalid("image file").into());
@@ -105,4 +114,33 @@ pub fn read(root: &Path, attachment: &Attachment) -> Result<Vec<u8>> {
         return Err(Error::Conflict("attachment changed"));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::io::{FdFlags, fcntl_getfd};
+
+    #[test]
+    fn attachment_descriptor_has_cloexec() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("image.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let file = open_image_file(&path).unwrap();
+        let flags = fcntl_getfd(&file).unwrap();
+        assert!(flags.contains(FdFlags::CLOEXEC));
+    }
+
+    #[test]
+    fn from_path_still_loads_valid_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("state");
+        let store = crate::store::Store::open(&root).unwrap();
+        let image = image::RgbaImage::from_raw(2, 2, vec![255; 16]).unwrap();
+        let path = directory.path().join("image.png");
+        image.save(&path).unwrap();
+        let attachment = from_path(store.root(), &path).unwrap();
+        assert_eq!(attachment.media_type, "image/png");
+        assert_eq!((attachment.width, attachment.height), (2, 2));
+    }
 }

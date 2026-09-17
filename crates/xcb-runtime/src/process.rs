@@ -52,11 +52,17 @@ pub fn environment(home: &Path) -> BTreeMap<String, String> {
 fn executable_file(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
         .open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file()
         || ![0, rustix::process::getuid().as_raw()].contains(&meta.uid())
+        || meta.mode() & 0o7000 != 0
         || meta.mode() & 0o022 != 0
         || meta.mode() & 0o111 == 0
         || meta.len() == 0
@@ -166,6 +172,7 @@ impl Pin {
             .write(true)
             .create_new(true)
             .mode(0o500)
+            .custom_flags((rustix::fs::OFlags::CLOEXEC).bits() as i32)
             .open(&path)?;
         std::io::copy(&mut source.take(512 * 1024 * 1024 + 1), &mut target)?;
         target.flush()?;
@@ -316,7 +323,7 @@ impl StreamProcess {
         })
         .await
         .unwrap_or(false);
-        joined && test_kill_process_group(group) == Err(rustix::io::Errno::SRCH)
+        joined && group_absent(group).await
     }
 }
 impl Drop for StreamProcess {
@@ -324,6 +331,19 @@ impl Drop for StreamProcess {
         self.signal();
         self.stderr.abort();
     }
+}
+
+async fn group_absent(group: Pid) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if test_kill_process_group(group) == Err(rustix::io::Errno::SRCH) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 async fn drain(mut source: impl AsyncRead + Unpin, max: usize) -> Result<()> {
@@ -394,7 +414,7 @@ pub async fn capture_with_input(
             return Err(Error::Unavailable("child did not join"));
         }
     };
-    if test_kill_process_group(group) != Err(rustix::io::Errno::SRCH) {
+    if !group_absent(group).await {
         return Err(Error::Unavailable("process group did not join"));
     }
     if timed_out {
@@ -442,11 +462,47 @@ pub async fn capture(mut command: Command, max: usize, deadline: Duration) -> Re
     let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
         .await
         .map_err(|_| Error::Unavailable("child did not join"))??;
-    if test_kill_process_group(group) != Err(rustix::io::Errno::SRCH) {
+    if !group_absent(group).await {
         return Err(Error::Unavailable("process group did not join"));
     }
     if !status.success() {
         return Err(Error::Unavailable("provider command failed"));
     }
     result.map_err(|_| Error::Unavailable("provider command timed out"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::io::{FdFlags, fcntl_getfd};
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+
+    fn write_executable(directory: &std::path::Path, mode: u32) -> PathBuf {
+        let path = directory.join("provider");
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[test]
+    fn admitted_executable_descriptor_has_cloexec() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = write_executable(directory.path(), 0o500);
+        let file = executable_file(&path).unwrap();
+        let flags = fcntl_getfd(&file).unwrap();
+        assert!(flags.contains(FdFlags::CLOEXEC));
+    }
+
+    #[test]
+    fn setuid_setgid_and_sticky_executables_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        for mode in [0o4755, 0o2755, 0o6755, 0o1755] {
+            let path = write_executable(directory.path(), mode);
+            assert!(
+                executable_file(&path).is_err(),
+                "mode 0o{mode:o} should be rejected",
+            );
+        }
+    }
 }

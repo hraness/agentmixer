@@ -34,7 +34,8 @@
   },
   "files": [
     "dist",
-    "MANAGED-CODEX.md"
+    "MANAGED-CODEX.md",
+    "sandbox"
   ],
   "scripts": {
     "build:dist": "bun scripts/build-dist.ts",

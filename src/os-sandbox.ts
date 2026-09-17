@@ -57,6 +57,14 @@ export type OsSandboxSpec = Readonly<{
    * `"provider-tcp443-dns"` on a bwrap plan; refused by seatbelt, whose
    * profile carries egress internally. */
   egressSocket?: string;
+  /** Optional in-namespace CONNECT forwarder for stock binaries that do not
+   * consume the bridge socket natively: an admitted JS runtime plus the
+   * admitted forwarder script are bound read-only and become the namespace
+   * entry point — `runtime script <socket> <port> - -- <executable> <args>`.
+   * The forwarder binds `127.0.0.1:<port>` and launches the child with
+   * standard proxy variables, so the plan env needs no proxy keys. Requires
+   * `egressSocket`; refused by seatbelt. */
+  egressForward?: Readonly<{ runtime: string; script: string; port: number }>;
   /** Absolute path of the durable policy artifact the caller persists
    * (`sandbox.sb`, `sandbox.json`). Identity flows into custody journals. */
   policyPath: string;
@@ -111,7 +119,7 @@ function arg(value: string, code: string): string {
   return value;
 }
 function specOf(value: unknown): OsSandboxSpec {
-  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "egressSocket", "policyPath"]);
+  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "egressSocket", "egressForward", "policyPath"]);
   const platform = raw.platform;
   assert(platform === "darwin" || platform === "linux", "OS_SANDBOX_PLATFORM_INVALID");
   const readOnly = raw.readOnlyPaths === undefined ? [] : (() => {
@@ -123,10 +131,20 @@ function specOf(value: unknown): OsSandboxSpec {
   const executable = path(raw.executable), scratch = path(raw.scratch), policyPath = path(raw.policyPath);
   const egressSocket = raw.egressSocket === undefined ? undefined : path(raw.egressSocket);
   assert(egressSocket === undefined || network === "provider-tcp443-dns", "OS_SANDBOX_EGRESS_UNEXPECTED");
+  const egressForward = raw.egressForward === undefined ? undefined : (() => {
+    const forward = object(raw.egressForward, ["runtime", "script", "port"]);
+    const port = forward.port;
+    assert(Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535, "OS_SANDBOX_EGRESS_PORT_INVALID");
+    return Object.freeze({ runtime: path(forward.runtime), script: path(forward.script), port: port as number });
+  })();
+  // A forwarder is meaningless without the bridge socket it translates to;
+  // conversely the socket alone is the native-consumption contract.
+  assert(egressForward === undefined || egressSocket !== undefined, "OS_SANDBOX_EGRESS_UNEXPECTED");
   const spec = Object.freeze({ platform, executable, scratch,
     ...(raw.accountHome === undefined ? {} : { accountHome: path(raw.accountHome) }),
     readOnlyPaths: Object.freeze(readOnly), network,
-    ...(egressSocket === undefined ? {} : { egressSocket }), policyPath });
+    ...(egressSocket === undefined ? {} : { egressSocket }),
+    ...(egressForward === undefined ? {} : { egressForward }), policyPath });
   // The writable roots must not contain or enclose the executable or each
   // other: a rw bind over the exe would let the child replace it.
   const inside = (inner: string, outer: string) => inner === outer || inner.startsWith(outer + "/");
@@ -138,6 +156,13 @@ function specOf(value: unknown): OsSandboxSpec {
   // roots could be replaced by the child before the bridge notices.
   assert(egressSocket === undefined || (!inside(egressSocket, scratch)
     && (spec.accountHome === undefined || !inside(egressSocket, spec.accountHome))), "OS_SANDBOX_LAYOUT_INVALID");
+  // Forwarder artifacts get the same non-containment rule as the executable:
+  // a rw bind must never cover the entry point the namespace actually runs.
+  assert(egressForward === undefined
+    || (!inside(egressForward.runtime, scratch) && !inside(egressForward.script, scratch)
+      && (spec.accountHome === undefined
+        || (!inside(egressForward.runtime, spec.accountHome) && !inside(egressForward.script, spec.accountHome)))),
+    "OS_SANDBOX_LAYOUT_INVALID");
   return spec;
 }
 function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<Record<string, string>>; cwd: string } {
@@ -159,13 +184,15 @@ function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<R
 
 /** Re-verifies an admitted executable from a checked descriptor: owner,
  * file identity, size bound, no-follow canonical path, and exact SHA-256.
+ * The owner may be the current user or root — a root-owned system tool like
+ * a distribution `bwrap` is at least as tamper-evident as a user-owned file.
  * Any mutation or relabel is `OS_SANDBOX_EXECUTABLE_CHANGED`; a missing or
  * non-file path is `OS_SANDBOX_EXECUTABLE_INVALID`. */
 export async function verifyOsSandboxExecutable(executablePath: string, sha256: string, sizeLimit: bigint): Promise<void> {
   const fd = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => fail("OS_SANDBOX_EXECUTABLE_INVALID"));
   try {
     const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && before.uid === BigInt(process.getuid!()) && before.size > 0n && before.size <= sizeLimit, "OS_SANDBOX_EXECUTABLE_INVALID");
+    assert(before.isFile() && [0n, BigInt(process.getuid!())].includes(before.uid) && before.size > 0n && before.size <= sizeLimit, "OS_SANDBOX_EXECUTABLE_INVALID");
     const fileHash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024); let read = 0;
     while (read <= Number(before.size)) {
       const count = (await fd.read(buffer, 0, Math.min(buffer.length, Number(before.size) + 1 - read), read)).bytesRead;
@@ -186,9 +213,10 @@ export async function verifyOsSandboxExecutable(executablePath: string, sha256: 
 export function planSeatbeltPolicy(input: OsSandboxSpec, policy: string): OsSandboxPlan {
   const spec = specOf(input);
   assert(spec.platform === "darwin", "OS_SANDBOX_PLATFORM_MISMATCH");
-  // Seatbelt carries egress inside its reviewed profile; a bridge socket is
-  // never consumed and admitting one silently would misrecord the plan.
-  assert(spec.egressSocket === undefined, "OS_SANDBOX_EGRESS_UNEXPECTED");
+  // Seatbelt carries egress inside its reviewed profile; a bridge socket or
+  // forwarder is never consumed and admitting one silently would misrecord
+  // the plan.
+  assert(spec.egressSocket === undefined && spec.egressForward === undefined, "OS_SANDBOX_EGRESS_UNEXPECTED");
   assert(typeof policy === "string" && policy.length > 0 && policy.length <= 64 * 1024, "OS_SANDBOX_POLICY_INVALID");
   const policyPath = spec.policyPath, executable = spec.executable;
   return Object.freeze({ backend: "seatbelt", policy, policySha256: hash(policy),
@@ -220,13 +248,18 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
     { mode: "rw" as const, target: spec.scratch },
     ...(spec.accountHome === undefined ? [] : [{ mode: "rw" as const, target: spec.accountHome }]),
     ...(spec.egressSocket === undefined ? [] : [{ mode: "rw" as const, target: spec.egressSocket }]),
+    ...(spec.egressForward === undefined ? [] : [
+      { mode: "ro" as const, target: spec.egressForward.runtime },
+      { mode: "ro" as const, target: spec.egressForward.script }]),
   ]);
   // The canonical policy binds every mount decision before any argv is
   // wrapped: namespace flags, bind set, and the in-sandbox executable.
   const policy = JSON.stringify({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap",
     namespaces: ["user", "mount", "pid", "ipc", "uts", "cgroup", "net"], newSession: true, dieWithParent: true,
     executable: spec.executable, binds,
-    ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443" } }) }) + "\n";
+    ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443",
+      ...(spec.egressForward === undefined ? {} : { forwarder: { runtime: spec.egressForward.runtime,
+        script: spec.egressForward.script, port: spec.egressForward.port, protocol: "http-connect-loopback" } }) } }) }) + "\n";
   const prefix = [
     "--unshare-all", "--new-session", "--die-with-parent",
     "--proc", "/proc", "--dev", "/dev",
@@ -239,7 +272,14 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
       // --clearenv scrubs ambient secrets; the child's environment is
       // exactly the caller-closed map, rebuilt in sorted key order.
       const setenv = Object.keys(wrapped.env).sort().flatMap(key => ["--setenv", key, wrapped.env[key]!]);
-      return { args: Object.freeze([...prefix, ...setenv, "--chdir", wrapped.cwd, "--", spec.executable, ...wrapped.args]),
+      // With a forwarder admitted, the namespace entry point is the runtime
+      // running the script; the provider executable becomes the supervised
+      // child after `--`. `-` keeps the diagnostic lo-up hook unused.
+      const entrypoint = spec.egressForward === undefined
+        ? [spec.executable]
+        : [spec.egressForward.runtime, spec.egressForward.script, spec.egressSocket!,
+          String(spec.egressForward.port), "-", "--", spec.executable];
+      return { args: Object.freeze([...prefix, ...setenv, "--chdir", wrapped.cwd, "--", ...entrypoint, ...wrapped.args]),
         // bwrap itself needs nothing beyond a minimal PATH; the policy env
         // is delivered exclusively through --setenv.
         env: Object.freeze({ PATH: "/usr/bin:/bin" }) };

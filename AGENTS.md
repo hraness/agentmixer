@@ -9,7 +9,10 @@
   (`os-sandbox.ts`; never add a silent unsandboxed fallback), and the
   host-side unix-socket CONNECT egress bridge (`egress-bridge.ts`) that makes
   `provider-tcp443-dns` plannable on Linux bwrap without unsharing the child's
-  network namespace.
+  network namespace — plus its two consumers: the public `egress-client.ts`
+  for cooperative runtimes and `sandbox/loopback-forwarder.cjs`, the shipped
+  in-namespace forwarder that gives stock binaries standard `HTTPS_PROXY`
+  egress through the socket.
   `src/index.ts` is the package's complete public surface.
 - `src/cli/` is the standalone `agentmixer` terminal surface (`cli.ts` entry,
   chat/run/resume/sessions/doctor/auth commands) built on the same task
@@ -18,9 +21,11 @@
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
-  Textbutler import. `linux-sandbox.ts` is the bwrap kernel-boundary probe and
-  `linux-egress.ts` is the CONNECT-bridge boundary probe; both are evidence,
-  not activation.
+  Textbutler import. `linux-sandbox.ts` is the bwrap kernel-boundary probe,
+  `linux-egress.ts` is the CONNECT-bridge boundary probe, and
+  `linux-loopback.ts` is the stock-binary forwarder probe; all are evidence,
+  not activation. The `Qualification` workflow runs them on `ubuntu-24.04`
+  and uploads the JSON evidence.
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
 - `site/` is the informational public project page (Next.js, deployed to

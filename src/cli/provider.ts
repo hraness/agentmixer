@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import type { AgentTaskAdapter } from "../task-runtime.ts";
 import { createClaudeTaskAdapter, claudeTaskRuntimeIdentity, type ClaudeTaskEvents } from "../claude-task-adapter.ts";
 import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
@@ -6,7 +8,7 @@ import type { CapabilityProfile } from "../capabilities.ts";
 
 import { inspectCliBinary, type CliBinaryInspection, type CliProviderName } from "./binaries.ts";
 import { providerAuthDirs, readClaudeOAuthToken } from "./auth.ts";
-import { claudeCliProcessFactory } from "./sandbox.ts";
+import { claudeCliProcessFactory, prepareCliLinuxSandbox, type CliLinuxSandbox } from "./sandbox.ts";
 import { buildQualificationRecord, readCliQualification, toTaskQualification, writeCliQualification, type CliQualificationRecord } from "./qualification.ts";
 import { privateDirectory } from "./state.ts";
 
@@ -16,8 +18,8 @@ export const CLI_CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-5";
 export const CLI_CODEX_DEFAULT_MODEL = "gpt-5.1-codex-mini";
 
 export type CliProviderState =
-  | Readonly<{ status: "ready"; adapter: AgentTaskAdapter; inspection: CliBinaryInspection; record: CliQualificationRecord }>
-  | Readonly<{ status: "binary-missing" | "version-mismatch" | "unadmitted"; inspection: CliBinaryInspection | null }>;
+  | Readonly<{ status: "ready"; adapter: AgentTaskAdapter; inspection: CliBinaryInspection; record: CliQualificationRecord; close?: () => Promise<unknown> }>
+  | Readonly<{ status: "binary-missing" | "version-mismatch" | "unadmitted" | "sandbox-unavailable"; inspection: CliBinaryInspection | null }>;
 
 export const CLI_SYSTEM_PROMPT = [
   "You are AgentMixer, a coding assistant running inside the user's terminal.",
@@ -80,9 +82,19 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
     const qualification = toTaskQualification(record, { route, profile, runtimeVersion: identity.version, runtimeDigest: identity.digest });
     // On darwin the provider process is wrapped in seatbelt: writable access
     // is confined to the per-run scratch and the managed auth directory, and
-    // egress is limited to TCP 443 plus the system resolver. Off-darwin keeps
-    // the existing bounded-process custody (no OS sandbox claim).
-    const processFactory = claudeCliProcessFactory(config);
+    // egress is limited to TCP 443 plus the system resolver. On Linux an
+    // admitted bwrap plan plus the in-namespace CONNECT forwarder provides
+    // the equivalent boundary; if that surface cannot be prepared the
+    // provider is unavailable rather than silently unsandboxed. Other
+    // platforms keep the existing bounded-process custody (no OS sandbox
+    // claim).
+    let linuxSandbox: CliLinuxSandbox | undefined;
+    if (process.platform === "linux") {
+      const bridgeDirectory = join(await privateDirectory(stateRoot), "egress");
+      linuxSandbox = await prepareCliLinuxSandbox({ bridgeDirectory }).catch(() => null) ?? undefined;
+      if (linuxSandbox === undefined) return Object.freeze({ status: "sandbox-unavailable", inspection });
+    }
+    const processFactory = claudeCliProcessFactory(config, linuxSandbox);
     const adapter = createClaudeTaskAdapter({
       route, runtime, stateRoot, authDirectory: config,
       authentication: "subscription", qualification, systemPrompt: CLI_SYSTEM_PROMPT,
@@ -94,8 +106,12 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
       ...(events === undefined ? {} : { events }),
       ...(processFactory === undefined ? {} : { processFactory }),
     });
-    if (qualification.status !== "qualified") return Object.freeze({ status: "unadmitted", inspection });
-    return Object.freeze({ status: "ready", adapter, inspection, record });
+    if (qualification.status !== "qualified") {
+      await linuxSandbox?.close().catch(() => {});
+      return Object.freeze({ status: "unadmitted", inspection });
+    }
+    return Object.freeze({ status: "ready", adapter, inspection, record,
+      ...(linuxSandbox === undefined ? {} : { close: () => linuxSandbox.close() }) });
   }
   return Object.freeze({ status: "unadmitted", inspection });
 }

@@ -163,7 +163,13 @@ export async function createEgressBridge(options: EgressBridgeOptions): Promise<
         : new Promise<void>(done => socket.once("close", () => done())));
       for (const socket of [...sockets]) socket.destroy();
       const joined = await Promise.race([
-        Promise.all(waits).then(() => sockets.size === 0),
+        Promise.all(waits).then(async () => {
+          // A socket flagged `destroyed` skips its waiter while its `close`
+          // dispatch — and settle()'s removal — is still pending; drain a tick
+          // so the size check cannot read between the flag and the event.
+          await new Promise<void>(done => setImmediate(done));
+          return sockets.size === 0;
+        }),
         new Promise<boolean>(done => setTimeout(() => done(false), HANDSHAKE_MS)),
       ]);
       const listenerClosed = await new Promise<boolean>(done => server.close(() => done(true)));

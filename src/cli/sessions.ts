@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { appendFile, lstat, mkdir, open } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { SqliteDatabase } from "../sqlite-port.ts";
@@ -127,6 +127,27 @@ export class CliSessionStore {
       `UPDATE agentmixer_cli_sessions SET title=?, last_active_at=?, turns=turns+? WHERE id=? RETURNING *`,
     ).get(title, safeInteger(now, 0, Number.MAX_SAFE_INTEGER), entries.length, current.id);
     return row === null ? current : sessionFrom(row);
+  }
+
+  /** Remove one session row and its transcript file. Returns false when absent. */
+  async remove(id: string): Promise<boolean> {
+    const session = this.get(id);
+    if (session === null) return false;
+    this.database.query<unknown, [string]>("DELETE FROM agentmixer_cli_sessions WHERE id=?").run(session.id);
+    await rm(this.transcriptPath(session.id), { force: true });
+    return true;
+  }
+
+  /** Remove every session idle since before `beforeMs`; returns the count. */
+  async prune(beforeMs: number): Promise<number> {
+    const rows = this.database.query<Readonly<{ id: string }>, [number]>(
+      "SELECT id FROM agentmixer_cli_sessions WHERE last_active_at < ?",
+    ).all(safeInteger(beforeMs, 0, Number.MAX_SAFE_INTEGER));
+    let removed = 0;
+    for (const row of rows) {
+      if (await this.remove(row.id)) removed += 1;
+    }
+    return removed;
   }
 
   async transcript(id: string, limitBytes = MAX_TRANSCRIPT_BYTES): Promise<readonly CliTranscriptEntry[]> {

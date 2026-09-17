@@ -23,6 +23,20 @@ fn status_color(state: State) -> Color {
         State::Cancelled => Color::DarkGray,
     }
 }
+fn status_symbol(state: State) -> &'static str {
+    match state {
+        State::Idle => "○",
+        State::Working => "●",
+        State::NeedsAnswer => "?",
+        State::NeedsAction => "!",
+        State::NeedsApproval => "✓?",
+        State::Limited => "↓",
+        State::Failed => "×",
+        State::Cancelled => "–",
+        State::Uncertain => "!?",
+    }
+}
+
 fn muted() -> Style {
     Style::default().fg(Color::DarkGray)
 }
@@ -39,16 +53,18 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
         );
         return;
     }
+    let attachment_height = (app.attachments.len() as u16).min(3);
     let input_height = (app.composer.textarea.lines().len() as u16)
         .saturating_add(2)
         .clamp(3, 8)
-        .min(area.height.saturating_sub(4));
+        .min(area.height.saturating_sub(4 + attachment_height));
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
+            Constraint::Length(attachment_height),
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
@@ -100,13 +116,37 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
         Paragraph::new(clean(notice)).style(Style::default().fg(Color::Yellow)),
         parts[2],
     );
+    if !app.attachments.is_empty() {
+        let visible = app
+            .attachments
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .map(|attachment| {
+                let kind = attachment
+                    .media_type
+                    .strip_prefix("image/")
+                    .unwrap_or(&attachment.media_type);
+                Line::from(format!(
+                    "[image:{} {}×{} · {} KiB]",
+                    display_text(kind, 32),
+                    attachment.width,
+                    attachment.height,
+                    attachment.bytes.div_ceil(1024)
+                ))
+            });
+        frame.render_widget(
+            Paragraph::new(Text::from_iter(visible)).style(muted()),
+            parts[3],
+        );
+    }
     let attachment_hint = if app.attachments.is_empty() {
         String::new()
     } else {
         format!(
-            " {} image{} · Alt-Backspace removes last ",
-            app.attachments.len(),
-            if app.attachments.len() == 1 { "" } else { "s" }
+            " {} attached · Alt-Backspace removes last ",
+            app.attachments.len()
         )
     };
     app.composer.textarea.set_block(
@@ -125,20 +165,32 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
         } else {
             "Message, /model, /accounts, /pane · Ctrl-V pastes images"
         });
-    frame.render_widget(&app.composer.textarea, parts[3]);
+    frame.render_widget(&app.composer.textarea, parts[4]);
     let mut color = status_color(app.view.state);
     if app.view.state.attention() && !app.view.reduced_motion && (ticks / 16).is_multiple_of(2) {
         color = Color::LightYellow;
     }
-    let status = format!(" {} ", app.view.state.label());
-    let footer = Layout::horizontal([Constraint::Min(0), Constraint::Length(status.len() as u16)])
-        .split(parts[4]);
+    let status = format!(
+        " {} {} ",
+        status_symbol(app.view.state),
+        app.view.state.label()
+    );
+    let footer = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(status.chars().count() as u16),
+    ])
+    .split(parts[5]);
     let model = app
         .view
         .session
         .as_ref()
-        .map(|session| format!("{} · {}", session.model.provider, session.model.label))
-        .unwrap_or_else(|| "Choose an account with /accounts".into());
+        .map(|session| {
+            format!(
+                "{} · {} · ? help",
+                session.model.provider, session.model.label
+            )
+        })
+        .unwrap_or_else(|| "Choose an account with /accounts · ? help".into());
     frame.render_widget(
         Paragraph::new(clean(&model)).style(Style::default().add_modifier(Modifier::BOLD)),
         footer[0],
@@ -242,11 +294,16 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
             }
         }
         Source::Thinking => {
+            let heading = if app.show_thinking {
+                "▾ Thinking · Ctrl-T collapses"
+            } else {
+                "▸ Thinking · Ctrl-T expands"
+            };
             lines.push(Line::from(Span::styled(
-                if app.show_thinking {
-                    "▾ Thinking · Ctrl-T collapses"
+                if app.scroll > 0 {
+                    format!("{heading} · ↑ paused · End follows")
                 } else {
-                    "▸ Thinking · Ctrl-T expands"
+                    heading.into()
                 },
                 muted(),
             )));
@@ -270,11 +327,16 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
             }
         }
         Source::Responses => {
+            let heading = if app.show_history {
+                "▾ Responses · Ctrl-O collapses history"
+            } else {
+                "▸ Earlier responses · Ctrl-O expands"
+            };
             lines.push(Line::from(Span::styled(
-                if app.show_history {
-                    "▾ Responses · Ctrl-O collapses history"
+                if app.scroll > 0 {
+                    format!("{heading} · ↑ paused · End follows")
                 } else {
-                    "▸ Earlier responses · Ctrl-O expands"
+                    heading.into()
                 },
                 muted(),
             )));
@@ -431,7 +493,14 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
         }
     }
     let scroll = if matches!(source, Source::Responses | Source::Thinking) {
-        app.scroll
+        let width = area.width.max(1) as usize;
+        let content_height: usize = lines
+            .iter()
+            .map(|line| line.width().max(1).div_ceil(width))
+            .sum();
+        let tail =
+            u16::try_from(content_height.saturating_sub(area.height as usize)).unwrap_or(u16::MAX);
+        tail.saturating_sub(app.scroll.min(tail))
     } else {
         0
     };
@@ -458,6 +527,32 @@ fn render_modal(frame: &mut Frame<'_>, modal: &mut Modal, area: Rect) {
     let area = modal_area(area);
     frame.render_widget(Clear, area);
     match modal {
+        Modal::Help => {
+            let block = Block::bordered()
+                .title(" Keyboard & commands ")
+                .title_bottom(" ? or Esc closes ");
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(
+                    [
+                        "Enter send · Alt/Shift-Enter or Ctrl-J newline",
+                        "Ctrl-V paste text/image · Alt-Backspace remove last attachment",
+                        "PageUp pause/older · PageDown newer · End follow newest",
+                        "Ctrl-T thinking · Ctrl-O history · Ctrl-U tools",
+                        "Ctrl-P models · Ctrl-R prompt history · Ctrl-G editor",
+                        "Ctrl-C/Esc cancel · Ctrl-D quit when draft is empty",
+                        "",
+                        "/model · /accounts · /sessions · /new · /default",
+                        "/pane [edit|generate …] · /attach <path>",
+                        "/plugin <name> on|off · /reload · /quit",
+                    ]
+                    .join("\n"),
+                )
+                .wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
         Modal::Picker {
             title,
             query,

@@ -3,7 +3,7 @@ use xcb_core::{
     Id, Provider,
     models::{Mode, ModelChoice},
     panes::Pane,
-    session::{Session, State},
+    session::{Attachment, Session, State},
 };
 use xcb_tui::{App, render};
 
@@ -87,6 +87,35 @@ fn tool_activity_is_hidden_until_explicitly_revealed() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(shown.contains("private tool detail"));
+}
+
+#[test]
+fn attachment_chips_help_and_paused_follow_state_are_visible() {
+    let mut app = app();
+    app.attachments.push(Attachment {
+        digest: "a".repeat(64),
+        media_type: "image/png".into(),
+        bytes: 2048,
+        width: 640,
+        height: 480,
+    });
+    app.stream = "streaming line\n".repeat(50);
+    app.scroll = 10;
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(contents.contains("[image:png 640×480 · 2 KiB]"));
+    assert!(contents.contains("paused · End follows"));
+    assert!(contents.contains("? help"));
+    assert!(contents.contains("? needs answer"));
 }
 
 #[test]

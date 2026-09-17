@@ -18,7 +18,7 @@ import { runCliTurn } from "./cli/run.ts";
 import { runCliChat } from "./cli/chat.ts";
 import { dim, green, red, yellow } from "./cli/tui.ts";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 const USAGE = `agentmixer — unified interface to your coding-agent subscriptions
 

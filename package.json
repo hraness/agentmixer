@@ -1,6 +1,6 @@
 {
   "name": "@hraness/agentmixer",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Provider-neutral agent routing, account custody and scoped tool contracts.",
   "type": "module",
   "license": "MIT",

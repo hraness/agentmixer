@@ -56,13 +56,13 @@ describe("cli subscription token custody", () => {
   test("missing or malformed token reports signed out without reading secrets", async () => {
     const root = await stateRoot();
     expect(await readClaudeOAuthToken(root)).toBeNull();
-    expect((await claudeAuthStatus(root, null as never)).loggedIn).toBe(false);
+    expect((await claudeAuthStatus(root)).loggedIn).toBe(false);
     await writeFile(join(root, "claude-oauth-token"), "not-a-token\n");
     expect(await readClaudeOAuthToken(root)).toBeNull();
     await writeFile(join(root, "claude-oauth-token"), `sk-ant-oat01-${"x".repeat(64)}\n`);
     const token = await readClaudeOAuthToken(root);
     expect(token).toBe(`sk-ant-oat01-${"x".repeat(64)}`);
-    const status = await claudeAuthStatus(root, null as never);
+    const status = await claudeAuthStatus(root);
     expect(status.loggedIn).toBe(true);
     expect(status.authMethod).toBe("subscription-token");
   });

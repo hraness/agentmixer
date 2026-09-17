@@ -1,5 +1,5 @@
 import type { AgentTaskAdapter } from "../task-runtime.ts";
-import { createClaudeTaskAdapter, claudeTaskRuntimeIdentity } from "../claude-task-adapter.ts";
+import { createClaudeTaskAdapter, claudeTaskRuntimeIdentity, type ClaudeTaskEvents } from "../claude-task-adapter.ts";
 import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
 import { CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import type { CapabilityProfile } from "../capabilities.ts";
@@ -64,7 +64,7 @@ export async function admitCliProvider(stateRoot: string, provider: CliProviderN
 /** Open the task adapter for one provider if a matching live admission record
  * exists. Anything stale, drifted or absent leaves the adapter out — the TUI
  * explains the next step instead of running unqualified. */
-export async function openCliProvider(stateRoot: string, provider: CliProviderName, profile: CapabilityProfile): Promise<CliProviderState> {
+export async function openCliProvider(stateRoot: string, provider: CliProviderName, profile: CapabilityProfile, events?: ClaudeTaskEvents): Promise<CliProviderState> {
   const inspection = await inspectCliBinary(provider);
   if (inspection === null) return Object.freeze({ status: "binary-missing", inspection });
   if (!inspection.versionMatches) return Object.freeze({ status: "version-mismatch", inspection });
@@ -91,6 +91,7 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
         if (token === null) throw new Error("CLAUDE_OAUTH_TOKEN_REQUIRED");
         return token;
       },
+      ...(events === undefined ? {} : { events }),
       ...(processFactory === undefined ? {} : { processFactory }),
     });
     if (qualification.status !== "qualified") return Object.freeze({ status: "unadmitted", inspection });

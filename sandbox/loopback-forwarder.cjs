@@ -45,10 +45,14 @@ const server = net.createServer((inbound) => {
   // both sockets carry their own error path.
   inbound.on("error", () => {});
   let head = Buffer.alloc(0);
-  inbound.on("data", (chunk) => {
+  const onData = (chunk) => {
     head = Buffer.concat([head, chunk]);
     const end = head.indexOf("\r\n\r\n");
     if (end === -1) { if (head.length > 4096) inbound.destroy(); return; }
+    // Consume exactly one head: leaving this listener attached would re-run
+    // CONNECT handling for every tunneled byte (a ClientHello would spawn a
+    // second bridge connection and inject a second "200" into the TLS stream).
+    inbound.removeListener("data", onData);
     const request = head.subarray(0, end).toString("latin1").split("\r\n")[0];
     const match = /^CONNECT ([A-Za-z0-9._-]+):443 HTTP\/1\.[01]$/.exec(request);
     inbound.pause();
@@ -77,7 +81,8 @@ const server = net.createServer((inbound) => {
     });
     upstream.once("error", () => inbound.destroy());
     inbound.once("close", () => upstream.destroy());
-  });
+  };
+  inbound.on("data", onData);
 });
 server.listen(port, "127.0.0.1", () => {
   report("listening", server.address());

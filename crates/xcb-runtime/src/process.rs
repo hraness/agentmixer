@@ -323,7 +323,7 @@ impl StreamProcess {
         })
         .await
         .unwrap_or(false);
-        joined && test_kill_process_group(group) == Err(rustix::io::Errno::SRCH)
+        joined && group_absent(group).await
     }
 }
 impl Drop for StreamProcess {
@@ -331,6 +331,19 @@ impl Drop for StreamProcess {
         self.signal();
         self.stderr.abort();
     }
+}
+
+async fn group_absent(group: Pid) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if test_kill_process_group(group) == Err(rustix::io::Errno::SRCH) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 async fn drain(mut source: impl AsyncRead + Unpin, max: usize) -> Result<()> {
@@ -401,7 +414,7 @@ pub async fn capture_with_input(
             return Err(Error::Unavailable("child did not join"));
         }
     };
-    if test_kill_process_group(group) != Err(rustix::io::Errno::SRCH) {
+    if !group_absent(group).await {
         return Err(Error::Unavailable("process group did not join"));
     }
     if timed_out {
@@ -449,7 +462,7 @@ pub async fn capture(mut command: Command, max: usize, deadline: Duration) -> Re
     let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
         .await
         .map_err(|_| Error::Unavailable("child did not join"))??;
-    if test_kill_process_group(group) != Err(rustix::io::Errno::SRCH) {
+    if !group_absent(group).await {
         return Err(Error::Unavailable("process group did not join"));
     }
     if !status.success() {

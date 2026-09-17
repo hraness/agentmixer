@@ -28,6 +28,9 @@ jobs:
           node-version: "24.19.0"
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo fmt --all -- --check
 
   site:
     name: Site

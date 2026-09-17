@@ -96,10 +96,12 @@ pub fn next_route<'a>(
         || facts.effects == EffectState::Uncertain
         || !checkpointed
         || facts.pending_attention
-        || facts.terminal == Terminal::Cancelled
         || ordered.len() > 256
         || tried.len() >= 16
     {
+        return None;
+    }
+    if facts.terminal != Terminal::Failed {
         return None;
     }
     let failure = facts.failure?;

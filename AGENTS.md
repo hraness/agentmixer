@@ -15,7 +15,8 @@
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
   Textbutler import. `linux-sandbox.ts` is the bwrap kernel-boundary probe and
-  is evidence, not activation.
+  `linux-egress.ts` is the CONNECT-bridge boundary probe; both are evidence,
+  not activation.
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
 - `site/` is the informational public project page (Next.js, deployed to

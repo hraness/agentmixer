@@ -537,7 +537,12 @@ is the explicit kernel-boundary fixture for the bwrap backend: a statically
 linked synthetic canary asserts scratch writes, foreign-path absence, a
 routeless network namespace and PID-namespace isolation on the host that runs
 it, and reports blocked evidence instead of guessing when the toolchain or
-namespaces are unavailable.
+namespaces are unavailable. `qualification/linux-egress.ts` is the bridge
+boundary's companion: the canary asserts the mounted socket answers CONNECT,
+bytes tunnel through it, a foreign unix path and a direct TCP connect are
+denied inside the same namespace, and the join receipt reports listener,
+socket-set and path removal — against a synthetic dialer, with no resolver
+or provider endpoint involved.
 
 ## Ownership boundaries
 

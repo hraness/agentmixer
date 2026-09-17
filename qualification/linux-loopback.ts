@@ -155,9 +155,15 @@ try {
 
   async function run(argv: string[], timeout: number) {
     const child = Bun.spawn(argv, { cwd: root, env: { PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe", timeout });
-    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    return { code, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 4096) };
+    // Watchdog independent of Bun's spawn timeout: if SIGTERM inside the
+    // deadline fails to reap the namespace tree, escalate to SIGKILL.
+    const watchdog = setTimeout(() => child.kill("SIGKILL"), timeout + 10_000);
+    try {
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      return { code, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 4096) };
+    } finally { clearTimeout(watchdog); }
   }
+  const progress = (mark: string) => console.error(`loopback: ${mark}`);
 
   const runtimeLibs = lddClosure(runtime), clientLibs = lddClosure(client), ipLibs = lddClosure(ipTool);
   const bind = (target: string, mode: "--ro-bind" | "--bind") => [mode, target, target];
@@ -181,16 +187,26 @@ try {
   const phases: Record<string, unknown> = {};
   // M0: no mechanism at all — reports whether bwrap's own loopback setup left
   // lo up inside the namespace (bwrap ≥ 0.8 attempts it on --unshare-net).
-  const m0 = await run([bwrap, ...innerArgs(false, false, "-")], 60_000);
+  const m0 = await run([bwrap, ...innerArgs(false, false, "-")], 45_000);
   phases.M0_prepared = { code: m0.code, stdout: m0.stdout, stderr: m0.stderr };
-  const m1 = await run([bwrap, ...innerArgs(false, true, ipTool)], 60_000);
+  progress(`M0 exit ${m0.code}`);
+  const m1 = await run([bwrap, ...innerArgs(false, true, ipTool)], 45_000);
   phases.M1_capAdd = { code: m1.code, stdout: m1.stdout, stderr: m1.stderr };
+  progress(`M1 exit ${m1.code}`);
   const m2 = await run([unshareTool, "--user", "--map-root-user", "--net", shTool, outerScript,
-    ...innerArgs(true, false, "-")], 60_000);
+    ...innerArgs(true, false, "-")], 45_000);
   phases.M2_preUp = { code: m2.code, stdout: m2.stdout, stderr: m2.stderr };
+  progress(`M2 exit ${m2.code}`);
 
-  const receipt = await bridge.close(); bridge = undefined;
-  await new Promise<void>((done) => tlsServer.close(() => done()));
+  const bounded = <T>(work: Promise<T>, ms: number, fallback: T) =>
+    Promise.race([work, new Promise<T>((resolvePromise) => setTimeout(() => resolvePromise(fallback), ms))]);
+  progress("bridge closing");
+  const receipt = await bounded(bridge.close(), 15_000,
+    { socketPath, productionQualified: false as const, connectionsAccepted: -1, connectionsRefused: -1,
+      bytesIn: -1, bytesOut: -1, listenerClosed: false, socketsJoined: false, socketRemoved: false });
+  bridge = undefined;
+  progress("bridge closed");
+  await bounded(new Promise<void>((done) => tlsServer.close(() => done())), 10_000, undefined);
   const passed = (phase: { code: number; stdout: string }) => phase.code === 0 && phase.stdout.includes("LOOPBACK-OK");
   console.log(JSON.stringify({ profile: "experimental-linux-loopback-forwarder", blocked: false,
     productionQualificationIssued: false, paidModelRequests: 0,

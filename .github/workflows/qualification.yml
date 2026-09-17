@@ -74,7 +74,7 @@ jobs:
           status=0
           for probe in linux-sandbox linux-egress linux-loopback; do
             if [ -f "qualification/$probe.ts" ]; then
-              bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/$probe.json" 2> "evidence/$probe.stderr" || status=1
+              timeout 300 bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/$probe.json" 2> "evidence/$probe.stderr" || status=1
             fi
           done
           echo "status=$status" >> "$GITHUB_OUTPUT"

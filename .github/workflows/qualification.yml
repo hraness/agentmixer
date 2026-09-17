@@ -39,6 +39,7 @@ jobs:
       - name: Install boundary tooling
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap iproute2 util-linux curl openssl
       - name: Namespace capability facts
+        id: facts
         run: |
           mkdir -p evidence
           {
@@ -47,11 +48,27 @@ jobs:
             echo "max_user_namespaces=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
             echo "bwrap=$(command -v bwrap) $(bwrap --version 2>&1 | head -1)"
             echo "unshare_probe=$(unshare -Urn true 2>&1 && echo ok || echo denied)"
+            echo "bwrap_minimal=$(bwrap --unshare-all --ro-bind /bin/true /bin/true -- /bin/true 2>&1 && echo ok || echo denied)"
           } | tee evidence/env-facts.txt
+      - name: Probes under the host default restriction (informational)
+        run: |
+          BWRAP="$(command -v bwrap)"
+          SHA="$(sha256sum "$BWRAP" | cut -d' ' -f1)"
+          status=0
+          for probe in linux-sandbox linux-egress linux-loopback; do
+            if [ -f "qualification/$probe.ts" ]; then
+              bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/restricted-$probe.json" 2> "evidence/restricted-$probe.stderr" || status=1
+            fi
+          done
+          echo "restricted_status=$status" >> evidence/restricted-status.txt
+          exit 0
+      - name: Lift the AppArmor userns restriction for evidence
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "unshare_probe_after=$(unshare -Urn true 2>&1 && echo ok || echo denied)" | tee -a evidence/env-facts.txt
       - name: Run probes and collect evidence
         id: probes
         run: |
-          mkdir -p evidence
           BWRAP="$(command -v bwrap)"
           SHA="$(sha256sum "$BWRAP" | cut -d' ' -f1)"
           status=0

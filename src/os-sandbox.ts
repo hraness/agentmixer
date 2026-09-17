@@ -159,13 +159,15 @@ function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<R
 
 /** Re-verifies an admitted executable from a checked descriptor: owner,
  * file identity, size bound, no-follow canonical path, and exact SHA-256.
+ * The owner may be the current user or root — a root-owned system tool like
+ * a distribution `bwrap` is at least as tamper-evident as a user-owned file.
  * Any mutation or relabel is `OS_SANDBOX_EXECUTABLE_CHANGED`; a missing or
  * non-file path is `OS_SANDBOX_EXECUTABLE_INVALID`. */
 export async function verifyOsSandboxExecutable(executablePath: string, sha256: string, sizeLimit: bigint): Promise<void> {
   const fd = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => fail("OS_SANDBOX_EXECUTABLE_INVALID"));
   try {
     const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && before.uid === BigInt(process.getuid!()) && before.size > 0n && before.size <= sizeLimit, "OS_SANDBOX_EXECUTABLE_INVALID");
+    assert(before.isFile() && [0n, BigInt(process.getuid!())].includes(before.uid) && before.size > 0n && before.size <= sizeLimit, "OS_SANDBOX_EXECUTABLE_INVALID");
     const fileHash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024); let read = 0;
     while (read <= Number(before.size)) {
       const count = (await fd.read(buffer, 0, Math.min(buffer.length, Number(before.size) + 1 - read), read)).bytesRead;

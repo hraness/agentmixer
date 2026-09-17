@@ -66,6 +66,8 @@ const [, , socketPath, portText, ipPath, separator, ...childArgv] = process.argv
 const report = (key, value) => { try { fs.writeSync(2, "FWD " + key + "=" + JSON.stringify(value) + "\n"); } catch {} };
 const status = (() => { try { return fs.readFileSync("/proc/self/status", "utf8"); } catch { return ""; } })();
 report("capEff", (/CapEff:\s*([0-9a-f]+)/i.exec(status) || [])[1] ?? null);
+report("loOperstate", (() => { try { return fs.readFileSync("/sys/class/net/lo/operstate", "utf8").trim(); } catch { return null; } })());
+report("loFlags", (() => { try { return fs.readFileSync("/sys/class/net/lo/flags", "utf8").trim(); } catch { return null; } })());
 if (ipPath !== "-") {
   const raised = spawnSync(ipPath, ["link", "set", "lo", "up"], { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 });
   report("loUpStatus", raised.status);
@@ -164,6 +166,7 @@ try {
   const innerArgs = (shareNet: boolean, capAdd: boolean, loUpPath: string) => [
     "--unshare-all", ...(shareNet ? ["--share-net"] : []), ...(capAdd ? ["--cap-add", "CAP_NET_ADMIN"] : []),
     "--new-session", "--die-with-parent", "--proc", "/proc", "--dev", "/dev",
+    "--ro-bind", "/sys/class/net", "/sys/class/net",
     ...mounts, "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", scratch,
     "--chdir", scratch, "--",
     runtime, forwarderPath, socketPath, "48123", loUpPath, "--",
@@ -171,6 +174,10 @@ try {
   ];
 
   const phases: Record<string, unknown> = {};
+  // M0: no mechanism at all — reports whether bwrap's own loopback setup left
+  // lo up inside the namespace (bwrap ≥ 0.8 attempts it on --unshare-net).
+  const m0 = await run([bwrap, ...innerArgs(false, false, "-")], 60_000);
+  phases.M0_prepared = { code: m0.code, stdout: m0.stdout, stderr: m0.stderr };
   const m1 = await run([bwrap, ...innerArgs(false, true, ipTool)], 60_000);
   phases.M1_capAdd = { code: m1.code, stdout: m1.stdout, stderr: m1.stderr };
   const m2 = await run([unshareTool, "--user", "--map-root-user", "--net", shTool, outerScript,
@@ -183,10 +190,10 @@ try {
   console.log(JSON.stringify({ profile: "experimental-linux-loopback-forwarder", blocked: false,
     productionQualificationIssued: false, paidModelRequests: 0,
     runtime, runtimeLibs: runtimeLibs.length, clientLibs: clientLibs.length,
-    phases, M1_passed: passed(m1), M2_passed: passed(m2),
+    phases, M0_passed: passed(m0), M1_passed: passed(m1), M2_passed: passed(m2),
     bridge: { accepted: receipt.connectionsAccepted, refused: receipt.connectionsRefused,
       listenerClosed: receipt.listenerClosed, socketsJoined: receipt.socketsJoined, socketRemoved: receipt.socketRemoved } }, null, 2));
-  if (!(passed(m1) || passed(m2)) || !(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved)) process.exitCode = 1;
+  if (!(passed(m0) || passed(m1) || passed(m2)) || !(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved)) process.exitCode = 1;
 } finally {
   await bridge?.close().catch(() => {});
   await rm(root, { recursive: true, force: true });

@@ -58,3 +58,6 @@ export { createSeatbeltOsSandbox, createBwrapOsSandbox, planSeatbeltPolicy, plan
   verifyOsSandboxExecutable, createSandboxedProviderProcessFactory } from "./os-sandbox.ts";
 export type { OsSandboxBackend, OsSandboxBackendName, OsSandboxNetworkPolicy, OsSandboxPlan,
   OsSandboxPlatform, OsSandboxSpec, OsSandboxWrapInput } from "./os-sandbox.ts";
+export { EGRESS_SOCKET_ENV, connectEgress, connectEgressTls, createEgressHttpsAgent,
+  egressSocketFromEnv, fetchViaEgress } from "./egress-client.ts";
+export type { EgressConnectOptions, EgressFetchInput, EgressFetchResponse } from "./egress-client.ts";

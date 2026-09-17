@@ -4,13 +4,30 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Terminal { Completed, TokenLimit, TurnLimit, Cancelled, Failed }
+pub enum Terminal {
+    Completed,
+    TokenLimit,
+    TurnLimit,
+    Cancelled,
+    Failed,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EffectState { None, Settled, Uncertain }
+pub enum EffectState {
+    None,
+    Settled,
+    Uncertain,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Failure { AccountQuota, ModelQuota, Authentication, Policy, Transport, Unknown }
+pub enum Failure {
+    AccountQuota,
+    ModelQuota,
+    Authentication,
+    Policy,
+    Transport,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,14 +47,33 @@ pub struct AutoContinue {
     pub max_elapsed_ms: u64,
 }
 impl Default for AutoContinue {
-    fn default() -> Self { Self { enabled: true, max_consecutive: 3, max_elapsed_ms: 600_000 } }
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_consecutive: 3,
+            max_elapsed_ms: 600_000,
+        }
+    }
 }
 
-pub fn should_continue(policy: &AutoContinue, facts: &TurnFacts, consecutive: u32, elapsed_ms: u64, repeated: bool) -> bool {
-    policy.enabled && (1..=16).contains(&policy.max_consecutive) && (1000..=3_600_000).contains(&policy.max_elapsed_ms)
-        && consecutive < policy.max_consecutive && elapsed_ms < policy.max_elapsed_ms
-        && !repeated && facts.joined && facts.effects != EffectState::Uncertain && !facts.pending_attention
-        && facts.failure.is_none() && matches!(facts.terminal, Terminal::TokenLimit | Terminal::TurnLimit)
+pub fn should_continue(
+    policy: &AutoContinue,
+    facts: &TurnFacts,
+    consecutive: u32,
+    elapsed_ms: u64,
+    repeated: bool,
+) -> bool {
+    policy.enabled
+        && (1..=16).contains(&policy.max_consecutive)
+        && (1000..=3_600_000).contains(&policy.max_elapsed_ms)
+        && consecutive < policy.max_consecutive
+        && elapsed_ms < policy.max_elapsed_ms
+        && !repeated
+        && facts.joined
+        && facts.effects != EffectState::Uncertain
+        && !facts.pending_attention
+        && facts.failure.is_none()
+        && matches!(facts.terminal, Terminal::TokenLimit | Terminal::TurnLimit)
 }
 
 #[derive(Debug, Clone)]
@@ -49,13 +85,33 @@ pub struct RouteCandidate {
     pub available: bool,
 }
 
-pub fn next_route<'a>(current: &RouteCandidate, ordered: &'a [RouteCandidate], tried: &BTreeSet<String>, facts: &TurnFacts, checkpointed: bool) -> Option<&'a RouteCandidate> {
-    if !facts.joined || facts.effects == EffectState::Uncertain || !checkpointed || facts.pending_attention || facts.terminal == Terminal::Cancelled || ordered.len() > 256 || tried.len() >= 16 { return None; }
+pub fn next_route<'a>(
+    current: &RouteCandidate,
+    ordered: &'a [RouteCandidate],
+    tried: &BTreeSet<String>,
+    facts: &TurnFacts,
+    checkpointed: bool,
+) -> Option<&'a RouteCandidate> {
+    if !facts.joined
+        || facts.effects == EffectState::Uncertain
+        || !checkpointed
+        || facts.pending_attention
+        || facts.terminal == Terminal::Cancelled
+        || ordered.len() > 256
+        || tried.len() >= 16
+    {
+        return None;
+    }
     let failure = facts.failure?;
-    if !matches!(failure, Failure::AccountQuota | Failure::ModelQuota) { return None; }
+    if !matches!(failure, Failure::AccountQuota | Failure::ModelQuota) {
+        return None;
+    }
     ordered.iter().find(|candidate| {
         let key = format!("{}/{}", candidate.account, candidate.model.key());
-        candidate.admitted && candidate.quota_fresh && candidate.available && !tried.contains(&key)
+        candidate.admitted
+            && candidate.quota_fresh
+            && candidate.available
+            && !tried.contains(&key)
             && !(candidate.account == current.account && candidate.model == current.model)
             && (failure != Failure::AccountQuota || candidate.account != current.account)
     })

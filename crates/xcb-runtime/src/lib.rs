@@ -38,7 +38,14 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
-pub fn new_id(prefix: &str) -> Id { Id::new(format!("{prefix}_{}", uuid::Uuid::new_v4().simple())).expect("generated identifier") }
-pub fn digest(bytes: impl AsRef<[u8]>) -> String { hex::encode(Sha256::digest(bytes.as_ref())) }
+pub fn new_id(prefix: &str) -> Id {
+    Id::new(format!("{prefix}_{}", uuid::Uuid::new_v4().simple())).expect("generated identifier")
+}
+pub fn digest(bytes: impl AsRef<[u8]>) -> String {
+    hex::encode(Sha256::digest(bytes.as_ref()))
+}

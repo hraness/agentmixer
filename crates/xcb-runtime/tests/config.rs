@@ -23,6 +23,13 @@ fn config_changes_are_revision_guarded_and_unknown_keys_refuse() {
     config.extensions.auto_continue.enabled = false;
     config.save(&path, revision.as_deref()).unwrap();
     assert!(config.save(&path, revision.as_deref()).is_err());
-    assert!(!Config::load(&path).unwrap().0.extensions.auto_continue.enabled);
+    assert!(
+        !Config::load(&path)
+            .unwrap()
+            .0
+            .extensions
+            .auto_continue
+            .enabled
+    );
     assert!(serde_json::from_str::<Config>(r#"{"exec":"sh"}"#).is_err());
 }

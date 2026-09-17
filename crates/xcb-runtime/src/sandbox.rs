@@ -3,16 +3,25 @@ use std::path::Path;
 
 fn quoted(path: &Path) -> Result<String> {
     let text = path.to_str().ok_or(Error::PrivateState)?;
-    if !path.is_absolute() || text.len() > 4096 || text.chars().any(char::is_control) || path.canonicalize()? != path { return Err(Error::PrivateState); }
+    if !path.is_absolute()
+        || text.len() > 4096
+        || text.chars().any(char::is_control)
+        || path.canonicalize()? != path
+    {
+        return Err(Error::PrivateState);
+    }
     Ok(serde_json::to_string(text)?)
 }
 
 pub fn seatbelt(executable: &Path, scratch: &Path) -> Result<String> {
-    if executable.starts_with(scratch) { return Err(Error::PrivateState); }
+    if executable.starts_with(scratch) {
+        return Err(Error::PrivateState);
+    }
     let exe = quoted(executable)?;
     let work = quoted(scratch)?;
     let temp = format!("/private/tmp/claude-{}", rustix::process::getuid().as_raw());
-    Ok(format!(r#"(version 1)
+    Ok(format!(
+        r#"(version 1)
 (deny default)
 (allow process-exec (literal {exe}))
 (allow process-fork)
@@ -28,7 +37,10 @@ pub fn seatbelt(executable: &Path, scratch: &Path) -> Result<String> {
 (allow file-read* file-write* (subpath {work}) (subpath "{temp}"))
 (allow file-read-metadata (path-ancestors {exe}) (path-ancestors {work}) (path-ancestors "{temp}"))
 (allow network-outbound (literal "/private/var/run/mDNSResponder") (literal "/private/var/run/syslog") (remote tcp "*:443"))
-"#))
+"#
+    ))
 }
 
-pub fn available() -> bool { cfg!(target_os = "macos") && Path::new("/usr/bin/sandbox-exec").is_file() }
+pub fn available() -> bool {
+    cfg!(target_os = "macos") && Path::new("/usr/bin/sandbox-exec").is_file()
+}

@@ -1,4 +1,10 @@
-use crate::{Id, Provider, models::ModelChoice, panes::Pane, session::{Attachment, Message, Session, State, Subagent}, usage::Estimate};
+use crate::{
+    Id, Provider,
+    models::ModelChoice,
+    panes::Pane,
+    session::{Attachment, Message, Session, State, Subagent},
+    usage::Estimate,
+};
 
 #[derive(Debug, Clone)]
 pub struct AccountRow {
@@ -36,12 +42,34 @@ pub struct View {
 }
 impl Default for View {
     fn default() -> Self {
-        Self { session: None, sessions: vec![], accounts: vec![], models: vec![], messages: vec![], subagents: vec![], activity: vec![], extensions: vec![], pane: Pane::focus(), panes: Pane::presets(), pane_revision: None, pane_error: None, state: State::Idle, tokens_per_second: None, share_percent: None, total_runway_seconds: None, runway_coverage: (0, 0), reduced_motion: false }
+        Self {
+            session: None,
+            sessions: vec![],
+            accounts: vec![],
+            models: vec![],
+            messages: vec![],
+            subagents: vec![],
+            activity: vec![],
+            extensions: vec![],
+            pane: Pane::focus(),
+            panes: Pane::presets(),
+            pane_revision: None,
+            pane_error: None,
+            state: State::Idle,
+            tokens_per_second: None,
+            share_percent: None,
+            total_runway_seconds: None,
+            runway_coverage: (0, 0),
+            reduced_motion: false,
+        }
     }
 }
 
 pub enum Intent {
-    Submit { text: String, attachments: Vec<Attachment> },
+    Submit {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     Cancel,
     Quit,
     NewSession,
@@ -50,17 +78,31 @@ pub enum Intent {
     Model(String),
     SetDefault,
     Pane(Id),
-    SavePane { pane: Pane, expected: Option<String> },
+    SavePane {
+        pane: Pane,
+        expected: Option<String>,
+    },
     GeneratePane(String),
     AttachPath(String),
-    AttachRgba { width: usize, height: usize, bytes: Vec<u8> },
-    Extension { name: String, enabled: bool },
+    AttachRgba {
+        width: usize,
+        height: usize,
+        bytes: Vec<u8>,
+    },
+    Extension {
+        name: String,
+        enabled: bool,
+    },
     Refresh,
 }
 
 pub enum Update {
     View(Box<View>),
-    Delta { session: Id, thinking: bool, text: String },
+    Delta {
+        session: Id,
+        thinking: bool,
+        text: String,
+    },
     ClearStream(Id),
     Attachment(Attachment),
     PaneCandidate(Pane),

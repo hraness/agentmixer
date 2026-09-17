@@ -10,6 +10,7 @@ import { boundedText } from "./validation.ts";
 import { ensureCliState } from "./cli/state.ts";
 import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, type CliProviderName } from "./cli/binaries.ts";
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
+import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
 import { seatbeltAvailable } from "./cli/sandbox.ts";
 import type { ClaudeTaskEvents } from "./claude-task-adapter.ts";
 import { admitCliProvider, openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./cli/provider.ts";
@@ -26,8 +27,9 @@ const USAGE = `agentmixer — unified interface to your coding-agent subscriptio
 Usage:
   agentmixer [path]            open the chat in a workspace (default: .)
   agentmixer auth claude       sign in with your Claude subscription
+  agentmixer auth codex        sign in with your ChatGPT subscription
   agentmixer auth status       show stored sign-in state
-  agentmixer auth logout       remove the stored credential
+  agentmixer auth logout [p]   remove the stored credential (default: claude)
   agentmixer doctor            inspect provider binaries and admit this runtime
   agentmixer sessions          list local sessions
   agentmixer sessions rm <id>  remove one session and its transcript
@@ -111,8 +113,25 @@ async function commandDoctor(stateRoot: string): Promise<number> {
 }
 
 async function commandAuth(provider: string, stateRoot: string): Promise<number> {
-  if (provider === "codex") return fail("codex managed sign-in is not yet available in the CLI — see `agentmixer doctor`.");
-  if (provider !== "claude") return fail(`unknown provider ${provider} — supported: claude`);
+  if (provider === "codex") {
+    const inspection = await inspectCliBinary("codex");
+    if (inspection === null) return fail("codex binary not found — install Codex CLI, then retry.");
+    if (!inspection.versionMatches) return fail(`codex ${inspection.version} found; this build admits only the pinned version — run \`agentmixer doctor\`.`);
+    const status = await codexAuthStatus(stateRoot, inspection);
+    if (!status.admitted) return fail("codex is not admitted — run `agentmixer doctor` first.");
+    if (status.loggedIn) { process.stdout.write(`${green("✓")} codex: already signed in (${status.planType ?? "ChatGPT"})\n`); return 0; }
+    process.stdout.write(`${dim("Starting Codex device-code sign-in…")}\n`);
+    const snapshot = await codexLogin(stateRoot, inspection, (challenge) => {
+      if (challenge.type === "chatgptDeviceCode") {
+        process.stdout.write(`\nOpen ${challenge.verificationUrl} and enter code: ${challenge.userCode}\n\n`);
+      } else {
+        process.stdout.write(`\nOpen ${challenge.authUrl} to sign in.\n\n`);
+      }
+    });
+    process.stdout.write(`${green("✓")} codex: signed in (${snapshot.planType ?? "ChatGPT"})\n`);
+    return 0;
+  }
+  if (provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex`);
   const inspection = await inspectCliBinary("claude");
   if (inspection === null) return fail("claude binary not found — install Claude Code, then retry.");
   if (!inspection.versionMatches) return fail(`claude ${inspection.version} found; this build admits only the pinned version — run \`agentmixer doctor\`.`);
@@ -125,16 +144,32 @@ async function commandAuth(provider: string, stateRoot: string): Promise<number>
 }
 
 async function commandAuthStatus(stateRoot: string): Promise<number> {
-  const status = await claudeAuthStatus(stateRoot);
-  if (!status.loggedIn) {
-    process.stdout.write(`claude: signed out\n`);
-    return 1;
+  let any = false;
+  const claude = await claudeAuthStatus(stateRoot);
+  process.stdout.write(`claude: ${claude.loggedIn ? `signed in (${claude.authMethod ?? "claude.ai"})` : "signed out"}\n`);
+  if (claude.loggedIn) any = true;
+  const codexInspection = await inspectCliBinary("codex");
+  if (codexInspection !== null) {
+    try {
+      const codex = await codexAuthStatus(stateRoot, codexInspection);
+      process.stdout.write(`codex: ${codex.loggedIn ? `signed in (${codex.planType ?? "ChatGPT"})` : codex.admitted ? "signed out" : "not admitted"}\n`);
+      if (codex.loggedIn) any = true;
+    } catch {
+      process.stdout.write(`codex: error checking status\n`);
+    }
   }
-  process.stdout.write(`claude: signed in (${status.authMethod ?? "claude.ai"})\n`);
-  return 0;
+  return any ? 0 : 1;
 }
 
-async function commandAuthLogout(stateRoot: string): Promise<number> {
+async function commandAuthLogout(provider: string | undefined, stateRoot: string): Promise<number> {
+  if (provider === "codex") {
+    const inspection = await inspectCliBinary("codex");
+    if (inspection === null) return fail("codex binary not found.");
+    await codexLogout(stateRoot, inspection);
+    process.stdout.write(`codex: signed out\n`);
+    return 0;
+  }
+  if (provider !== undefined && provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex`);
   await clearClaudeOAuthToken(stateRoot);
   process.stdout.write(`claude: signed out\n`);
   return 0;
@@ -183,10 +218,17 @@ async function commandRun(prompt: string, workspace: string, stateRoot: string, 
   const { profile } = await cliProfileFor(workspace);
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, provider, profile, events);
-  if (opened.status !== "ready") return fail(`provider not admitted — run \`agentmixer doctor\`${provider === "claude" ? " and `agentmixer auth claude`" : ""} first.`);
+  if (opened.status !== "ready") return fail(`provider not admitted — run \`agentmixer doctor\` and \`agentmixer auth ${provider}\` first.`);
   if (provider === "claude") {
     const auth = await claudeAuthStatus(stateRoot);
     if (!auth.loggedIn) return fail("not signed in — run `agentmixer auth claude` first.");
+  }
+  if (provider === "codex") {
+    const inspection = await inspectCliBinary("codex");
+    if (inspection !== null) {
+      const codex = await codexAuthStatus(stateRoot, inspection);
+      if (!codex.loggedIn) return fail("not signed in — run `agentmixer auth codex` first.");
+    }
   }
   const leases = new SqliteAccountLeases(await openAccountDatabase(join(stateRoot, "account-leases.sqlite")));
   const sessions = await CliSessionStore.open(join(stateRoot, "sessions"));
@@ -245,8 +287,8 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "auth") {
     const sub = rest[0];
     if (sub === undefined || sub === "status") return await commandAuthStatus(stateRoot);
-    if (sub === "logout") return await commandAuthLogout(stateRoot);
-    if (rest.length > 1) return fail("usage: agentmixer auth <claude|status|logout>");
+    if (sub === "logout") return await commandAuthLogout(rest[1], stateRoot);
+    if (rest.length > 1) return fail("usage: agentmixer auth <claude|codex|status|logout [provider]>");
     return await commandAuth(sub, stateRoot);
   }
   if (command === "sessions") return await commandSessions(stateRoot, rest);

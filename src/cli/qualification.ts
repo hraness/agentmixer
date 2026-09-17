@@ -137,7 +137,7 @@ export function toTaskQualification(record: CliQualificationRecord, expected: Re
  * controls the runtime itself enforces. */
 export function buildQualificationRecord(input: {
   provider: string; route: AgentTaskRoute; executablePath: string; executableSha256: string;
-  runtimeVersion: string; runtimeDigest: string; profileDigest: string; now: number;
+  runtimeVersion: string; runtimeDigest: string; profileDigest: string; now: number; evidenceDigest?: string;
 }): CliQualificationRecord {
   const admittedAtUnixMs = safeInteger(input.now, 0, Number.MAX_SAFE_INTEGER);
   const record: CliQualificationRecord = Object.freeze({
@@ -154,6 +154,8 @@ export function buildQualificationRecord(input: {
     admittedAtUnixMs,
     expiresAtUnixMs: admittedAtUnixMs + MAX_QUALIFICATION_AGE_MS,
   });
-  const evidenceDigest = createHash("sha256").update(JSON.stringify({ ...record, evidenceDigest: "" })).digest("hex");
+  const evidenceDigest = input.evidenceDigest === undefined
+    ? createHash("sha256").update(JSON.stringify({ ...record, evidenceDigest: "" })).digest("hex")
+    : digest(input.evidenceDigest);
   return Object.freeze({ ...record, evidenceDigest });
 }

@@ -9,7 +9,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createCapabilityProfile } from "../src/capabilities.ts";
 import { codexManagedAccountConfiguration } from "../src/codex-managed-baseline.ts";
-import { createCodexManagedProcessLauncher, codexManagedOfflineSandbox, codexManagedProviderSandbox, type CodexManagedOwnedProcess, type CodexManagedProcessOptions, type CodexManagedProcessSystem, type CodexManagedSpawn } from "../src/codex-managed-process.ts";
+import { createCodexManagedProcessLauncher, codexManagedOfflineSandbox, codexManagedProviderSandbox, codexManagedProviderV2Sandbox, type CodexManagedOwnedProcess, type CodexManagedProcessOptions, type CodexManagedProcessSystem, type CodexManagedSpawn } from "../src/codex-managed-process.ts";
 import type { CodexHostRuntime } from "../src/codex-host.ts";
 import type { AgentTaskExecutionRequest } from "../src/task-runtime.ts";
 import { withTaskLease } from "./task-lease-test-fixture.ts";
@@ -17,7 +17,9 @@ import { withTaskLease } from "./task-lease-test-fixture.ts";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const executableBytes = "synthetic executable bytes; never run", parentSha = sha("parent"), schemaSha = sha("schema"), runtimeDigest = sha("explicit composite adapter runtime identity");
 const offlineProfile = "managed-task-offline-candidate-v1", providerProfile = "managed-task-provider-tcp443-dns-candidate-v1";
+const providerProfileV2 = "managed-task-provider-tcp443-dns-candidate-v2";
 const networkLabel = "general-tcp443-system-resolver-var-metadata-candidate";
+const networkLabelV2 = "general-tcp443-system-resolver-var-metadata-ca-file-candidate";
 type SandboxProfile = CodexManagedProcessOptions["admission"]["profile"];
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
@@ -73,7 +75,7 @@ async function fixture(input: { parent?: Promise<CodexHostRuntime>; onInspect?: 
 }
 function joined(receipt: ReturnType<CodexManagedOwnedProcess["receipt"]>, profile: SandboxProfile = offlineProfile) {
   expect(receipt).toMatchObject({ phase: "closed", rootExited: true, groupAbsent: true, stdioJoined: true, lockReleased: true, scratchRetained: false, cleanupErrors: [], productionQualified: false,
-    profile, network: profile === providerProfile ? networkLabel : "denied" });
+    profile, network: profile === providerProfileV2 ? networkLabelV2 : profile === providerProfile ? networkLabel : "denied" });
 }
 async function unavailable(handle: CodexManagedOwnedProcess) { await expect(handle.ready).rejects.toThrow("CODEX_MANAGED_PROCESS_UNAVAILABLE"); return handle.stopAndJoin(); }
 
@@ -106,6 +108,21 @@ test("explicit provider admission changes only the policy and records its exact 
   });
 });
 
+test("provider v2 adds only the reviewed CA file and environment", async () => {
+  const f = await fixture({ sandboxProfile: providerProfileV2 });
+  await f.owned(async request => {
+    const handle = await f.launch(request); await handle.ready;
+    const spawn = f.spawns[0]!, profile = await readFile(spawn.args[1]!, "utf8");
+    expect(profile).toBe(codexManagedProviderV2Sandbox({ executable: spawn.args[2]!, scratch: dirname(handle.cwd), accountHome: f.accountHome }));
+    expect(profile).toBe(codexManagedProviderSandbox({ executable: spawn.args[2]!, scratch: dirname(handle.cwd), accountHome: f.accountHome })
+      + '(allow file-read* (literal "/private/etc/ssl/cert.pem"))\n');
+    expect(profile).not.toMatch(/SecurityServer|securityd|keychain/iu);
+    expect(spawn.env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
+    expect(handle.receipt()).toMatchObject({ profile: providerProfileV2, network: networkLabelV2, productionQualified: false });
+    joined(await handle.stopAndJoin(), providerProfileV2);
+  });
+});
+
 test.each([offlineProfile, providerProfile] as const)("%s admission is captured before launch and asynchronous preparation", async selected => {
   const gate = deferred<CodexHostRuntime>(), inspected = deferred<void>();
   const f = await fixture({ sandboxProfile: selected, parent: gate.promise, onInspect: () => inspected.resolve() });
@@ -120,7 +137,7 @@ test.each([offlineProfile, providerProfile] as const)("%s admission is captured 
   });
 });
 
-test.each(["codex-account-device-code-tcp443-dns-v1", "codex-account-device-code-tcp443-dns-v2", "managed-task-provider-tcp443-dns-candidate-v2", undefined])("rejects foreign or missing task profile %s before effects", async profile => {
+test.each(["codex-account-device-code-tcp443-dns-v1", "codex-account-device-code-tcp443-dns-v2", "managed-task-provider-tcp443-dns-candidate-v3", undefined])("rejects foreign or missing task profile %s before effects", async profile => {
   const f = await fixture();
   const options = { ...f.options, admission: { ...f.options.admission, profile } } as unknown as CodexManagedProcessOptions;
   expect(() => createCodexManagedProcessLauncher(options, f.system)).toThrow("ADMISSION_MISMATCH");

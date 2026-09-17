@@ -12,10 +12,11 @@ import { CliSessionStore, type CliSession, type CliTranscriptEntry } from "./ses
 import { createCliWorkspace, createCliWorkspaceProfile } from "./workspace.ts";
 import { openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./provider.ts";
 import type { ClaudeTaskEvents } from "../claude-task-adapter.ts";
-import type { CliProviderName } from "./binaries.ts";
+import { inspectCliBinary, type CliProviderName } from "./binaries.ts";
 import { runCliTurn } from "./run.ts";
 import { LineEditor, bold, cyan, dim, green, red, startSpinner, printTool, printRemainingText, yellow } from "./tui.ts";
 import { claudeAuthStatus } from "./auth.ts";
+import { codexAuthStatus } from "./codex.ts";
 
 const ACCOUNT_ID = "local";
 
@@ -48,7 +49,7 @@ function describe(state: Awaited<ReturnType<typeof openCliProvider>>, provider: 
   if (state.status === "binary-missing") return `${provider} binary not found — install the provider CLI and run \`agentmixer doctor\`.`;
   if (state.status === "version-mismatch") return `${provider} ${state.inspection?.version} found but this build requires the pinned version — run \`agentmixer doctor\`.`;
   if (state.status === "sandbox-unavailable") return "linux confinement unavailable — needs bubblewrap (`bwrap`) plus unprivileged user namespaces (Ubuntu 23.10+: `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`). Refusing to run unsandboxed.";
-  return `provider not admitted — run \`agentmixer doctor\`${provider === "claude" ? ", then `agentmixer auth claude` if needed" : ""}.`;
+  return `provider not admitted — run \`agentmixer doctor\`, then \`agentmixer auth ${provider}\` if needed.`;
 }
 
 export async function runCliChat(options: { workspace: string; sessionId?: string; provider?: CliProviderName; model?: string }): Promise<number> {
@@ -99,6 +100,17 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
       process.stderr.write(`${red("agentmixer:")} not signed in — run ${bold("agentmixer auth claude")} first.\n`);
       sessions.close();
       return 2;
+    }
+  }
+  if (providerName === "codex") {
+    const codexInspection = await inspectCliBinary("codex");
+    if (codexInspection !== null) {
+      const codex = await codexAuthStatus(stateRoot, codexInspection);
+      if (!codex.loggedIn) {
+        process.stderr.write(`${red("agentmixer:")} not signed in — run ${bold("agentmixer auth codex")} first.\n`);
+        sessions.close();
+        return 2;
+      }
     }
   }
   const model = boundedText(options.model ?? (providerName === "claude" ? CLI_CLAUDE_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL), 160);

@@ -21,7 +21,7 @@ import { identifier, safeInteger } from "./validation.ts";
 /** Trusted distribution inputs, never owner settings. The explicit mapping
  * binds an adapter runtime identity to independently admitted native artifacts;
  * matching these strings does not create qualification or schema evidence. */
-type ManagedSandboxProfile = "managed-task-offline-candidate-v1" | "managed-task-provider-tcp443-dns-candidate-v1";
+type ManagedSandboxProfile = "managed-task-offline-candidate-v1" | "managed-task-provider-tcp443-dns-candidate-v1" | "managed-task-provider-tcp443-dns-candidate-v2";
 /** Pinned bubblewrap artifact and host-admitted library closure; required iff
  * the admitted parent runtime is Linux. A supplied hash is checked, never
  * self-admitted as provenance or sandbox qualification. */
@@ -56,7 +56,7 @@ export interface CodexManagedProcessSystem {
 }
 type CoreReceipt<B, S extends string> = CodexProcessReceipt & Readonly<{
   schema: S; binding: B; processGeneration: number;
-  productionQualified: false; network: "denied" | "general-tcp443-system-resolver-var-metadata-candidate"; profile: ManagedSandboxProfile; schemaSha256: string;
+  productionQualified: false; network: "denied" | "general-tcp443-system-resolver-var-metadata-candidate" | "general-tcp443-system-resolver-var-metadata-ca-file-candidate"; profile: ManagedSandboxProfile; schemaSha256: string;
   launchAttempted: boolean; lockReleased: boolean; phase: "preparing" | "launch-pending" | "running" | "release-pending" | "recovery-required" | "closed";
 }>;
 export type CodexManagedProcessReceipt = CoreReceipt<AgentTaskBinding, "agentmixer.codex-managed-process.v1">;
@@ -191,6 +191,9 @@ export function codexManagedProviderSandbox(input: { executable: string; scratch
     + '(allow network-outbound (literal "/private/var/run/mDNSResponder") (remote tcp "*:443"))\n'
     + '(allow file-read-metadata (literal "/var"))\n';
 }
+export function codexManagedProviderV2Sandbox(input: { executable: string; scratch: string; accountHome: string }): string {
+  return codexManagedProviderSandbox(input) + '(allow file-read* (literal "/private/etc/ssl/cert.pem"))\n';
+}
 
 /** Internal, nondefault launcher. Owns no account acquisition or release and
  * cannot qualify an adapter. Account controls must join before runAgentTask
@@ -205,7 +208,8 @@ export function createCodexManagedProcessLauncher(options: CodexManagedProcessOp
     ...(runtimeSandbox === undefined ? {} : { sandbox: runtimeSandbox }) });
   const a = record(raw.admission, ["profile", "taskRuntimeVersion", "taskRuntimeDigest", "nativeSha256", "schemaSha256", "parentSha256"]);
   const sandboxProfile = a.profile;
-  check(sandboxProfile === "managed-task-offline-candidate-v1" || sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1", "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
+  check(sandboxProfile === "managed-task-offline-candidate-v1" || sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1"
+    || sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v2", "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
   check(digest(a.nativeSha256) === runtime.sha256 && digest(a.schemaSha256) === runtime.schemaSha256 && digest(a.parentSha256) === runtime.parentRuntime.expectedSha256, "CODEX_MANAGED_PROCESS_ADMISSION_MISMATCH");
   const taskRuntime = Object.freeze({ version: identifier(a.taskRuntimeVersion), digest: digest(a.taskRuntimeDigest) }), startupMs = safeInteger(raw.startupTimeoutMs ?? 10_000, 1, 120_000);
   const host = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem),
@@ -242,7 +246,8 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
   const { stateRoot, runtime, host, binding, lease, processGeneration, configuration, runId, schema, originalSignal, cancellationSignal,
     startupMs, executionDeadline, outerDeadline, maxCleanupMs, authority } = input;
   const sandboxProfile = input.sandboxProfile ?? "managed-task-offline-candidate-v1";
-  const network = sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "general-tcp443-system-resolver-var-metadata-candidate" : "denied";
+  const network = sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v2" ? "general-tcp443-system-resolver-var-metadata-ca-file-candidate"
+    : sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "general-tcp443-system-resolver-var-metadata-candidate" : "denied";
     const owned = Object.freeze({ accountId: lease.accountId, owner: lease.owner, leaseGeneration: lease.generation, processGeneration });
     const accountRoot = join(stateRoot, "accounts", lease.accountId), accountHome = join(accountRoot, "codex-home"), runs = join(stateRoot, "runs");
     const root = join(runs, `task-${runId}-${processGeneration}-${randomBytes(12).toString("hex")}`), scratch = join(root, "scratch"), runtimeRoot = join(root, "runtime"), executable = join(runtimeRoot, "codex"), cwd = join(scratch, "work"), custodyPath = join(root, "custody.jsonl"), lockPath = join(accountRoot, "active.json");
@@ -315,11 +320,12 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       }
       const sandboxPlan: OsSandboxPlan = parent.platform === "darwin"
         ? await createSeatbeltOsSandbox({ generateProfile: spec =>
-          (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
-          .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied", policyPath })
+          (sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v2" ? codexManagedProviderV2Sandbox
+            : sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? codexManagedProviderSandbox : codexManagedOfflineSandbox)({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+          .plan({ platform: "darwin", executable, scratch, accountHome, network: sandboxProfile === "managed-task-offline-candidate-v1" ? "denied" : "provider-tcp443-dns", policyPath })
         : await createBwrapOsSandbox({ executable: runtime.sandbox!.executable, sha256: runtime.sandbox!.sha256 })
           .plan({ platform: "linux", executable, scratch, accountHome, readOnlyPaths: runtime.sandbox!.readOnlyPaths ?? [],
-            network: sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v1" ? "provider-tcp443-dns" : "denied",
+            network: sandboxProfile === "managed-task-offline-candidate-v1" ? "denied" : "provider-tcp443-dns",
             ...(bridge === undefined ? {} : { egressSocket: bridge.socketPath }), policyPath });
       state.profileSha256 = sandboxPlan.policySha256;
       await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
@@ -330,6 +336,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       // crash gap. A thrown spawn is uncertainty, never proof that none started.
       const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd,
         env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
+          ...(sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v2" && parent.platform === "darwin" ? { SSL_CERT_FILE: "/etc/ssl/cert.pem" } : {}),
           ...(bridge === undefined ? {} : { AGENTMIXER_EGRESS_SOCKET: bridge.socketPath }) }) });
       child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd,
         env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));

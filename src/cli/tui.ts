@@ -181,3 +181,18 @@ export function printTool(name: string, input: unknown): void {
   }
   process.stdout.write(`${dim("  ⚙")} ${dim(name)}${dim(detail)}\n`);
 }
+
+/** After live-streamed blocks, prints only the part of `output` not yet shown.
+ * `streamedAll` is every emitted block joined by newlines; `streamedLast` the
+ * final block. Non-TTY callers pass empty strings and get the full output. */
+export function printRemainingText(output: string | null, streamedAll: string, streamedLast: string): void {
+  const final = output ?? "";
+  if (final === "") return;
+  if (streamedAll === "") {
+    process.stdout.write(`${final}\n`);
+    return;
+  }
+  const tail = final === streamedLast || final === streamedAll ? ""
+    : final.startsWith(streamedAll) ? final.slice(streamedAll.length).replaceAll(/^\n+/u, "") : final;
+  if (tail !== "") process.stdout.write(`${tail}\n`);
+}

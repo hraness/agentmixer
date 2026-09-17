@@ -70,11 +70,18 @@ puts `agentmixer` on the PATH:
 npm install -g --ignore-scripts @hraness/agentmixer
 agentmixer doctor            # inspect provider binaries, admit this runtime
 agentmixer auth claude       # sign in with a Claude subscription
+agentmixer auth status       # show stored sign-in state
+agentmixer auth logout       # remove the stored credential
 agentmixer                   # open the chat in the current directory
-agentmixer run -p "task"     # one headless turn
+agentmixer run -p "task"     # one headless turn (--cwd picks the workspace)
 agentmixer sessions          # list local sessions
-agentmixer resume <id>       # continue a session
+agentmixer resume [id]       # continue a session (default: most recent)
 ```
+
+Assistant text streams into the chat as the provider completes each content
+block, and provider-declared errors (for example a plan's session limit) print
+their own message next to the typed outcome code. Piped output stays clean:
+streaming, spinners and ANSI styling only engage on a TTY.
 
 `agentmixer` is the kernel layer: one local CLI that keeps provider account
 custody, process lifecycle, brokered workspace tools, and unified responses on

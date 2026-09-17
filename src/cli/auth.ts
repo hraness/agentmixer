@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { privateDirectory } from "./state.ts";
@@ -47,6 +47,11 @@ export async function readClaudeOAuthToken(stateRoot: string): Promise<string | 
   } catch {
     return null;
   }
+}
+
+/** Remove the stored subscription token. Idempotent. */
+export async function clearClaudeOAuthToken(stateRoot: string): Promise<void> {
+  await rm(TOKEN_PATH(stateRoot), { force: true });
 }
 
 /** Interactive sign-in: mint a long-lived subscription token via
@@ -103,7 +108,7 @@ export type ClaudeAuthStatus = Readonly<{ loggedIn: boolean; authMethod: string 
 
 /** Bounded auth probe: a well-formed host-stored subscription token counts as
  * signed in; revocation surfaces at the next provider call. */
-export async function claudeAuthStatus(stateRoot: string, _inspection: CliBinaryInspection): Promise<ClaudeAuthStatus> {
+export async function claudeAuthStatus(stateRoot: string): Promise<ClaudeAuthStatus> {
   const token = await readClaudeOAuthToken(stateRoot);
   return Object.freeze({ loggedIn: token !== null, authMethod: token === null ? null : "subscription-token" });
 }

@@ -11,6 +11,10 @@
   `provider-tcp443-dns` plannable on Linux bwrap without unsharing the child's
   network namespace.
   `src/index.ts` is the package's complete public surface.
+- `src/cli/` is the standalone `agentmixer` terminal surface (`cli.ts` entry,
+  chat/run/resume/sessions/doctor/auth commands) built on the same task
+  runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the seatbelted
+  subscription route it drives.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a

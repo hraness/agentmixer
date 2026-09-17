@@ -11,9 +11,10 @@ import { ensureCliState } from "./state.ts";
 import { CliSessionStore, type CliSession, type CliTranscriptEntry } from "./sessions.ts";
 import { createCliWorkspace, createCliWorkspaceProfile } from "./workspace.ts";
 import { openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./provider.ts";
+import type { ClaudeTaskEvents } from "../claude-task-adapter.ts";
 import type { CliProviderName } from "./binaries.ts";
 import { runCliTurn } from "./run.ts";
-import { LineEditor, bold, cyan, dim, green, red, startSpinner, printTool, yellow } from "./tui.ts";
+import { LineEditor, bold, cyan, dim, green, red, startSpinner, printTool, printRemainingText, yellow } from "./tui.ts";
 import { claudeAuthStatus } from "./auth.ts";
 
 const ACCOUNT_ID = "local";
@@ -84,14 +85,15 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   const workspace = createCliWorkspace(workspacePath);
   const profile = createCliWorkspaceProfile(workspace, { fetch: (url, signal) => web.fetchPublic(url, 256 * 1024, signal).then((r) => ({ text: r.text })) });
   const providerName: CliProviderName = options.provider ?? "claude";
-  const opened = await openCliProvider(stateRoot, providerName, profile);
+  const events: ClaudeTaskEvents = {};
+  const opened = await openCliProvider(stateRoot, providerName, profile, events);
   if (opened.status !== "ready") {
     process.stderr.write(`${red("agentmixer:")} ${describe(opened, providerName)}\n`);
     sessions.close();
     return 2;
   }
   if (providerName === "claude") {
-    const auth = await claudeAuthStatus(stateRoot, opened.inspection);
+    const auth = await claudeAuthStatus(stateRoot);
     if (!auth.loggedIn) {
       process.stderr.write(`${red("agentmixer:")} not signed in — run ${bold("agentmixer auth claude")} first.\n`);
       sessions.close();
@@ -152,6 +154,17 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
       turn.controller = controller;
       const spinner = startSpinner(() => `${providerName} is thinking`);
       let toolCalls = 0;
+      let streamedAll = "";
+      let streamedLast = "";
+      let providerError: string | null = null;
+      events.onAssistantText = (block) => {
+        spinner.stop();
+        if (!process.stdout.isTTY) return;
+        streamedAll += (streamedAll === "" ? "" : "\n") + block;
+        streamedLast = block;
+        process.stdout.write(`${block}\n`);
+      };
+      events.onProviderError = (text) => { providerError = text; };
       try {
         const prior = await sessions.transcript(session.id);
         const { result, output } = await runCliTurn({
@@ -165,16 +178,25 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
         if (output !== null) entries.push({ role: "assistant" as const, text: output, at: Date.now() });
         session = await sessions.record(session, entries, Date.now());
         if (result.outcome.status !== "completed") {
-          process.stdout.write(`${red("✗")} ${dim(boundedText(result.outcome.code ?? "run failed", 120))}\n\n`);
+          process.stdout.write(`${red("✗")} ${dim(boundedText(result.outcome.code ?? "run failed", 120))}\n`);
+          if (providerError !== null) process.stdout.write(`${dim(providerError)}\n`);
+          process.stdout.write("\n");
         } else {
-          process.stdout.write(`${output ?? ""}\n\n`);
+          // Streamed blocks were already printed; emit only what the final
+          // result adds beyond them.
+          printRemainingText(output, streamedAll, streamedLast);
+          process.stdout.write("\n");
         }
       } catch (error) {
         spinner.stop();
         const code = error instanceof Error ? boundedText(error.message, 160) : "CLI_RUN_FAILED";
-        process.stdout.write(`${red("✗")} ${dim(controller.signal.aborted ? "cancelled" : code)}\n\n`);
+        process.stdout.write(`${red("✗")} ${dim(controller.signal.aborted ? "cancelled" : code)}\n`);
+        if (providerError !== null) process.stdout.write(`${dim(providerError)}\n`);
+        process.stdout.write("\n");
       } finally {
         turn.controller = null;
+        events.onAssistantText = undefined;
+        events.onProviderError = undefined;
       }
     }
   } finally {

@@ -28,7 +28,7 @@ export type { ProviderProcessBinding, ProviderProcessPort, ProviderProcessSettle
 export { createCodexManagedTaskAdapter } from "./codex-managed-task-adapter.ts";
 export type { CodexManagedTaskAdapterOptions } from "./codex-managed-task-adapter.ts";
 export { createClaudeTaskAdapter, claudeTaskRuntimeIdentity } from "./claude-task-adapter.ts";
-export type { ClaudeTaskAdapterOptions, ClaudeTaskAuthentication } from "./claude-task-adapter.ts";
+export type { ClaudeTaskAdapterOptions, ClaudeTaskAuthentication, ClaudeTaskEvents, ClaudeSubscriptionTokenResolver } from "./claude-task-adapter.ts";
 export type { CodexManagedProcessLauncher } from "./codex-managed-config.ts";
 export * from "./codex-protocol-manifest.ts";
 export { bindCodexTaskProcess } from "./codex-task-process.ts";

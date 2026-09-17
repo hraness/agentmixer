@@ -39,7 +39,7 @@ describe("agentmixer CLI", () => {
   test("--help prints the command surface", async () => {
     const { code, stdout } = await cli(["--help"]);
     expect(code).toBe(0);
-    for (const command of ["auth claude", "doctor", "sessions", "resume", "run -p"]) expect(stdout).toContain(command);
+    for (const command of ["auth claude", "auth status", "auth logout", "doctor", "sessions", "resume", "run [-p", "--cwd"]) expect(stdout).toContain(command);
   });
 
   test("doctor reports missing providers and exits nonzero", async () => {
@@ -89,6 +89,44 @@ describe("agentmixer CLI", () => {
     const { code, stderr } = await cli(["resume", "s_nonexistent"]);
     expect(code).toBe(2);
     expect(stderr).toContain("session not found");
+  });
+
+  test("resume without an id reports no sessions on a fresh state root", async () => {
+    const { code, stderr } = await cli(["resume"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("no sessions yet");
+  });
+
+  test("auth status reports signed out on a fresh state root", async () => {
+    const { code, stdout } = await cli(["auth", "status"]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("signed out");
+  });
+
+  test("auth logout clears the stored token and status flips", async () => {
+    const state = await stateDir();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(state, "claude-oauth-token"), `sk-ant-oat01-${"x".repeat(64)}\n`, { mode: 0o600 });
+    const before = await cli(["auth", "status"], undefined, state);
+    expect(before.code).toBe(0);
+    expect(before.stdout).toContain("signed in");
+    const out = await cli(["auth", "logout"], undefined, state);
+    expect(out.code).toBe(0);
+    const after = await cli(["auth", "status"], undefined, state);
+    expect(after.code).toBe(1);
+    expect(after.stdout).toContain("signed out");
+  });
+
+  test("run --cwd rejects a missing workspace path", async () => {
+    const { code, stderr } = await cli(["run", "-p", "hi", "--cwd", "/definitely/not/real-xyz"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("does not exist");
+  });
+
+  test("auth with extra arguments is a usage error", async () => {
+    const { code, stderr } = await cli(["auth", "claude", "extra"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("usage:");
   });
 
   test("sessions prints nothing on a fresh state root", async () => {

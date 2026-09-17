@@ -33,6 +33,17 @@ export type ClaudeTaskAuthentication = "api" | "subscription";
  * token reaches the provider only through CLAUDE_CODE_OAUTH_TOKEN env. */
 export type ClaudeSubscriptionTokenResolver = (accountId: string, signal: AbortSignal) => Promise<string>;
 
+/** Display-channel callbacks for one run. Deliberately not part of the
+ * execution request: the events are observational, never admission or custody
+ * evidence. The host owns the object and may swap handlers between turns —
+ * each property is read at emit time. */
+export type ClaudeTaskEvents = {
+  /** Assistant text as the provider completes each content block (bounded). */
+  onAssistantText?: ((text: string) => void) | undefined;
+  /** Provider-declared error text from a failed result envelope (bounded). */
+  onProviderError?: ((text: string) => void) | undefined;
+};
+
 export type ClaudeTaskAdapterOptions = Readonly<{
   route: AgentTaskRoute;
   runtime: Readonly<{ executablePath: string; executableSha256: string }>;
@@ -45,6 +56,8 @@ export type ClaudeTaskAdapterOptions = Readonly<{
   credentials?: ClaudeApiKeyResolver;
   /** Required when `authentication` is `"subscription"`. */
   subscriptionToken?: ClaudeSubscriptionTokenResolver;
+  /** Optional display channel; kept by reference and read per emit. */
+  events?: ClaudeTaskEvents;
   authentication: ClaudeTaskAuthentication;
   qualification: TaskRuntimeQualification;
   /** System prompt for the host's own product surface. */
@@ -349,12 +362,25 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
             if (event.type === "system" && event.subtype === "init") {
               assertTaskInitialization(event, request, broker, cwd, authentication);
               admitted = true;
+            } else if (event.type === "assistant") {
+              // One event per completed content block while streaming; surface
+              // only the text blocks on the display channel.
+              const emit = options.events?.onAssistantText;
+              if (emit !== undefined && event.message !== null && typeof event.message === "object"
+                && Array.isArray((event.message as { content?: unknown }).content)) {
+                const text = (event.message as { content: readonly { type: string; text?: unknown }[] }).content
+                  .flatMap((block) => block.type === "text" && typeof block.text === "string" ? [block.text] : []).join("");
+                if (text !== "") emit(boundedText(text, 256 * 1024));
+              }
             } else if (event.type === "result") {
               if (!admitted || resultSeen) throw new Error("CLAUDE_RESULT_INVALID");
               // A provider-declared error result carries a typed subtype (or a
               // success envelope flagged is_error) — surface an identifier-safe
-              // code rather than collapsing to a bare failure.
+              // code rather than collapsing to a bare failure. The human text
+              // goes to the display channel, never into outcome.code.
               if (event.is_error || event.subtype !== "success") {
+                const text = event.subtype === "success" ? event.result : event.errors.join("\n");
+                if (text !== "") options.events?.onProviderError?.(boundedText(text, 8192));
                 const subtype = String(event.subtype).toUpperCase().replaceAll(/[^A-Z0-9_]/gu, "_").slice(0, 60);
                 throw new Error(subtype === "SUCCESS" ? "CLAUDE_TASK_ERROR" : `CLAUDE_TASK_${subtype}`);
               }

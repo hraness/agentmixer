@@ -1,10 +1,12 @@
+#[cfg(target_os = "macos")]
+use crate::process::environment;
 use crate::{
     Error, Result, attachments, auth,
     broker::{self, Workspace},
     claude::{self, Event},
     config::Config,
     context, digest, egress, new_id, now_ms, private,
-    process::{Pin, StreamProcess, environment},
+    process::{Pin, StreamProcess},
     sandbox,
     store::{Store, UsageObservation},
 };
@@ -195,7 +197,7 @@ async fn prepare(
     let bwrap = status
         .candidate
         .as_deref()
-        .and_then(sandbox::BwrapPin::admit)
+        .and_then(|path| sandbox::BwrapPin::admit(path).ok())
         .ok_or(Error::Unavailable("bwrap not admitted"))?;
     let directory = private::directory(&root.join("runs").join(new_id("launch").as_str()))?;
     let executable = pin.snapshot(&directory)?;
@@ -233,7 +235,7 @@ async fn prepare(
         &wrapper_env,
         &cwd,
     )?;
-    private::create(&launch.policy_path, launch.policy.as_bytes())?;
+    private::create(&spec.policy_path, launch.policy.as_bytes())?;
     let mut command = Command::new(&bwrap.executable);
     command
         .args(launch.args)

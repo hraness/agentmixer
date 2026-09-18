@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::{
     io::{self, IsTerminal, Read},
@@ -101,6 +101,9 @@ enum Commands {
         target_port: u16,
         #[arg(last = true, required = true)]
         child: Vec<String>,
+    },
+    Completions {
+        shell: clap_complete::Shell,
     },
 }
 
@@ -848,6 +851,10 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 &child,
             )
             .await
+        }
+        Some(Commands::Completions { shell }) => {
+            clap_complete::generate(shell, &mut Cli::command(), "xcb", &mut io::stdout());
+            Ok(0)
         }
     }
 }

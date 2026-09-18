@@ -46,6 +46,7 @@ install_from_source() {
   install -m 0755 "$root/target/release/xcb" "$bin_dir/xcb"
 }
 
+XCB_VERSION="${XCB_VERSION#v}"
 if [ -n "$XCB_VERSION" ]; then
   install_from_release
 else

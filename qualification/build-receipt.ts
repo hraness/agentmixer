@@ -10,9 +10,13 @@ if (!bwrap || !sha256 || !output || !/^[a-f0-9]{64}$/.test(sha256)) {
 }
 
 const probes = ["linux-sandbox", "linux-egress", "linux-loopback"] as const;
-type ProbeResult = { exitCode: number; blocked?: boolean; passed?: boolean };
+// Field names are the receipt contract: xcb-runtime's Probe deserializes
+// `exit_code`/`passed` verbatim (serde deny_unknown_fields), so camelCase or
+// extra keys would silently corrupt — or outright reject — the evidence.
+type ProbeResult = { exit_code: number; passed: boolean };
 const probeResults: Record<string, ProbeResult> = {};
 
+let allPassed = true;
 for (const name of probes) {
   let parsed: Record<string, unknown> = {};
   try {
@@ -21,12 +25,24 @@ for (const name of probes) {
   } catch {
     parsed = {};
   }
-  const exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : 1;
+  // The probe's process exit code is the authoritative verdict — each probe
+  // sets process.exitCode on failure and the workflow records it beside the
+  // JSON evidence. A missing or unreadable record means the probe never
+  // completed; fail closed rather than default to "ran fine".
+  let exitCode = 1;
+  try {
+    const recorded = (await readFile(`evidence/${name}.exitcode`, "utf8")).trim();
+    if (/^\d+$/.test(recorded)) exitCode = Number.parseInt(recorded, 10);
+  } catch {
+    exitCode = 1;
+  }
   const blocked = parsed.blocked === true;
-  // Each probe reports its own exitCode; "passed" means it wasn't blocked and
-  // exited zero. The loopback probe additionally needs at least one mechanism
-  // to pass, but if exitCode is zero the probe already took that into account.
-  probeResults[name] = { exitCode, passed: !blocked && exitCode === 0 };
+  // "passed" means the probe ran to completion, wasn't blocked, and exited
+  // zero. Loopback's per-mechanism M*_passed details stay in its JSON; the
+  // receipt carries only the verdict the runtime admission checks.
+  const passed = !blocked && exitCode === 0;
+  probeResults[name] = { exit_code: exitCode, passed };
+  if (!passed) allPassed = false;
 }
 
 const unprivileged = await readFile("/proc/sys/kernel/unprivileged_userns_clone", "utf8").catch(() => "absent");
@@ -45,3 +61,11 @@ const receipt = {
 
 await writeFile(output, JSON.stringify(receipt, null, 2) + "\n");
 console.log(JSON.stringify(receipt, null, 2));
+
+// The receipt is written above regardless — evidence first — but its verdict
+// gates the job: a failed, blocked or unrecorded probe exits nonzero so the
+// workflow marks the run failed instead of publishing a passing receipt.
+if (!allPassed) {
+  console.error("build-receipt: one or more probes did not pass");
+  process.exitCode = 1;
+}

@@ -683,6 +683,11 @@ pub async fn run(
         let mut byte_count = 0usize;
         let mut completed_output = 0u64;
         let mut current_output = 0u64;
+        // Velocity is a display meter; the authoritative usage lands via
+        // record_usage at settle. Per-delta fsync'd transactions would
+        // serialize every parallel terminal on one writer, so stream samples
+        // are decimated and the true total is written once at the result.
+        let mut last_velocity_ms = started;
         for _ in 0..16_384 {
             if *cancel.borrow() {
                 return Ok((Terminal::Cancelled, vec![]));
@@ -713,15 +718,19 @@ pub async fn run(
                                 })
                                 .ok_or(Error::Protocol("stream token counter"))?;
                             current_output = total;
-                            store.record_velocity(
-                                &session.id,
-                                VelocitySample {
-                                    at_ms: now_ms(),
-                                    output_tokens: baseline
-                                        .saturating_add(completed_output)
-                                        .saturating_add(current_output),
-                                },
-                            )?;
+                            let now = now_ms();
+                            if now.saturating_sub(last_velocity_ms) >= 250 {
+                                last_velocity_ms = now;
+                                store.record_velocity(
+                                    &session.id,
+                                    VelocitySample {
+                                        at_ms: now,
+                                        output_tokens: baseline
+                                            .saturating_add(completed_output)
+                                            .saturating_add(current_output),
+                                    },
+                                )?;
+                            }
                         }
                     }
                     _ => (),
@@ -866,6 +875,17 @@ pub async fn run(
                 } if admitted => {
                     if !text.is_empty() {
                         final_text = text;
+                    }
+                    if input.config.extensions.usage {
+                        store.record_velocity(
+                            &session.id,
+                            VelocitySample {
+                                at_ms: now_ms(),
+                                output_tokens: baseline
+                                    .saturating_add(completed_output)
+                                    .saturating_add(current_output),
+                            },
+                        )?;
                     }
                     return Ok((terminal, models));
                 }

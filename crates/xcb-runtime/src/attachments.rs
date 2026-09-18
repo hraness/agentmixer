@@ -50,7 +50,19 @@ pub fn store(root: &Path, bytes: &[u8]) -> Result<Attachment> {
         Ok(existing) if digest(&existing) == attachment.digest => (),
         Ok(_) => return Err(Error::Conflict("stored image integrity")),
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            private::create(&path, bytes)?
+            // A sibling storing the same digest-named image concurrently wins
+            // the noclobber persist; verify the landed bytes instead of
+            // failing a benign dedup race.
+            match private::create(&path, bytes) {
+                Ok(()) => (),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let landed = private::read(&path, MAX_BYTES)?;
+                    if digest(&landed) != attachment.digest {
+                        return Err(Error::Conflict("stored image integrity"));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
         Err(error) => return Err(error),
     }

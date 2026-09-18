@@ -1,7 +1,7 @@
 use crate::{Error, Result, digest, process};
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -29,6 +29,24 @@ fn canonical_child(path: &Path) -> Result<String> {
 fn canonical_len(path: &Path) -> Result<String> {
     let text = path.to_str().ok_or(Error::PrivateState)?;
     if !path.is_absolute() || text.len() > 4096 || text.chars().any(char::is_control) {
+        return Err(Error::PrivateState);
+    }
+    Ok(text.to_owned())
+}
+
+/// A namespace mountpoint: an absolute path free of `.`/`..` segments. Unlike
+/// `canonical` the declared target may cross symlinks — bwrap mounts the
+/// resolved source at this literal location inside the namespace.
+fn mount_target(path: &Path) -> Result<String> {
+    use std::path::Component;
+    let text = path.to_str().ok_or(Error::PrivateState)?;
+    if !path.is_absolute()
+        || text.len() > 4096
+        || text.chars().any(char::is_control)
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
         return Err(Error::PrivateState);
     }
     Ok(text.to_owned())
@@ -90,6 +108,10 @@ pub struct BwrapSpec {
     pub executable: PathBuf,
     pub scratch: PathBuf,
     pub account_home: Option<PathBuf>,
+    /// Read-only mounts declared by their *namespace* path. The planner
+    /// resolves each path on the host and mounts the resolved file at this
+    /// location — so a symlinked library path (/lib → /usr/lib on merged-/usr
+    /// hosts) still lands where the dynamic loader looks for it.
     pub read_only: Vec<PathBuf>,
     pub egress: Egress,
     pub socket: Option<PathBuf>,
@@ -164,18 +186,33 @@ pub fn linux_sandbox(root: &std::path::Path) -> LinuxSandbox {
         .as_deref()
         .and_then(|path| BwrapPin::admit(path).ok());
     let admitted = pin.is_some();
+    let userns_clone = sysctl("/proc/sys/kernel/unprivileged_userns_clone");
+    let max_userns = sysctl("/proc/sys/user/max_user_namespaces");
     let qualified = match (&pin, &candidate) {
         (Some(pin), Some(candidate)) => crate::qualification::LinuxQualification::load(root)
-            .is_ok_and(|receipt| receipt.qualified(candidate, &pin.sha256)),
+            .is_ok_and(|receipt| {
+                receipt.qualified(
+                    candidate,
+                    &pin.sha256,
+                    // The receipt's facts are compared against the live host —
+                    // with the emitter's normalization: an unreadable knob
+                    // records "absent"/"0", never a missing field.
+                    &crate::qualification::Namespaces {
+                        unprivileged_userns_clone: userns_clone
+                            .clone()
+                            .unwrap_or_else(|| "absent".into()),
+                        max_user_namespaces: max_userns.clone().unwrap_or_else(|| "0".into()),
+                    },
+                    crate::now_ms(),
+                )
+            }),
         _ => false,
     };
     LinuxSandbox {
         admitted,
         candidate,
-        unprivileged_userns_clone: sysctl("/proc/sys/kernel/unprivileged_userns_clone")
-            .map(|value| value == "1"),
-        max_user_namespaces: sysctl("/proc/sys/user/max_user_namespaces")
-            .and_then(|value| value.parse().ok()),
+        unprivileged_userns_clone: userns_clone.map(|value| value == "1"),
+        max_user_namespaces: max_userns.and_then(|value| value.parse().ok()),
         qualified,
     }
 }
@@ -213,10 +250,17 @@ pub fn bwrap_launch(
     if spec.read_only.len() > 256 {
         return Err(Error::Unavailable("sandbox read-only bind limit"));
     }
+    // A read-only entry declares the namespace target; the mounted source is
+    // the canonical resolution of that path. Library paths collected from
+    // `ldd` therefore land where the loader looks for them even when the
+    // declared path crosses a symlink (/lib → /usr/lib on merged-/usr hosts).
     let read_only = spec
         .read_only
         .iter()
-        .map(|path| canonical(path))
+        .map(|path| {
+            let source = path.canonicalize()?;
+            Ok((canonical_len(&source)?, mount_target(path)?))
+        })
         .collect::<Result<Vec<_>>>()?;
     let socket = spec.socket.as_deref().map(canonical).transpose()?;
     let forwarder = spec
@@ -289,9 +333,9 @@ pub fn bwrap_launch(
             return Err(Error::Unavailable("sandbox env file outside writable root"));
         }
     }
-    let mut binds: Vec<(bool, &str)> = Vec::new();
-    binds.push((true, &executable));
-    for target in &read_only {
+    let mut binds: Vec<(bool, &str, &str)> = Vec::new();
+    binds.push((true, &executable, &executable));
+    for (source, target) in &read_only {
         if inside(target, &scratch)
             || account_home
                 .as_ref()
@@ -299,27 +343,39 @@ pub fn bwrap_launch(
         {
             return Err(invalid());
         }
-        binds.push((true, target));
+        binds.push((true, source, target));
     }
-    binds.push((false, &scratch));
+    binds.push((false, &scratch, &scratch));
     if let Some(home) = &account_home {
-        binds.push((false, home));
+        binds.push((false, home, home));
     }
     if let Some(socket) = &socket {
-        binds.push((false, socket));
+        binds.push((false, socket, socket));
     }
     if let Some((runtime, lo_up, _, _)) = &forwarder {
-        binds.push((true, runtime));
+        binds.push((true, runtime, runtime));
         if let Some(lo_up) = lo_up {
-            binds.push((true, lo_up));
+            binds.push((true, lo_up, lo_up));
         }
     }
-    let mut targets = BTreeSet::new();
-    for (_, target) in &binds {
-        if !targets.insert(*target) {
-            return Err(Error::Unavailable("sandbox bind target duplicated"));
+    // A repeated target is deduplicated — a caller may declare a path the
+    // plan already mounts (a library closure can overlap the executable or
+    // the forwarder runtime) — but one target can never carry two modes.
+    let mut deduped: Vec<(bool, &str, &str)> = Vec::new();
+    let mut modes: BTreeMap<&str, bool> = BTreeMap::new();
+    for (ro, source, target) in &binds {
+        match modes.get(*target) {
+            Some(existing) if *existing != *ro => {
+                return Err(Error::Unavailable("sandbox bind target conflict"));
+            }
+            Some(_) => continue,
+            None => {
+                modes.insert(*target, *ro);
+                deduped.push((*ro, *source, *target));
+            }
         }
     }
+    let binds = deduped;
     let cwd = canonical(cwd)?;
     if !(inside(&cwd, &scratch) || account_home.as_ref().is_some_and(|home| inside(&cwd, home))) {
         return Err(Error::Unavailable("sandbox working directory unbound"));
@@ -353,7 +409,14 @@ pub fn bwrap_launch(
         "executable": executable,
         "binds": binds
             .iter()
-            .map(|(ro, target)| json!({"mode": if *ro { "ro" } else { "rw" }, "target": target}))
+            .map(|(ro, source, target)| {
+                let mut bind =
+                    json!({"mode": if *ro { "ro" } else { "rw" }, "target": target});
+                if source != target {
+                    bind["source"] = json!(source);
+                }
+                bind
+            })
             .collect::<Vec<_>>(),
         "egress": socket.as_ref().map(|socket| json!({
             "socket": socket,
@@ -370,14 +433,11 @@ pub fn bwrap_launch(
     });
     let mut policy = serde_json::to_string(&policy)?;
     policy.push('\n');
+    // --unshare-all unshares user/mount/pid/ipc/uts/cgroup/net in one flag
+    // every admitted bwrap supports; the granular set (notably
+    // --unshare-mount) requires bwrap ≥0.10 while Ubuntu 24.04 ships 0.9.
     let mut argv: Vec<String> = [
-        "--unshare-user",
-        "--unshare-mount",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup",
-        "--unshare-net",
+        "--unshare-all",
         "--new-session",
         "--die-with-parent",
         "--proc",
@@ -388,9 +448,9 @@ pub fn bwrap_launch(
     .iter()
     .map(|flag| (*flag).to_owned())
     .collect();
-    for (ro, target) in &binds {
+    for (ro, source, target) in &binds {
         argv.push(if *ro { "--ro-bind" } else { "--bind" }.to_owned());
-        argv.push((*target).to_owned());
+        argv.push((*source).to_owned());
         argv.push((*target).to_owned());
     }
     argv.push("--clearenv".to_owned());
@@ -528,13 +588,7 @@ mod tests {
         assert_eq!(
             launch.args,
             [
-                "--unshare-user",
-                "--unshare-mount",
-                "--unshare-pid",
-                "--unshare-ipc",
-                "--unshare-uts",
-                "--unshare-cgroup",
-                "--unshare-net",
+                "--unshare-all",
                 "--new-session",
                 "--die-with-parent",
                 "--proc",
@@ -696,15 +750,75 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_and_nested_readonly_binds() {
+    fn dedupes_repeated_binds_and_rejects_nested_or_conflicting() {
+        // Declaring a target the plan already mounts is deduplicated, not an
+        // error — the runner's library closure may overlap its artifacts.
         let mut layout = make_layout(Egress::Denied, false, false);
         layout.spec.read_only = vec![layout.spec.executable.clone()];
-        assert!(bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).is_err());
+        let launch = bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).unwrap();
+        let exe = layout.spec.executable.to_str().unwrap();
+        let policy: serde_json::Value = serde_json::from_str(&launch.policy).unwrap();
+        let bound = policy["binds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|bind| bind["target"] == exe)
+            .count();
+        assert_eq!(bound, 1, "executable bind survives dedupe");
+
         let mut layout2 = make_layout(Egress::Denied, false, false);
         let nested = layout2.spec.scratch.join("lib.so");
         file(&nested, 0o400);
         layout2.spec.read_only = vec![nested];
         assert!(bwrap_launch(&layout2.pin, &layout2.spec, &[], &env(), &cwd(&layout2)).is_err());
+
+        // The same target carrying ro and rw modes is a real conflict.
+        let mut layout3 = make_layout(Egress::Tcp443Dns, true, false);
+        let socket = layout3.spec.socket.clone().unwrap();
+        layout3.spec.read_only = vec![socket];
+        assert!(bwrap_launch(&layout3.pin, &layout3.spec, &[], &env(), &cwd(&layout3)).is_err());
+    }
+
+    #[test]
+    fn readonly_bind_mounts_resolved_source_at_declared_target() {
+        // Library paths reported by `ldd` may cross symlinks (/lib → /usr/lib
+        // on merged-/usr hosts): the resolved file lands at the declared
+        // path so the loader finds it where it looked.
+        let mut layout = make_layout(Egress::Denied, false, false);
+        let real = layout.base.join("real-lib.so");
+        file(&real, 0o400);
+        let link = layout.base.join("link-lib.so");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        layout.spec.read_only = vec![link.clone()];
+        let launch = bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).unwrap();
+        let real = real.to_str().unwrap();
+        let link = link.to_str().unwrap();
+        let mounted = launch
+            .args
+            .windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1] == real && w[2] == link);
+        assert!(
+            mounted,
+            "ro-bind mounts the resolved source at the declared target"
+        );
+        let policy: serde_json::Value = serde_json::from_str(&launch.policy).unwrap();
+        let bind = policy["binds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|bind| bind["target"] == link)
+            .unwrap();
+        assert_eq!(bind["source"], real);
+    }
+
+    #[test]
+    fn rejects_mount_target_with_dotdot_components() {
+        let mut layout = make_layout(Egress::Denied, false, false);
+        // `sub` must exist for canonicalize to resolve through the `..`;
+        // mount_target then rejects the unnormalized declared path.
+        fs::create_dir(layout.base.join("sub")).unwrap();
+        layout.spec.read_only = vec![layout.base.join("sub/../provider")];
+        assert!(bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).is_err());
     }
 
     #[test]

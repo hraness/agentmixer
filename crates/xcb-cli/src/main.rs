@@ -265,7 +265,46 @@ fn accounts(store: &Store, config: &Config, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `xcb egress-forward <socket> <port> <lo_up> <env_file> -- <child...>`:
+/// "-" placeholders become absent paths; the forwarder supervises the child
+/// with loopback CONNECT proxying through the host bridge socket.
+async fn egress_forward(
+    socket: &std::path::Path,
+    port: u16,
+    lo_up: &str,
+    env_file: &str,
+    target_port: u16,
+    child: &[String],
+) -> Result<i32> {
+    let lo_up = (lo_up != "-").then(|| PathBuf::from(lo_up));
+    let env_file = (env_file != "-").then(|| PathBuf::from(env_file));
+    xcb_runtime::egress::run_forwarder(
+        socket,
+        port,
+        target_port,
+        lo_up.as_deref(),
+        env_file.as_deref(),
+        child,
+    )
+    .await
+}
+
 async fn dispatch(cli: Cli) -> Result<i32> {
+    // The hidden in-namespace forwarder must not touch CLI state: inside the
+    // bwrap plan the environment is --clearenv (no HOME/XCB_STATE) and the
+    // host state root is unbound, so Store/Config init would fail before the
+    // forwarder ever read its env file. It runs on its arguments alone.
+    if let Some(Commands::EgressForward {
+        socket,
+        port,
+        lo_up,
+        env_file,
+        target_port,
+        child,
+    }) = &cli.command
+    {
+        return egress_forward(socket, *port, lo_up, env_file, *target_port, child).await;
+    }
     let root = cli.state.unwrap_or(private::default_root()?);
     let store = Arc::new(Store::open(&root)?);
     let (mut config, _) = Config::load(store.root())?;
@@ -839,19 +878,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             env_file,
             target_port,
             child,
-        }) => {
-            let lo_up = (lo_up != "-").then_some(PathBuf::from(lo_up));
-            let env_file = (env_file != "-").then_some(PathBuf::from(env_file));
-            xcb_runtime::egress::run_forwarder(
-                &socket,
-                port,
-                target_port,
-                lo_up.as_deref(),
-                env_file.as_deref(),
-                &child,
-            )
-            .await
-        }
+        }) => egress_forward(&socket, port, &lo_up, &env_file, target_port, &child).await,
         Some(Commands::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "xcb", &mut io::stdout());
             Ok(0)

@@ -75,8 +75,33 @@ fn executable_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-pub fn executable_digest(path: &Path) -> Result<String> {
-    let mut file = executable_file(path)?;
+fn wrapper_file(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file()
+        || ![0, rustix::process::getuid().as_raw()].contains(&meta.uid())
+        || meta.mode() & 0o022 != 0
+        || meta.mode() & 0o111 == 0
+        || (meta.mode() & 0o7000 != 0 && meta.uid() != 0)
+        || meta.len() == 0
+        || meta.len() > 8 * 1024 * 1024
+    {
+        return Err(Error::Unavailable(
+            "sandbox wrapper ownership, permissions, or size is invalid",
+        ));
+    }
+    Ok(file)
+}
+
+fn digest_file(mut file: File, limit: u64) -> Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     let mut size = 0u64;
@@ -86,12 +111,20 @@ pub fn executable_digest(path: &Path) -> Result<String> {
             break;
         }
         size += count as u64;
-        if size > 512 * 1024 * 1024 {
+        if size > limit {
             return Err(Error::Unavailable("executable size changed"));
         }
         hash.update(&buffer[..count]);
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+pub fn executable_digest(path: &Path) -> Result<String> {
+    digest_file(executable_file(path)?, 512 * 1024 * 1024)
+}
+
+pub fn wrapper_digest(path: &Path) -> Result<String> {
+    digest_file(wrapper_file(path)?, 8 * 1024 * 1024)
 }
 
 pub fn discover(provider: Provider, explicit: Option<&Path>) -> Result<PathBuf> {

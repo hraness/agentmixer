@@ -132,7 +132,7 @@ async fn prepare(
 ) -> Result<Launch> {
     if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     if !sandbox::available() {
@@ -185,7 +185,7 @@ async fn prepare(
 ) -> Result<Launch> {
     if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     let status = sandbox::linux_sandbox(root);

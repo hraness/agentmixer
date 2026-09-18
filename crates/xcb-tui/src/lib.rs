@@ -13,6 +13,8 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
+    cell::Cell,
+    collections::VecDeque,
     io::{self, IsTerminal},
     sync::mpsc::{Receiver, SyncSender, TryRecvError},
     time::{Duration, Instant},
@@ -23,6 +25,7 @@ use xcb_core::{
     panes::Pane,
     session::Attachment,
     ui::{Intent, Update, View},
+    usage::Estimate,
 };
 
 #[derive(Clone)]
@@ -60,6 +63,99 @@ pub enum Modal {
     Help,
 }
 
+/// Draft text and pending attachments scoped to one session. Kept per session
+/// so switching sessions never carries the previous draft into the new one.
+#[derive(Default)]
+struct SessionDraft {
+    text: String,
+    attachments: Vec<Attachment>,
+}
+
+/// Bound on remembered per-session drafts; the least recently used is evicted.
+const MAX_DRAFT_SESSIONS: usize = 64;
+
+/// Fingerprint of the rendered parts of a `View`. Used to skip repaints when a
+/// refresh publishes a snapshot identical to what is already on screen. Only
+/// fields the renderer reads participate; messages are append-only in the
+/// store, so the transcript is identified by its tail.
+fn fingerprint(view: &View) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (view.state as u8).hash(&mut hasher);
+    view.remote_active.hash(&mut hasher);
+    view.reduced_motion.hash(&mut hasher);
+    view.runway_coverage.hash(&mut hasher);
+    view.tokens_per_second.map(f64::to_bits).hash(&mut hasher);
+    view.share_percent.map(f64::to_bits).hash(&mut hasher);
+    view.total_runway_seconds
+        .map(f64::to_bits)
+        .hash(&mut hasher);
+    if let Some(session) = &view.session {
+        session.id.as_str().hash(&mut hasher);
+        session.account.as_str().hash(&mut hasher);
+        session.model.key().hash(&mut hasher);
+        session.model.label.hash(&mut hasher);
+        session.workspace.hash(&mut hasher);
+        session.title.hash(&mut hasher);
+        session.pane.as_str().hash(&mut hasher);
+        (session.state as u8).hash(&mut hasher);
+        session.revision.hash(&mut hasher);
+    }
+    for session in &view.sessions {
+        session.id.as_str().hash(&mut hasher);
+        session.title.hash(&mut hasher);
+        (session.state as u8).hash(&mut hasher);
+        session.revision.hash(&mut hasher);
+    }
+    for account in &view.accounts {
+        account.id.as_str().hash(&mut hasher);
+        account.busy.hash(&mut hasher);
+        account.enabled.hash(&mut hasher);
+        account
+            .remaining_percent
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        account.resets_at_ms.hash(&mut hasher);
+        match &account.runway {
+            Estimate::Known { seconds } => seconds.to_bits().hash(&mut hasher),
+            Estimate::Unknown { reason } => reason.hash(&mut hasher),
+        }
+    }
+    for model in &view.models {
+        model.key().hash(&mut hasher);
+        model.label.hash(&mut hasher);
+    }
+    view.messages.len().hash(&mut hasher);
+    if let Some(last) = view.messages.last() {
+        last.id.as_str().hash(&mut hasher);
+        (last.role as u8).hash(&mut hasher);
+        last.text.len().hash(&mut hasher);
+        last.attachments.len().hash(&mut hasher);
+    }
+    for agent in &view.subagents {
+        agent.id.as_str().hash(&mut hasher);
+        (agent.state as u8).hash(&mut hasher);
+        agent.label.hash(&mut hasher);
+        agent.model.hash(&mut hasher);
+    }
+    view.activity.len().hash(&mut hasher);
+    if let Some(last) = view.activity.last() {
+        last.hash(&mut hasher);
+    }
+    for (name, state) in &view.extensions {
+        name.hash(&mut hasher);
+        state.hash(&mut hasher);
+    }
+    view.pane.id.as_str().hash(&mut hasher);
+    view.pane_revision.hash(&mut hasher);
+    view.pane_error.hash(&mut hasher);
+    for pane in &view.panes {
+        pane.id.as_str().hash(&mut hasher);
+        pane.title.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 #[derive(Default)]
 pub struct App {
     pub view: View,
@@ -72,10 +168,84 @@ pub struct App {
     pub show_thinking: bool,
     pub show_history: bool,
     pub show_activity: bool,
-    pub scroll: u16,
+    /// Absolute index of the viewport's top line while `paused`; ignored when
+    /// the viewport follows the tail.
+    pub scroll: Cell<u32>,
+    /// While true the transcript viewport is pinned to `scroll`; while false it
+    /// follows the tail as new output arrives.
+    pub paused: Cell<bool>,
+    /// Top line index rendered last frame (max across scrollable panes).
+    scroll_top: Cell<u32>,
+    /// Tail offset rendered last frame (max across scrollable panes).
+    scroll_tail: Cell<u32>,
+    drafts: VecDeque<(Id, SessionDraft)>,
     pending_image: bool,
+    /// Session an in-flight attachment belongs to; the arriving image is routed
+    /// there even if the user switched sessions meanwhile.
+    pending_image_session: Option<Id>,
+    dirty: bool,
+    view_fingerprint: u64,
 }
 impl App {
+    /// Absolute top line index rendered last frame; used to anchor PageUp.
+    pub fn scroll_top(&self) -> u32 {
+        self.scroll_top.get()
+    }
+    /// Tail offset rendered last frame; used to resume following on PageDown.
+    pub fn scroll_tail(&self) -> u32 {
+        self.scroll_tail.get()
+    }
+    /// True when state changed since the last draw and a repaint is needed.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+    fn save_draft(&mut self, session: Id, draft: SessionDraft) {
+        if let Some(position) = self.drafts.iter().position(|(id, _)| id == &session) {
+            self.drafts.remove(position);
+        }
+        self.drafts.push_back((session, draft));
+        while self.drafts.len() > MAX_DRAFT_SESSIONS {
+            self.drafts.pop_front();
+        }
+    }
+    fn take_draft(&mut self, session: &Id) -> Option<SessionDraft> {
+        self.drafts
+            .iter()
+            .position(|(id, _)| id == session)
+            .and_then(|position| self.drafts.remove(position))
+            .map(|(_, draft)| draft)
+    }
+    fn stash_attachment(&mut self, session: &Id, attachment: Attachment) {
+        let mut draft = self.take_draft(session).unwrap_or_default();
+        if draft.attachments.len() < 8
+            && !draft
+                .attachments
+                .iter()
+                .any(|held| held.digest == attachment.digest)
+        {
+            draft.attachments.push(attachment);
+        }
+        self.save_draft(session.clone(), draft);
+    }
+    fn restore_draft(&mut self, text: String, attachments: Vec<Attachment>) {
+        // A composer the user already started typing into is never clobbered;
+        // the rejected text stays recoverable from prompt history.
+        if self.composer.text().is_empty() {
+            self.composer.set_text(&text);
+        }
+        for attachment in attachments {
+            if self.attachments.len() >= 8 {
+                break;
+            }
+            if !self
+                .attachments
+                .iter()
+                .any(|held| held.digest == attachment.digest)
+            {
+                self.attachments.push(attachment);
+            }
+        }
+    }
     pub fn apply(&mut self, update: Update) -> bool {
         match update {
             Update::View(mut view) => {
@@ -83,12 +253,33 @@ impl App {
                     view.pane = self.view.pane.clone();
                     view.pane_revision = self.view.pane_revision.clone();
                 }
-                if self.view.session.as_ref().map(|session| &session.id)
-                    != view.session.as_ref().map(|session| &session.id)
-                {
+                let previous = self.view.session.as_ref().map(|session| session.id.clone());
+                let next = view.session.as_ref().map(|session| session.id.clone());
+                if previous != next {
+                    // The draft belongs to the session it was typed in: stash it
+                    // and restore the target session's own draft.
+                    if let Some(previous) = previous {
+                        let text = self.composer.text();
+                        let attachments = std::mem::take(&mut self.attachments);
+                        if !text.is_empty() || !attachments.is_empty() {
+                            self.save_draft(previous, SessionDraft { text, attachments });
+                        }
+                    }
+                    let draft = next.and_then(|id| self.take_draft(&id)).unwrap_or_default();
+                    self.composer.set_text(&draft.text);
+                    self.attachments = draft.attachments;
                     self.stream.clear();
                     self.thinking.clear();
-                    self.scroll = 0;
+                    self.scroll.set(0);
+                    self.paused.set(false);
+                    self.scroll_top.set(0);
+                    self.scroll_tail.set(0);
+                    self.dirty = true;
+                }
+                let fingerprint = fingerprint(&view);
+                if fingerprint != self.view_fingerprint {
+                    self.view_fingerprint = fingerprint;
+                    self.dirty = true;
                 }
                 self.view = *view;
             }
@@ -109,6 +300,7 @@ impl App {
                 };
                 let remaining = xcb_core::MAX_TEXT_BYTES.saturating_sub(target.len());
                 target.push_str(&xcb_core::display_text(&text, remaining));
+                self.dirty = true;
             }
             Update::ClearStream(session)
                 if self
@@ -119,17 +311,40 @@ impl App {
             {
                 self.stream.clear();
                 self.thinking.clear();
+                self.dirty = true;
+            }
+            Update::Draft { text, attachments } => {
+                self.restore_draft(text, attachments);
+                self.dirty = true;
             }
             Update::Attachment(attachment) => {
                 self.pending_image = false;
-                if self.attachments.len() < 8 {
-                    self.attachments.push(attachment);
+                // An image that lands after a session switch belongs to the
+                // session that requested it, not the one now on screen.
+                match self.pending_image_session.take().filter(|session| {
+                    self.view
+                        .session
+                        .as_ref()
+                        .is_some_and(|current| current.id != *session)
+                }) {
+                    Some(session) => self.stash_attachment(&session, attachment),
+                    None => {
+                        if self.attachments.len() < 8 {
+                            self.attachments.push(attachment);
+                        }
+                    }
                 }
+                self.dirty = true;
             }
-            Update::PaneCandidate(pane) => self.edit_pane(&pane, None),
+            Update::PaneCandidate(pane) => {
+                self.edit_pane(&pane, None);
+                self.dirty = true;
+            }
             Update::Notice(text) => {
                 self.pending_image = false;
+                self.pending_image_session = None;
                 self.notice = xcb_core::display_text(&text, 1024);
+                self.dirty = true;
             }
             Update::Stopped => return false,
             _ => (),
@@ -179,7 +394,7 @@ impl App {
             "/pane" if arguments == "edit" => self.edit_pane(&self.view.pane.clone(), self.view.pane_revision.clone()),
             "/pane" if arguments.starts_with("generate ") => self.send(output, Intent::GeneratePane(arguments[9..].into())),
             "/pane" => match Id::new(arguments) { Ok(id) => self.send(output, Intent::Pane(id)), Err(_) => self.notice = "Use /pane, /pane edit, or /pane generate <description>".into() },
-            "/attach" if !arguments.is_empty() => { self.pending_image = true; self.send(output, Intent::AttachPath(arguments.trim_matches('"').trim_matches('\'').into())); }
+            "/attach" if !arguments.is_empty() => { self.pending_image = true; self.pending_image_session = self.view.session.as_ref().map(|session| session.id.clone()); self.send(output, Intent::AttachPath(arguments.trim_matches('"').trim_matches('\'').into())); }
             "/plugin" => {
                 let pieces: Vec<_> = arguments.split_whitespace().collect();
                 if pieces.len() == 2 && ["on", "off"].contains(&pieces[1]) { self.send(output, Intent::Extension { name: pieces[0].into(), enabled: pieces[1] == "on" }); }
@@ -191,6 +406,9 @@ impl App {
         true
     }
     pub fn handle(&mut self, event: Event, output: &SyncSender<Intent>) -> bool {
+        if !matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release) {
+            self.dirty = true;
+        }
         if self.modal.is_some() {
             self.modal_event(event, output);
             return true;
@@ -230,15 +448,32 @@ impl App {
                     return true;
                 }
                 KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_add(10);
+                    // Pin the viewport to an absolute line index so streamed
+                    // output can never move what the user is reading.
+                    let top = if self.paused.get() {
+                        self.scroll.get()
+                    } else {
+                        self.scroll_top.get()
+                    };
+                    self.scroll.set(top.saturating_sub(10));
+                    self.paused.set(true);
                     return true;
                 }
                 KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_sub(10);
+                    if self.paused.get() {
+                        let next = self.scroll.get().saturating_add(10);
+                        if next >= self.scroll_tail.get() {
+                            self.paused.set(false);
+                            self.scroll.set(0);
+                        } else {
+                            self.scroll.set(next);
+                        }
+                    }
                     return true;
                 }
                 KeyCode::End => {
-                    self.scroll = 0;
+                    self.paused.set(false);
+                    self.scroll.set(0);
                     return true;
                 }
                 KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -349,6 +584,8 @@ impl App {
                 return;
             }
             self.pending_image = true;
+            self.pending_image_session =
+                self.view.session.as_ref().map(|session| session.id.clone());
             self.send(
                 output,
                 Intent::AttachRgba {
@@ -364,6 +601,17 @@ impl App {
         }
     }
     fn modal_event(&mut self, event: Event, output: &SyncSender<Intent>) {
+        // Ctrl-C always cancels the active run first, even inside dialogs; the
+        // dialog itself stays open and Esc still closes it.
+        if let Event::Key(key) = &event
+            && key.kind != KeyEventKind::Release
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.send(output, Intent::Cancel);
+            self.notice = "Stopping the current turn and queued follow-ups.".into();
+            return;
+        }
         if matches!(
             (&self.modal, &event),
             (
@@ -519,6 +767,8 @@ pub fn run(input: Receiver<Update>, output: SyncSender<Intent>) -> io::Result<()
     let mut app = App::default();
     let mut ticks = 0u64;
     let mut refresh = Instant::now();
+    let mut needs_draw = true;
+    let mut blink = 0u64;
     loop {
         for _ in 0..128 {
             match input.try_recv() {
@@ -531,7 +781,17 @@ pub fn run(input: Receiver<Update>, output: SyncSender<Intent>) -> io::Result<()
                 Err(TryRecvError::Disconnected) => return Ok(()),
             }
         }
-        terminal.draw(|frame| render::draw(frame, &mut app, ticks))?;
+        needs_draw |= app.take_dirty();
+        // The attention blink is the only state that changes with time alone.
+        let phase = (ticks / 16) % 2;
+        if !needs_draw && app.view.state.attention() && !app.view.reduced_motion && phase != blink {
+            needs_draw = true;
+        }
+        if needs_draw {
+            terminal.draw(|frame| render::draw(frame, &mut app, ticks))?;
+            needs_draw = false;
+            blink = phase;
+        }
         if event::poll(Duration::from_millis(50))? && !app.handle(event::read()?, &output) {
             break;
         }

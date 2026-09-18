@@ -478,15 +478,33 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
             }
             if cli.json {
-                print_json(
-                    json!({"version":1,"providers":reports,"unsettledRuns":store.unsettled_runs()?}),
-                )?;
+                let mut report = json!({"version":1,"providers":reports,"unsettledRuns":store.unsettled_runs()?});
+                if cfg!(target_os = "linux") {
+                    let status = xcb_runtime::sandbox::linux_sandbox();
+                    report["sandbox"] = json!({"backend":"bwrap","candidate":status.candidate,"admitted":status.admitted,"unprivilegedUsernsClone":status.unprivileged_userns_clone,"maxUserNamespaces":status.max_user_namespaces,"qualified":false});
+                }
+                print_json(report)?;
             } else {
+                if cfg!(target_os = "linux") {
+                    let status = xcb_runtime::sandbox::linux_sandbox();
+                    let detail = match &status.candidate {
+                        Some(path) if status.admitted => {
+                            format!("bwrap candidate {} admitted", path.display())
+                        }
+                        Some(path) => {
+                            format!("bwrap candidate {} fails admission", path.display())
+                        }
+                        None => "bwrap unavailable".to_owned(),
+                    };
+                    let userns =
+                        match (status.unprivileged_userns_clone, status.max_user_namespaces) {
+                            (Some(false), _) | (_, Some(0)) => " · user namespaces restricted",
+                            _ => "",
+                        };
+                    println!("sandbox: {detail}{userns} · unqualified (egress bridge pending)");
+                }
                 for run in store.unsettled_runs()? {
-                    println!(
-                        "Unsettled run {} · account {} · custody retained",
-                        run.id, run.account
-                    );
+                    println!("Unsettled run {} · custody retained", run.id);
                 }
             }
             Ok(if found > 0 { 0 } else { 1 })

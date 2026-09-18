@@ -27,30 +27,16 @@ jobs:
         with:
           ref: ${{ github.ref }}
       - uses: dtolnay/rust-toolchain@1.97.1
-      - name: Build release binary
-        run: cargo build --release --locked -p xcb-cli
-      - name: Package binary
+      - name: Build and package native binary
         id: package
+        env:
+          XCB_VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          os=$(uname -s | tr '[:upper:]' '[:lower:]')
-          arch=$(uname -m)
-          case "$arch" in
-            x86_64) arch="x86_64" ;;
-            arm64|aarch64) arch="aarch64" ;;
-            *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-          esac
-          name="xcb-${version}-${os}-${arch}"
-          work=$(mktemp -d)
-          install -m 0755 target/release/xcb "$work/xcb"
-          tar -czf "${name}.tar.gz" -C "$work" xcb
-          sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
-          echo "tarball=${name}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "checksum=${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+          ./scripts/build-native.sh
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload --clobber "${GITHUB_REF_NAME}" "${{ steps.package.outputs.tarball }}" "${{ steps.package.outputs.checksum }}"
+          gh release upload --clobber "${{ github.ref_name }}" artifacts/xcb-*.tar.gz artifacts/xcb-*.tar.gz.sha256

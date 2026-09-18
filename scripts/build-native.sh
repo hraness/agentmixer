@@ -7,10 +7,14 @@ set -eu
 : "${CARGO:=cargo}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-version=$(grep -m1 '^version = ' "$root/crates/xcb-cli/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-if [ -z "$version" ]; then
-  echo "error: could not read version from Cargo.toml" >&2
-  exit 1
+if [ -n "${XCB_VERSION:-}" ]; then
+  version="${XCB_VERSION#v}"
+else
+  version=$(grep -m1 '^version = ' "$root/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+  if [ -z "$version" ]; then
+    echo "error: could not read version from workspace Cargo.toml" >&2
+    exit 1
+  fi
 fi
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -30,12 +34,21 @@ if [ ! -f "$binary" ]; then
   exit 1
 fi
 
+sha256_cmd=$(command -v sha256sum || command -v shasum)
+if [ -z "$sha256_cmd" ]; then
+  echo "error: neither sha256sum nor shasum found" >&2
+  exit 1
+fi
+if [ "$sha256_cmd" != "${sha256_cmd%shasum}" ]; then
+  sha256_cmd="$sha256_cmd -a 256"
+fi
+
 mkdir -p "$root/artifacts"
 name="xcb-${version}-${os}-${arch}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 install -m 0755 "$binary" "$work/xcb"
 tar -czf "$root/artifacts/${name}.tar.gz" -C "$work" xcb
-sha256sum "$root/artifacts/${name}.tar.gz" | sed 's/ .*//' > "$root/artifacts/${name}.tar.gz.sha256"
+$sha256_cmd "$root/artifacts/${name}.tar.gz" | sed 's/ .*//' > "$root/artifacts/${name}.tar.gz.sha256"
 echo "tarball=$root/artifacts/${name}.tar.gz"
 echo "sha256=$root/artifacts/${name}.tar.gz.sha256"

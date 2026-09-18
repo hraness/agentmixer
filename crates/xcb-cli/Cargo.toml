@@ -1,0 +1,25 @@
+[package]
+name = "xcb-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "xcb"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "=4.5.48", features = ["derive"] }
+clap_complete = "=4.5.42"
+serde = "=1.0.228"
+serde_json = "=1.0.145"
+tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+xcb-core = { version = "0.1.0", path = "../xcb-core" }
+xcb-runtime = { version = "0.1.0", path = "../xcb-runtime" }
+xcb-tui = { version = "0.1.0", path = "../xcb-tui" }
+zeroize = "=1.8.2"

@@ -1,39 +1,33 @@
-import { ImageResponse } from "next/og";
+import {
+  createSocialImageResponse,
+  socialImageContentType as contentType,
+  socialImageSize as size,
+} from "@hraness/web-discovery/social-image";
 
 export const alt = "xcb — Excalibur. Your agents. Your terminal. Your edge.";
-export const size = { height: 630, width: 1200 };
-export const contentType = "image/png";
+export { contentType, size };
+
+function XcbMark() {
+  return (
+    <svg aria-label="xcb mark" fill="none" height="42" role="img" viewBox="0 0 42 42" width="42">
+      <path d="M8 8l26 26M34 8 8 34" stroke="currentColor" strokeLinecap="round" strokeWidth="4" />
+      <circle cx="21" cy="21" fill="none" r="17" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
 
 export default function OpengraphImage() {
-  return new ImageResponse(
-    (
-      <div
-        style={{
-          background: "#f8f7f4",
-          color: "#1c1a18",
-          display: "flex",
-          flexDirection: "column",
-          fontFamily: "serif",
-          height: "100%",
-          justifyContent: "space-between",
-          padding: "72px 80px",
-          width: "100%",
-        }}
-      >
-        <div style={{ color: "#8a857e", fontSize: 28, letterSpacing: 2, textTransform: "uppercase" }}>
-          xcb / Excalibur
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          <div style={{ fontSize: 64, fontWeight: 700, lineHeight: 1.1 }}>
-            Your agents. Your terminal. Your edge.
-          </div>
-          <div style={{ color: "#4a463f", fontSize: 30, lineHeight: 1.35 }}>
-            A local, composable workspace for coding agents.
-          </div>
-        </div>
-        <div style={{ color: "#8a857e", fontSize: 26 }}>xcb.dev</div>
-      </div>
-    ),
-    size,
-  );
+  return createSocialImageResponse({
+    description: "A local, composable workspace for coding agents.",
+    domain: "xcb.dev",
+    eyebrow: "xcb / Excalibur",
+    mark: <XcbMark />,
+    theme: {
+      accent: "#8A5A28",
+      background: "#F8F7F4",
+      foreground: "#1C1A18",
+      muted: "#6A655E",
+    },
+    title: "Your agents. Your terminal. Your edge.",
+  });
 }

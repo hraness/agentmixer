@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, writeFileSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { spawnBoundedProvider, type BoundedProviderProcessFactory, type BoundedProviderProcessInput } from "./provider-process.ts";
@@ -30,6 +30,11 @@ import { spawnBoundedProvider, type BoundedProviderProcessFactory, type BoundedP
  *   per-destination egress, and a unix-socket proxy bridge is a separate
  *   qualification. The wrapper binary is itself an admitted artifact whose
  *   SHA-256 is re-verified from a checked descriptor at plan time.
+ *   `--setenv` values are visible in the wrapper's own command line, so a
+ *   forwarder plan may instead declare `envFile`: `wrap()` then persists
+ *   the closed env into the writable scratch (mode 0600) and emits no
+ *   `--setenv` at all — the forwarder reads, deletes, and injects the
+ *   pairs only into the supervised child's environment.
  */
 export type OsSandboxNetworkPolicy = "denied" | "loopback" | "provider-tcp443-dns";
 export type OsSandboxBackendName = "seatbelt" | "bwrap";
@@ -63,8 +68,12 @@ export type OsSandboxSpec = Readonly<{
    * entry point — `runtime script <socket> <port> - -- <executable> <args>`.
    * The forwarder binds `127.0.0.1:<port>` and launches the child with
    * standard proxy variables, so the plan env needs no proxy keys. Requires
-   * `egressSocket`; refused by seatbelt. */
-  egressForward?: Readonly<{ runtime: string; script: string; port: number }>;
+   * `egressSocket`; refused by seatbelt.
+   * `envFile` is an optional absolute path inside the writable scratch or
+   * account root: when set, `wrap()` writes the invocation env there
+   * (mode 0600) and the forwarder injects it into the child, keeping every
+   * value — secret or not — out of the wrapper's command line. */
+  egressForward?: Readonly<{ runtime: string; script: string; port: number; envFile?: string }>;
   /** Absolute path of the durable policy artifact the caller persists
    * (`sandbox.sb`, `sandbox.json`). Identity flows into custody journals. */
   policyPath: string;
@@ -132,10 +141,11 @@ function specOf(value: unknown): OsSandboxSpec {
   const egressSocket = raw.egressSocket === undefined ? undefined : path(raw.egressSocket);
   assert(egressSocket === undefined || network === "provider-tcp443-dns", "OS_SANDBOX_EGRESS_UNEXPECTED");
   const egressForward = raw.egressForward === undefined ? undefined : (() => {
-    const forward = object(raw.egressForward, ["runtime", "script", "port"]);
+    const forward = object(raw.egressForward, ["runtime", "script", "port", "envFile"]);
     const port = forward.port;
     assert(Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535, "OS_SANDBOX_EGRESS_PORT_INVALID");
-    return Object.freeze({ runtime: path(forward.runtime), script: path(forward.script), port: port as number });
+    return Object.freeze({ runtime: path(forward.runtime), script: path(forward.script), port: port as number,
+      ...(forward.envFile === undefined ? {} : { envFile: path(forward.envFile) }) });
   })();
   // A forwarder is meaningless without the bridge socket it translates to;
   // conversely the socket alone is the native-consumption contract.
@@ -163,6 +173,13 @@ function specOf(value: unknown): OsSandboxSpec {
       && (spec.accountHome === undefined
         || (!inside(egressForward.runtime, spec.accountHome) && !inside(egressForward.script, spec.accountHome)))),
     "OS_SANDBOX_LAYOUT_INVALID");
+  // The env file is the mirror image of a forwarder artifact: it must sit
+  // inside a writable root so the forwarder can read and delete it, and it
+  // must never land on a read-only bind.
+  assert(egressForward === undefined || egressForward.envFile === undefined
+    || inside(egressForward.envFile, scratch)
+    || (spec.accountHome !== undefined && inside(egressForward.envFile, spec.accountHome)),
+    "OS_SANDBOX_LAYOUT_INVALID");
   return spec;
 }
 function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<Record<string, string>>; cwd: string } {
@@ -180,6 +197,25 @@ function wrapInputOf(value: unknown): { args: readonly string[]; env: Readonly<R
     env[key] = descriptor.value;
   }
   return { args, env: Object.freeze(env), cwd: path(raw.cwd) };
+}
+
+/** Forwarder-owned variable names: the env file may carry secrets, but it
+ * must never let a value redirect egress — the forwarder sets proxy vars
+ * itself after injecting the file. Mirrored by the in-namespace forwarder. */
+const PROXY_ENV_KEYS = new Set(["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"]);
+
+/** Persists the closed invocation env as bounded `KEY=VALUE` lines at a
+ * declared path inside the writable scratch, mode 0600. The env map is
+ * already validated by `wrapInputOf`; this adds the total bound and the
+ * reserved-key check, then writes deterministically in sorted key order. */
+function writeForwarderEnv(envFile: string, env: Readonly<Record<string, string>>): void {
+  let body = "";
+  for (const key of Object.keys(env).sort()) {
+    assert(!PROXY_ENV_KEYS.has(key), "OS_SANDBOX_WRAP_INVALID");
+    body += `${key}=${env[key]!}\n`;
+  }
+  assert(Buffer.byteLength(body) <= 64 * 1024, "OS_SANDBOX_WRAP_INVALID");
+  writeFileSync(envFile, body, { mode: 0o600, flag: "w" });
 }
 
 /** Re-verifies an admitted executable from a checked descriptor: owner,
@@ -259,7 +295,9 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
     executable: spec.executable, binds,
     ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443",
       ...(spec.egressForward === undefined ? {} : { forwarder: { runtime: spec.egressForward.runtime,
-        script: spec.egressForward.script, port: spec.egressForward.port, protocol: "http-connect-loopback" } }) } }) }) + "\n";
+        script: spec.egressForward.script, port: spec.egressForward.port,
+        ...(spec.egressForward.envFile === undefined ? {} : { envFile: spec.egressForward.envFile }),
+        protocol: "http-connect-loopback" } }) } }) }) + "\n";
   const prefix = [
     "--unshare-all", "--new-session", "--die-with-parent",
     "--proc", "/proc", "--dev", "/dev",
@@ -270,18 +308,24 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
     wrap(invocation: OsSandboxWrapInput) {
       const wrapped = wrapInputOf(invocation);
       // --clearenv scrubs ambient secrets; the child's environment is
-      // exactly the caller-closed map, rebuilt in sorted key order.
-      const setenv = Object.keys(wrapped.env).sort().flatMap(key => ["--setenv", key, wrapped.env[key]!]);
+      // exactly the caller-closed map, rebuilt in sorted key order. When an
+      // env file is admitted the map travels inside the private namespace
+      // instead — --setenv values are visible in the wrapper's argv.
+      const envFile = spec.egressForward?.envFile;
+      if (envFile !== undefined) writeForwarderEnv(envFile, wrapped.env);
+      const setenv = envFile === undefined
+        ? Object.keys(wrapped.env).sort().flatMap(key => ["--setenv", key, wrapped.env[key]!])
+        : [];
       // With a forwarder admitted, the namespace entry point is the runtime
       // running the script; the provider executable becomes the supervised
       // child after `--`. `-` keeps the diagnostic lo-up hook unused.
       const entrypoint = spec.egressForward === undefined
         ? [spec.executable]
         : [spec.egressForward.runtime, spec.egressForward.script, spec.egressSocket!,
-          String(spec.egressForward.port), "-", "--", spec.executable];
+          String(spec.egressForward.port), "-", envFile ?? "-", "--", spec.executable];
       return { args: Object.freeze([...prefix, ...setenv, "--chdir", wrapped.cwd, "--", ...entrypoint, ...wrapped.args]),
         // bwrap itself needs nothing beyond a minimal PATH; the policy env
-        // is delivered exclusively through --setenv.
+        // is delivered through --setenv or the private env file.
         env: Object.freeze({ PATH: "/usr/bin:/bin" }) };
     },
   });

@@ -14,6 +14,7 @@ site/public/theme-bootstrap.js
 .vercel
 site/.vercel
 coverage/
+target/
 artifacts/
 .env*
 site/public/theme-bootstrap.js

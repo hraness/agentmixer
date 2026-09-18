@@ -77,6 +77,8 @@ jobs:
               timeout 300 bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/$probe.json" 2> "evidence/$probe.stderr" || status=1
             fi
           done
+          bun qualification/build-receipt.ts "$BWRAP" "$SHA" evidence/linux-qualification.json
+          if [ ! -f evidence/linux-qualification.json ]; then status=1; fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

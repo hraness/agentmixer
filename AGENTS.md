@@ -84,3 +84,26 @@
 - When a CI or policy gate scans complete Git history, check out the exact governed SHA and fetch only the fully qualified governed refs before scanning. Preserve the complete-history gate and reject unexpected refs instead of importing unrelated concurrent heads.
 - At closeout, record applicable branch, PR, check, merge, release, deployment, and production evidence. Archive only conclusively finished tasks, never from silence alone, and reclaim only freshly revalidated clean merged worktrees through the guarded exact-path flow.
 <!-- oompa-local-efficiency:end -->
+
+# Workspace write coordination
+
+- Native and compatibility workspace writers share a private SQLite lock database
+  per canonical UTF-8 workspace path. The default root is
+  `~/.local/share/xcb-coordination`; `XCB_COORDINATION_ROOT` is a trusted host
+  override that must agree across cooperating processes, independently of their
+  application state roots. Tests use explicit isolated coordination roots.
+- The lock database name is the workspace path's lowercase SHA-256 plus
+  `.sqlite`. Keep DELETE journal mode and hold `BEGIN IMMEDIATE` through revision
+  checking, publication, and directory sync. Never remove an active coordination
+  database or treat this filesystem lock as account/process-exit evidence.
+- Keep the in-process serialization around coordination database setup and use.
+  Closing an unrelated descriptor for the same SQLite file can release POSIX
+  record locks held by that process. New-file publication must remain
+  no-clobber; cooperating replacements preserve ordinary permission bits.
+- Native broker integration tests exercise actual Bun and Node lock owners and
+  process-exit release. Run them with the repository's Bun and Node toolchains
+  available on PATH. These guarantees cover cooperating broker writers, not
+  arbitrary editors or processes that bypass the coordination protocol.
+- Compatibility lease recovery requires an independently established host stop
+  witness bound to the exact lease; an absent argv marker or elapsed TTL is not
+  sufficient. Legacy leases without such a witness remain held.

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 import { createCapabilityBroker, type CapabilityBroker, type CapabilityProfile } from "../capabilities.ts";
-import type { AccountLeaseStore } from "../accounts.ts";
+import type { AccountLease, AccountLeaseStore } from "../accounts.ts";
 import { runAgentTask, type AgentTaskAdapter, type AgentTaskResult } from "../task-runtime.ts";
 import { boundedText, identifier } from "../validation.ts";
 
@@ -24,6 +24,7 @@ export type CliRunInput = Readonly<{
   prior: readonly CliTranscriptEntry[];
   signal: AbortSignal;
   onTool?: (name: string, input: unknown) => void;
+  proveAccountStopped?: (lease: AccountLease) => Promise<boolean>;
   now?: () => number;
 }>;
 
@@ -47,18 +48,27 @@ function promptWithContext(prompt: string, prior: readonly CliTranscriptEntry[])
 }
 
 /** A previous run that failed to prove provider-process exit retains account
- * custody ("no automatic TTL recovery"). The lease owner is the owning runId,
- * and a live run process always has `<stateRoot>/<provider>-run-<runId>/…` in
- * its argv — pgrep on that exact string is independent stop evidence. No
- * match means the owning process is gone and the lease can be released. */
-async function recoverHeldLease(leases: AccountLeaseStore, provider: "claude" | "codex" | "devin", accountId: string): Promise<void> {
+ * custody ("no automatic TTL recovery"). The trusted host must independently
+ * prove the exact lease owner and its processes stopped. An argv marker is
+ * only an additional live-process veto: its absence cannot establish that a
+ * prepared owner stopped, so legacy leases without a witness remain held. */
+async function recoverHeldLease(leases: AccountLeaseStore, provider: "claude" | "codex" | "devin", accountId: string,
+  proveStopped: CliRunInput["proveAccountStopped"]): Promise<void> {
   if (leases.inspect === undefined || leases.recover === undefined) return;
   const held = leases.inspect(provider, accountId);
   if (held === null) return;
-  await leases.recover(held, async (lease) => {
-    const probe = spawnSync("pgrep", ["-f", `${provider}-run-${lease.owner}`], { timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
-    return probe.status === 1;
+  if (proveStopped === undefined) throw new Error("ACCOUNT_PROCESS_STOP_UNPROVEN");
+  const recovered = await leases.recover(held, async (lease) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const proven = await Promise.race([proveStopped(Object.freeze({ ...lease })),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000); })]);
+      if (proven !== true) return false;
+      const probe = spawnSync("pgrep", ["-f", `${provider}-run-${lease.owner}`], { timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+      return probe.status === 1;
+    } finally { clearTimeout(timer); }
   });
+  if (!recovered) throw new Error("ACCOUNT_RECOVERY_CHANGED");
 }
 
 /** One interactive turn: admit the exact broker bound to this run, hand the
@@ -110,7 +120,7 @@ export async function runCliTurn(input: CliRunInput): Promise<CliRunResult> {
       // One recovery shot: a held lease from a provably dead run is released,
       // then retried; anything else propagates.
       if (!(error instanceof Error) || error.message !== "ACCOUNT_BUSY_OR_RECOVERY_REQUIRED") throw error;
-      await recoverHeldLease(input.leases, input.adapter.route.provider, accountId);
+      await recoverHeldLease(input.leases, input.adapter.route.provider, accountId, input.proveAccountStopped);
       const result = await attempt();
       return Object.freeze({ result, output: result.output });
     }

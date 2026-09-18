@@ -143,3 +143,77 @@ fn pruning_never_erases_an_active_session() {
     assert!(store.remove_session(&idle.id).unwrap());
     assert!(store.session(&active.id).unwrap().is_some());
 }
+
+#[test]
+fn storage_process_worker() {
+    let Some(base) = std::env::var_os("XCB_STORAGE_TEST_BASE") else {
+        return;
+    };
+    let base = std::path::PathBuf::from(base);
+    let started = std::time::Instant::now();
+    while !base.join("start").exists() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let store = Store::open(&base.join("state")).unwrap();
+    let label = std::env::var("XCB_STORAGE_TEST_LABEL").unwrap();
+    let account = store
+        .add_account(Provider::Claude, &label, "Synthetic", 1)
+        .unwrap();
+    let session = store
+        .create_session(&account.id, choice(), &base.join("work"), 2)
+        .unwrap();
+    store
+        .append_message(
+            &session.id,
+            session.revision,
+            &Message {
+                id: xcb_runtime::new_id("m"),
+                role: Role::User,
+                text: "Synthetic concurrent startup".into(),
+                at_ms: 3,
+                attachments: vec![],
+                provenance: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn twenty_processes_initialize_and_write_one_fresh_store() {
+    let directory = root();
+    let base = directory.path().canonicalize().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let children: Vec<_> = (0..20)
+        .map(|index| {
+            std::process::Command::new(&executable)
+                .args(["--exact", "storage_process_worker", "--nocapture"])
+                .env("XCB_STORAGE_TEST_BASE", &base)
+                .env("XCB_STORAGE_TEST_LABEL", format!("worker-{index}"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    fs::write(base.join("start"), b"ready").unwrap();
+    let failures: Vec<_> = children
+        .into_iter()
+        .filter_map(|child| {
+            let output = child.wait_with_output().unwrap();
+            (!output.status.success()).then(|| String::from_utf8_lossy(&output.stderr).into_owned())
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "concurrent startup failures: {failures:?}"
+    );
+    let store = Store::open(&base.join("state")).unwrap();
+    assert_eq!(store.accounts().unwrap().len(), 20);
+    let sessions = store.sessions(64).unwrap();
+    assert_eq!(sessions.len(), 20);
+    for session in sessions {
+        assert_eq!(store.messages(&session.id, 1).unwrap().len(), 1);
+    }
+}

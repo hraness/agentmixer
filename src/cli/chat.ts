@@ -7,7 +7,7 @@ import { SqliteAccountLeases } from "../accounts.ts";
 import { createPublicWeb } from "../public-web.ts";
 import { boundedText } from "../validation.ts";
 
-import { ensureCliState } from "./state.ts";
+import { assertWorkspaceStateSeparation, ensureCliState } from "./state.ts";
 import { CliSessionStore, type CliSession, type CliTranscriptEntry } from "./sessions.ts";
 import { createCliWorkspace, createCliWorkspaceProfile } from "./workspace.ts";
 import { openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./provider.ts";
@@ -81,6 +81,8 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
       return 2;
     }
   }
+  try { assertWorkspaceStateSeparation(workspacePath, stateRoot); }
+  catch (error) { sessions.close(); throw error; }
   await mkdir(join(stateRoot, "runs"), { mode: 0o700, recursive: true });
   const leases = new SqliteAccountLeases(await openAccountDatabase(join(stateRoot, "account-leases.sqlite")));
   const web = createPublicWeb();

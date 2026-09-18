@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
-import { constants, lstatSync, readdirSync } from "node:fs";
-import { lstat, open, readdir, rename, writeFile, mkdir } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { link, lstat, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createCapabilityProfile, type CapabilityContext, type CapabilityJson, type CapabilityObject, type CapabilityProfile } from "../capabilities.ts";
-import { boundedText, identifier } from "../validation.ts";
+import { boundedText } from "../validation.ts";
+import { withWorkspaceWriteLock, workspaceCoordinationRoot } from "./write-coordination.ts";
 
 export const CLI_WORKSPACE_PROFILE_ID = "xcb.workspace";
 export const CLI_WORKSPACE_PROFILE_VERSION = 1;
@@ -54,11 +55,18 @@ function revisionOf(stat: { size: number | bigint; mtimeNs?: bigint; mtimeMs?: n
  * resolved root; every write is conditional on the revision observed by the last
  * read (or an explicit null for a new file), preserving the broker's
  * read-before-write contract. */
-export function createCliWorkspace(rootInput: string) {
+export function createCliWorkspace(rootInput: string, options: Readonly<{ coordinationRoot?: string }> = {}) {
   if (typeof rootInput !== "string" || !isAbsolute(rootInput) || resolve(rootInput) !== rootInput || /[\x00-\x1f\x7f]/u.test(rootInput)) {
     throw new Error("WORKSPACE_ROOT_INVALID");
   }
-  const root = rootInput;
+  const root = rootInput, identity = lstatSync(root, { bigint: true });
+  if (!identity.isDirectory() || identity.isSymbolicLink() || realpathSync(root) !== root) throw new Error("WORKSPACE_ROOT_INVALID");
+  const coordinationRoot = options.coordinationRoot ?? workspaceCoordinationRoot();
+  const checkRoot = () => {
+    const current = lstatSync(root, { bigint: true });
+    if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino
+      || realpathSync(root) !== root) throw new Error("WORKSPACE_ROOT_CHANGED");
+  };
   /** The port itself stays confined: every operation requires the resolved
    * target beneath the root even when callers bypass the tool layer. */
   const confined = (target: string, { allowRoot = false } = {}): string => {
@@ -85,31 +93,44 @@ export function createCliWorkspace(rootInput: string) {
   };
   const writeRevision = async (target: string, text: string, expectedRevision: string | null): Promise<{ revision: string }> => {
     confined(target);
-    assertNoLinks(root, target, { allowLeafMissing: true });
-    let exists = true;
-    try {
-      const stat = await lstat(target);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE_BYTES) fail("WORKSPACE_FILE_INVALID");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") exists = false;
-      else throw error;
-    }
-    if (expectedRevision === null && exists) fail("WORKSPACE_REVISION_REQUIRED");
-    if (expectedRevision !== null) {
-      if (!exists) fail("WORKSPACE_FILE_MISSING");
-      const current = await readRevision(target);
-      if (current.revision !== expectedRevision) fail("WORKSPACE_REVISION_MISMATCH");
-    }
-    const bytes = Buffer.byteLength(text);
-    if (bytes > MAX_FILE_BYTES) fail("WORKSPACE_FILE_LIMIT");
-    const directory = dirname(target);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    assertNoLinks(root, target, { allowLeafMissing: true });
-    const temp = join(directory, `.xcb-write-${identifier(createHash("sha256").update(String(Date.now()) + target).digest("hex").slice(0, 24))}.tmp`);
-    await writeFile(temp, text, { mode: 0o600 });
-    await rename(temp, target);
-    const stat = await lstat(target);
-    return { revision: revisionOf(stat) };
+    if (Buffer.byteLength(text) > MAX_FILE_BYTES) fail("WORKSPACE_FILE_LIMIT");
+    checkRoot();
+    return withWorkspaceWriteLock(root, coordinationRoot, async () => {
+      const check = async () => {
+        checkRoot();
+        assertNoLinks(root, target, { allowLeafMissing: true });
+        let stat;
+        try { stat = await lstat(target); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (stat !== undefined && (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE_BYTES)) fail("WORKSPACE_FILE_INVALID");
+        if (expectedRevision === null && stat !== undefined) fail("WORKSPACE_REVISION_REQUIRED");
+        if (expectedRevision !== null) {
+          if (stat === undefined) fail("WORKSPACE_FILE_MISSING");
+          if ((await readRevision(target)).revision !== expectedRevision) fail("WORKSPACE_REVISION_MISMATCH");
+        }
+        return stat;
+      };
+      const current = await check();
+      const directory = dirname(target);
+      const temp = join(directory, `.xcb-write-${randomBytes(16).toString("hex")}.tmp`);
+      const staged = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await staged.writeFile(text);
+        await staged.chmod(current === undefined ? 0o600 : current.mode & 0o777);
+        await staged.sync();
+        await check();
+        if (expectedRevision === null) {
+          await link(temp, target);
+          await unlink(temp);
+        } else await rename(temp, target);
+        const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { await parent.sync(); } finally { await parent.close(); }
+        return { revision: revisionOf(await lstat(target)) };
+      } finally {
+        await staged.close();
+        await unlink(temp).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+      }
+    });
   };
   const listEntries = async (target: string): Promise<readonly string[]> => {
     confined(target, { allowRoot: true });

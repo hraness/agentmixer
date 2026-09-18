@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import { privateDirectory } from "./state.ts";
 import type { CliBinaryInspection } from "./binaries.ts";
@@ -25,6 +26,43 @@ function managedLoginEnv(home: string, config: string): NodeJS.ProcessEnv {
 }
 
 const TOKEN_PATH = (stateRoot: string) => join(stateRoot, "claude-oauth-token");
+
+function loginOutput(write: (text: string) => void, hidden: () => boolean, hide: () => void) {
+  const decoder = new StringDecoder("utf8"), prefix = "sk-ant-";
+  let held = "", matched = 0, escape = 0;
+  const render = (text: string) => {
+    let visible = "";
+    for (const character of text) {
+      if (hidden()) break;
+      if (escape === 1) { escape = character === "[" ? 2 : character === "]" ? 3 : 0; continue; }
+      if (escape === 2) { if (character >= "@" && character <= "~") escape = 0; continue; }
+      if (escape === 3) { if (character === "\x07") escape = 0; else if (character === "\x1b") escape = 4; continue; }
+      if (escape === 4) { escape = character === "\\" ? 0 : character === "\x1b" ? 4 : 3; continue; }
+      if (character === "\x1b") { escape = 1; continue; }
+      if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(character)) continue;
+      if (matched > 0 && /\s/u.test(character)) { held += character; continue; }
+      if (character === prefix[matched]) {
+        held += character;
+        if (++matched === prefix.length) { hide(); held = ""; visible += "<token captured>\n"; }
+      } else {
+        visible += held;
+        held = character === prefix[0] ? character : "";
+        matched = held.length;
+        if (held === "") visible += character;
+      }
+    }
+    if (visible !== "") write(visible);
+  };
+  return {
+    push(chunk: Buffer): string { const text = decoder.write(chunk); render(text); return text; },
+    end(): string {
+      const text = decoder.end(); render(text);
+      if (!hidden() && held !== "") write(held);
+      held = "";
+      return text;
+    },
+  };
+}
 
 /** Host-owned subscription token custody: `xcb auth claude` runs
  * `claude setup-token`, which mints a one-year OAuth token using an existing
@@ -63,35 +101,38 @@ export async function claudeLogin(stateRoot: string, inspection: CliBinaryInspec
   const { config, home } = await providerAuthDirs(stateRoot, "claude");
   await mkdir(join(home, "tmp"), { mode: 0o700, recursive: true });
   const env = managedLoginEnv(home, config);
-  const setupToken = (): Promise<{ code: number; captured: string }> => new Promise((resolve) => {
-    let captured = "";
-    const child = spawn(inspection.executablePath, ["setup-token"], {
-      stdio: ["inherit", "pipe", "inherit"], env, detached: false,
+  const setupToken = (args = ["setup-token"]): Promise<{ code: number; captured: string }> => new Promise((resolve) => {
+    let captured = "", hidden = false, bytes = 0, oversized = false;
+    const child = spawn(inspection.executablePath, args, {
+      stdio: ["inherit", "pipe", "pipe"], env, detached: false, timeout: 600_000, killSignal: "SIGKILL",
     });
+    const hide = () => { hidden = true; };
+    const stdout = loginOutput(text => { process.stdout.write(text); }, () => hidden, hide);
+    const stderr = loginOutput(text => { process.stderr.write(text); }, () => hidden, hide);
+    const bounded = (chunk: Buffer): boolean => {
+      bytes += chunk.byteLength;
+      if (bytes <= 64 * 1024) return true;
+      oversized = true; hide(); child.kill("SIGKILL"); return false;
+    };
     child.stdout.on("data", (chunk: Buffer) => {
-      captured += chunk.toString("utf8");
-      if (captured.length > 64 * 1024) { child.kill(); return; }
+      if (!bounded(chunk)) return;
       // Mask the token wherever it appears, including continuation lines that
       // consist solely of token characters from cosmetic output wrapping.
-      process.stdout.write(chunk.toString("utf8")
-        .replaceAll(/sk-ant-oat\S+/gu, "<token captured>")
-        .replaceAll(/^[ \t]*[A-Za-z0-9_-]{40,}[ \t]*$/gmu, "<token captured>"));
+      captured += stdout.push(chunk);
     });
-    child.on("error", () => resolve({ code: 1, captured }));
-    child.on("exit", (status) => resolve({ code: status ?? 1, captured }));
+    child.stderr.on("data", (chunk: Buffer) => { if (bounded(chunk)) stderr.push(chunk); });
+    child.on("error", () => resolve({ code: 1, captured: "" }));
+    child.on("close", (status) => {
+      captured += stdout.end(); stderr.end();
+      resolve({ code: oversized ? 1 : status ?? 1, captured });
+    });
   });
   // A fresh machine may have no Claude session for setup-token to mint from;
   // fall back to an interactive `auth login` (browser OAuth) and retry.
   let result = await setupToken();
   if (result.code !== 0) {
-    const login = await new Promise<number>((resolve) => {
-      const child = spawn(inspection.executablePath, ["auth", "login"], {
-        stdio: "inherit", env, detached: false,
-      });
-      child.on("error", () => resolve(1));
-      child.on("exit", (status) => resolve(status ?? 1));
-    });
-    if (login === 0) result = await setupToken();
+    const login = await setupToken(["auth", "login"]);
+    if (login.code === 0) result = await setupToken();
   }
   const { code, captured } = result;
   // setup-token may wrap the token across lines inside its cosmetic output;

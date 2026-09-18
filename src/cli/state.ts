@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { boundedText } from "../validation.ts";
 
@@ -50,6 +50,16 @@ export async function ensureCliState(child?: string): Promise<{ root: string; pa
   const path = join(root, name);
   await mkdir(path, { mode: 0o700, recursive: true });
   return { root, path: await privateDirectory(path) };
+}
+
+export function assertWorkspaceStateSeparation(workspace: string, stateRoot: string): void {
+  const contains = (parent: string, child: string) => {
+    const path = relative(parent, child);
+    return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+  };
+  if (contains(workspace, stateRoot) || contains(stateRoot, workspace)) {
+    throw new Error("workspace overlaps private xcb state; choose a separate workspace or state root");
+  }
 }
 
 export { constants as fsConstants };

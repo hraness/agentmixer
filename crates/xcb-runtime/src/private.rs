@@ -83,6 +83,35 @@ pub fn read(path: &Path, max: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+pub(crate) fn lock(file: &File) -> Result<()> {
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock)
+                if started.elapsed() < std::time::Duration::from_secs(5) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Conflict(
+                    "private state is busy; retry the operation",
+                ));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+}
+
+pub(crate) fn same_file(path: &Path, file: &File) -> Result<()> {
+    let opened = file.metadata()?;
+    let named = fs::symlink_metadata(path)?;
+    if !named.is_file() || opened.dev() != named.dev() || opened.ino() != named.ino() {
+        return Err(Error::Conflict("file identity changed"));
+    }
+    Ok(())
+}
+
 pub fn create(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = check_directory(path.parent().ok_or(Error::PrivateState)?)?;
     let mut temp = tempfile::NamedTempFile::new_in(&parent)?;
@@ -96,6 +125,9 @@ pub fn create(path: &Path, bytes: &[u8]) -> Result<()> {
 
 pub fn replace(path: &Path, bytes: &[u8], expected: &str) -> Result<()> {
     let parent = check_directory(path.parent().ok_or(Error::PrivateState)?)?;
+    let current_file = open_file(path, 1024 * 1024)?;
+    lock(&current_file)?;
+    same_file(path, &current_file)?;
     let current = read(path, 1024 * 1024)?;
     if crate::digest(&current) != expected {
         return Err(Error::Conflict("file revision changed"));
@@ -106,6 +138,7 @@ pub fn replace(path: &Path, bytes: &[u8], expected: &str) -> Result<()> {
     if crate::digest(read(path, 1024 * 1024)?) != expected {
         return Err(Error::Conflict("file revision changed"));
     }
+    same_file(path, &current_file)?;
     temp.persist(path).map_err(|error| Error::Io(error.error))?;
     File::open(parent)?.sync_all()?;
     Ok(())

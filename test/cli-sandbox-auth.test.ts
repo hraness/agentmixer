@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { claudeCliSandboxPolicy, claudeCliProcessFactory, seatbeltAvailable, type CliLinuxSandbox } from "../src/cli/sandbox.ts";
 import { planBwrapPolicy, type OsSandboxSpec } from "../src/os-sandbox.ts";
 import { readClaudeOAuthToken, claudeAuthStatus } from "../src/cli/auth.ts";
+import type { CliBinaryInspection } from "../src/cli/binaries.ts";
 import { SqliteAccountLeases } from "../src/accounts.ts";
 import { openAccountDatabase } from "../src/sqlite-port.ts";
 import { createCapabilityProfile } from "../src/capabilities.ts";
@@ -107,6 +108,29 @@ describe("cli claude linux sandbox", () => {
 });
 
 describe("cli subscription token custody", () => {
+  test("split login tokens never reach either terminal output stream", async () => {
+    const root = await stateRoot();
+    const token = "sk-ant-oat01-synthetic_login_credential_not_for_service_use";
+    const executable = join(root, "provider");
+    const chunks = token.match(/.{1,9}/gu)!;
+    await writeFile(executable, "#!/bin/sh\n" + chunks.map(chunk => `printf '%s' '${chunk}'\nsleep 0.02\n`).join("")
+      + "printf '\\n'\n" + chunks.map(chunk => `printf '%s' '${chunk}' >&2\nsleep 0.02\n`).join("") + "printf '\\n' >&2\n", { mode: 0o700 });
+    const inspection: CliBinaryInspection = { provider: "claude", executablePath: executable,
+      version: "2.1.268", sha256: "0".repeat(64), pinnedSha256: null, versionMatches: true, digestMatches: true };
+    const module = new URL("../src/cli/auth.ts", import.meta.url).href;
+    const script = `import { claudeLogin } from ${JSON.stringify(module)}; await claudeLogin(${JSON.stringify(root)}, ${JSON.stringify(inspection)});`;
+    try {
+      const child = Bun.spawn([process.execPath, "--eval", script], {
+        cwd: root, env: { HOME: root, PATH: "/usr/bin:/bin" }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10_000,
+      });
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(code).toBe(0);
+      expect(stdout.includes(token)).toBe(false);
+      expect(stderr.includes(token)).toBe(false);
+      expect(await readClaudeOAuthToken(root)).toBe(token);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   test("missing or malformed token reports signed out without reading secrets", async () => {
     const root = await stateRoot();
     expect(await readClaudeOAuthToken(root)).toBeNull();
@@ -154,15 +178,58 @@ describe("cli lease recovery", () => {
     return { store: new SqliteAccountLeases(db), db };
   }
 
-  test("a lease held by a provably dead run is recovered and the retry succeeds", async () => {
+  test("an absent argv marker alone cannot recover a held lease", async () => {
     const { store, db } = await leases();
     try {
-      store.acquire({ provider: "claude", accountId: "local", owner: "run_deadbeefdeadbeef00", now: Date.now(), ttlMs: 60_000 });
+      const held = store.acquire({ provider: "claude", accountId: "local", owner: "run_deadbeefdeadbeef00", now: Date.now(), ttlMs: 60_000 });
+      await expect(runCliTurn({ adapter: adapter("ok"), leases: store, profile, accountId: "local",
+        workspaceId: "w", model: "m", prompt: "hi", prior: [], signal: AbortSignal.timeout(30_000) }))
+        .rejects.toThrow("ACCOUNT_PROCESS_STOP_UNPROVEN");
+      expect(store.inspect!("claude", "local")).toEqual(held);
+    } finally { db.close(); }
+  });
+
+  test("independently witnessed stop evidence permits one fenced recovery", async () => {
+    const { store, db } = await leases();
+    const stopped = Bun.spawn(["/usr/bin/true"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const exit = await stopped.exited;
+    try {
+      const held = store.acquire({ provider: "claude", accountId: "local", owner: "run_witnessed_fixture", now: Date.now(), ttlMs: 60_000 });
+      let proofs = 0;
       const result = await runCliTurn({ adapter: adapter("ok"), leases: store, profile, accountId: "local",
-        workspaceId: "w", model: "m", prompt: "hi", prior: [], signal: AbortSignal.timeout(30_000) });
+        workspaceId: "w", model: "m", prompt: "hi", prior: [], signal: AbortSignal.timeout(30_000),
+        proveAccountStopped: async lease => { proofs++; expect(lease).toEqual(held); return exit === 0; } });
       expect(result.output).toBe("ok");
+      expect(proofs).toBe(1);
       expect(store.inspect!("claude", "local")).toBeNull();
     } finally { db.close(); }
+  });
+
+  test("a rejected stop witness cannot release custody", async () => {
+    const { store, db } = await leases();
+    try {
+      const held = store.acquire({ provider: "claude", accountId: "local", owner: "run_unknown_fixture", now: Date.now(), ttlMs: 60_000 });
+      await expect(runCliTurn({ adapter: adapter("ok"), leases: store, profile, accountId: "local",
+        workspaceId: "w", model: "m", prompt: "hi", prior: [], signal: AbortSignal.timeout(30_000),
+        proveAccountStopped: async () => false })).rejects.toThrow("ACCOUNT_PROCESS_STOP_UNPROVEN");
+      expect(store.inspect!("claude", "local")).toEqual(held);
+    } finally { db.close(); }
+  });
+
+  test("a live pre-spawn owner keeps its lease when another terminal attempts a turn", async () => {
+    const { store, db } = await leases();
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const base = adapter("first");
+    const waiting: AgentTaskAdapter = { ...base, async run(request, broker) { await gate; return base.run(request, broker); } };
+    const input = { leases: store, profile, accountId: "local", workspaceId: "w", model: "m", prompt: "hi", prior: [], signal: AbortSignal.timeout(30_000) };
+    const first = runCliTurn({ ...input, adapter: waiting });
+    try {
+      const held = store.inspect!("claude", "local");
+      expect(held).not.toBeNull();
+      await expect(runCliTurn({ ...input, adapter: adapter("second") })).rejects.toThrow("ACCOUNT_PROCESS_STOP_UNPROVEN");
+      expect(store.inspect!("claude", "local")).toEqual(held);
+    } finally { finish(); await first; db.close(); }
   });
 
   test("a lease held by a live run process retains custody", async () => {

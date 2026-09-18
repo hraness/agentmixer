@@ -33,7 +33,7 @@ const FORBIDDEN_PACKAGE_TEXT = [
   { label: "private source-repository name", pattern: /\bJungle\b/u },
   { label: "former package identity", pattern: /agentrouter/iu },
   { label: "former monorepo identity", pattern: /message-like-me/iu },
-  { label: "private source path", pattern: /(?:projects|packages)\/agentmixer/u },
+  { label: "private source path", pattern: /(?:projects|packages)\/xcb/u },
   { label: "private repository identity", pattern: /0thernet\/jungle/iu },
   { label: "developer home path", pattern: /\/(?:Users|home)\/[A-Za-z0-9._-]+\//u },
   { label: "private key material", pattern: /-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----/u },

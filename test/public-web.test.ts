@@ -74,9 +74,9 @@ test("the real HTTPS client pins DNS, verifies TLS, and bounds incomplete or hos
   // This exercises Bun's actual node:https implementation, without public DNS or
   // public network access. The raw trusted IO port intentionally receives the
   // fixture's loopback address; fetchPublic above still rejects that address.
-  const directory = await mkdtemp(join(tmpdir(), "agentmixer-web-"));
+  const directory = await mkdtemp(join(tmpdir(), "xcb-web-"));
   const certificate = join(directory, "certificate.pem"), key = join(directory, "key.pem");
-  const hostname = "agentmixer-web.invalid";
+  const hostname = "xcb-web.invalid";
   const configuration = join(directory, "openssl.cnf");
   await writeFile(configuration, [
     "[ req ]",
@@ -126,7 +126,7 @@ test("the real HTTPS client pins DNS, verifies TLS, and bounds incomplete or hos
       import { nodePublicWebIO } from ${JSON.stringify(source)};
       const results = {};
       for (const path of ["/ok", "/oversize", "/declared-oversize", "/truncated", "/binary", "/encoded", "/invalid-utf8", "/large-header", "/redirect", "/wait", "/wrong-host"]) {
-        const host = path === "/wrong-host" ? "wrong.agentmixer-web.invalid" : ${JSON.stringify(hostname)};
+        const host = path === "/wrong-host" ? "wrong.xcb-web.invalid" : ${JSON.stringify(hostname)};
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), path === "/wait" ? 50 : 2000);
         try {

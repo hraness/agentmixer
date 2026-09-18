@@ -60,7 +60,7 @@ test("account-only initialization precedes the exact managed RPC set and retains
     await f.transport.logout(f.request());
     await f.transport.listModels({ ...f.request(), cursor: "cursor-one", limit: 100, includeHidden: true });
     expect(f.messages).toEqual([
-      { id: 1, method: "initialize", params: { clientInfo: { name: "agentmixer-account", version: "0.1.0" }, capabilities: { experimentalApi: false, requestAttestation: false } } },
+      { id: 1, method: "initialize", params: { clientInfo: { name: "xcb-account", version: "0.4.0" }, capabilities: { experimentalApi: false, requestAttestation: false } } },
       { method: "initialized" },
       { id: 2, method: "account/read", params: { refreshToken: false } },
       { id: 3, method: "account/login/start", params: { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "chatgpt" } },

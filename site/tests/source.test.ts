@@ -39,7 +39,7 @@ describe("xcb site source contract", () => {
     expect(Object.keys(publishedRelease).sort()).toEqual(["verificationRun", "version"]);
     const admitted = parsePublishedRelease(publishedRelease);
     if (admitted === null) {
-      expect(home).toContain("First AgentMixer release in preparation");
+      expect(home).toContain("First xcb package release in preparation");
       return;
     }
     const published = stableVersion(admitted.version, "published version");

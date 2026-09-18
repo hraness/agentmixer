@@ -14,7 +14,7 @@ import { runCliTurn } from "../src/cli/run.ts";
 import type { AgentTaskAdapter, AgentTaskExecutionRequest } from "../src/task-runtime.ts";
 
 async function stateRoot(): Promise<string> {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-cli-auth-")));
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "xcb-cli-auth-")));
   await chmod(dir, 0o700);
   return dir;
 }
@@ -60,7 +60,7 @@ describe("cli claude linux sandbox", () => {
   });
 
   test("linux factory plans through the forwarder, persists the policy, and defaults the sandbox env", async () => {
-    const dir = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-cli-linux-")));
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "xcb-cli-linux-")));
     try {
       const runDir = join(dir, "run"), account = join(dir, "acct");
       await mkdir(runDir, { recursive: true }); await mkdir(account, { recursive: true });

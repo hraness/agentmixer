@@ -46,7 +46,7 @@ export function parseCodexCustodyJournal(text: string): { snapshot: Readonly<Rec
     if (record.sequence !== index || record.previousSha256 !== previous) throw new Error("CODEX_CUSTODY_CHAIN_INVALID");
     const prior = snapshot;
     snapshot = object(record.snapshot, ["schema", "runId", "accountId", "workspaceId", "nativeVersion", "executableSha256", "runtimeSnapshotSha256", "configSha256", "profileSha256", "custodyPath", "parentRuntimeSha256", "scratchContentSha256", "scratchIdentitySha256", "pid", "pgid", "rootExited", "groupAbsent", "stdioJoined", "scratchRetained", "nativeExitCode", "nativeExitSignal", "runtimeErrors", "cleanupErrors"]);
-    if (snapshot.schema !== "agentmixer.codex-process.v2" || snapshot.nativeVersion !== CODEX_NATIVE_VERSION
+    if (snapshot.schema !== "xcb.codex-process.v2" || snapshot.nativeVersion !== CODEX_NATIVE_VERSION
       || snapshot.executableSha256 !== CODEX_NATIVE_SHA256) throw new Error("CODEX_CUSTODY_IDENTITY_INVALID");
     for (const key of ["runId", "accountId", "workspaceId"] as const) identifier(snapshot[key]);
     for (const key of ["configSha256", "profileSha256", "runtimeSnapshotSha256", "parentRuntimeSha256", "scratchContentSha256", "scratchIdentitySha256"] as const) if (typeof snapshot[key] !== "string" || !/^[a-f0-9]{64}$/u.test(snapshot[key])) throw new Error("CODEX_CUSTODY_DIGEST_INVALID");
@@ -180,7 +180,7 @@ export function createCodexProcessLauncher(options: { executablePath: string; st
     const persist = () => {
       if (custodyFd === undefined || journalFailed || sequence >= 8) throw new Error("CODEX_CUSTODY_NOT_WRITABLE");
       const encoded = Buffer.from(JSON.stringify({ sequence, previousSha256: previousRecordHash,
-        snapshot: { schema: "agentmixer.codex-process.v2", runId: input.runId, accountId: input.accountId, workspaceId: input.workspaceId, ...receipt() } }) + "\n");
+        snapshot: { schema: "xcb.codex-process.v2", runId: input.runId, accountId: input.accountId, workspaceId: input.workspaceId, ...receipt() } }) + "\n");
       try {
         if (encoded.length > 16 * 1024) throw new Error("CODEX_CUSTODY_BOUND");
         let offset = 0;

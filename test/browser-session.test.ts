@@ -21,7 +21,7 @@ async function fixture(input: {
   stop?: "hold" | "exit-only" | "root-and-close" | "kill-only"; pgid?: number | null; pid?: number | null;
   spawnFailsBeforePid?: boolean;
 } = {}) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-browser-session-test-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-browser-session-test-")));
   await chmod(root, 0o700); const stateRoot = join(root, "state"); await mkdir(stateRoot, { mode: 0o700 });
   const executablePath = join(root, "synthetic-browser");
   await writeFile(executablePath, "synthetic browser bytes; never run", { mode: 0o500 });
@@ -133,7 +133,7 @@ test("recovery removes the stale lock and singleton trio but never the cookies",
   await writeFile(join(f.profileDir, "Cookies"), "synthetic cookie jar", { mode: 0o600 });
   // A crashed later launch left its durable lock and the browser singletons.
   const lockPath = join(f.sessionDir, "lock.json");
-  await writeFile(lockPath, JSON.stringify({ schema: "agentmixer.browser-session-lock.v1", binding, journalPath: join(f.sessionDir, "runs", "crashed", "custody.jsonl") }) + "\n", { mode: 0o600 });
+  await writeFile(lockPath, JSON.stringify({ schema: "xcb.browser-session-lock.v1", binding, journalPath: join(f.sessionDir, "runs", "crashed", "custody.jsonl") }) + "\n", { mode: 0o600 });
   for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) await writeFile(join(f.profileDir, name), "stale", { mode: 0o600 });
   const contender = f.create({ binding: { ...binding, processGeneration: 4 } });
   await expect(contender.ready).rejects.toThrow("BROWSER_SESSION_RECOVERY_REQUIRED");
@@ -156,7 +156,7 @@ test("recovery refuses an absent or malformed lock and never guesses", async () 
   await expect(recoverBrowserSession({ stateRoot: f.stateRoot, provider: binding.provider, accountId: binding.accountId, proveStopped: () => Promise.resolve(true) }))
     .rejects.toThrow("BROWSER_SESSION_RECOVERY_UNNEEDED");
   // A syntactically valid lock still demands an independent stop proof.
-  await writeFile(join(f.sessionDir, "lock.json"), JSON.stringify({ schema: "agentmixer.browser-session-lock.v1", binding, journalPath: join(f.sessionDir, "runs", "x", "custody.jsonl") }) + "\n", { mode: 0o600 });
+  await writeFile(join(f.sessionDir, "lock.json"), JSON.stringify({ schema: "xcb.browser-session-lock.v1", binding, journalPath: join(f.sessionDir, "runs", "x", "custody.jsonl") }) + "\n", { mode: 0o600 });
   await expect(recoverBrowserSession({ stateRoot: f.stateRoot, provider: binding.provider, accountId: binding.accountId, proveStopped: () => Promise.resolve(false) }))
     .rejects.toThrow("BROWSER_SESSION_PROCESS_STOP_UNPROVEN");
   expect(await recoverBrowserSession({ stateRoot: f.stateRoot, provider: binding.provider, accountId: binding.accountId, proveStopped: () => Promise.resolve(true) })).toEqual({ recovered: true });
@@ -176,7 +176,7 @@ test("purge destroys the profile as a unit only after stop proof", async () => {
 
 test("rejects a drifting binding marker rather than inheriting another account's profile", async () => {
   const f = await fixture(), port = f.create(); await port.ready; expectStopped(await f.stop(port));
-  await writeFile(join(f.sessionDir, "binding.json"), JSON.stringify({ schema: "agentmixer.browser-session-binding.v1", provider: binding.provider, accountId: "other-account" }) + "\n", { mode: 0o600 });
+  await writeFile(join(f.sessionDir, "binding.json"), JSON.stringify({ schema: "xcb.browser-session-binding.v1", provider: binding.provider, accountId: "other-account" }) + "\n", { mode: 0o600 });
   const port2 = f.create({ binding: { ...binding, processGeneration: 4 } });
   await expect(port2.ready).rejects.toThrow("BROWSER_SESSION_UNAVAILABLE");
   // Never launched and never locked: there is nothing to prove or recover.

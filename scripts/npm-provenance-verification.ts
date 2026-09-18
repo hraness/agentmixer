@@ -339,7 +339,7 @@ export async function verifyNpmProvenance(
   if (!SEMVER.test(input.version)) {
     throw new Error("npm provenance verification coordinate is invalid.");
   }
-  const directory = await mkdtemp(join(tmpdir(), "agentmixer-npm-provenance-"));
+  const directory = await mkdtemp(join(tmpdir(), "xcb-npm-provenance-"));
   try {
     const npmrc = join(directory, ".npmrc");
     const globalNpmrc = join(directory, "global.npmrc");

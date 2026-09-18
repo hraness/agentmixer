@@ -29,7 +29,7 @@ export type CliCodexRuntimeIdentity = Readonly<{
 }>;
 
 export type CliCodexAdmissionEvidence = Readonly<{
-  schema: "agentmixer.cli-codex-admission.v1";
+  schema: "xcb.cli-codex-admission.v1";
   platform: "darwin-arm64";
   runtime: CliCodexRuntimeIdentity;
   manifest: CodexProtocolManifest;
@@ -136,7 +136,7 @@ export async function qualifyCliCodexRuntime(input: Readonly<{
       || protocol.disabledNotices !== 1) throw new Error("CLI_CODEX_OFFLINE_DIAGNOSTIC_FAILED");
     const runtime = cliCodexRuntimeIdentity({ nativeSha256: CODEX_NATIVE_SHA256, schemaSha256: schema.sha256,
       parentSha256: parent.sha256 });
-    const content = Object.freeze({ schema: "agentmixer.cli-codex-admission.v1" as const, platform: "darwin-arm64" as const,
+    const content = Object.freeze({ schema: "xcb.cli-codex-admission.v1" as const, platform: "darwin-arm64" as const,
       runtime, manifest, nativeSha256: CODEX_NATIVE_SHA256, schemaSha256: schema.sha256, parentSha256: parent.sha256,
       configurationSha256: diagnostic.configurationSha256,
       offline: Object.freeze({ passed: true as const, network: "denied" as const, bootstrapJoined: true as const,

@@ -9,7 +9,7 @@ import { assertCodexHostFileStable, assertCodexHostRuntimeFacts, inspectCodexHos
 
 const bytes = Buffer.from("synthetic parent runtime artifact\n"), sha256 = createHash("sha256").update(bytes).digest("hex");
 async function fixture(run: (path: string, root: string) => Promise<void>): Promise<void> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-host-file-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-host-file-")));
   try {
     await chmod(root, 0o700);
     const path = join(root, "bun"); await writeFile(path, bytes, { mode: 0o500 });

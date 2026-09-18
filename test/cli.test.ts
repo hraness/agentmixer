@@ -7,7 +7,7 @@ const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "src", "cli.ts");
 
 async function stateDir(): Promise<string> {
-  return await realpath(await mkdtemp(join(tmpdir(), "agentmixer-cli-test-")));
+  return await realpath(await mkdtemp(join(tmpdir(), "xcb-cli-test-")));
 }
 
 /** Run the CLI source under Bun in an isolated state root with provider
@@ -17,8 +17,8 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
   const child = Bun.spawn([process.execPath, CLI, ...args], {
     cwd: ROOT,
     env: {
-      ...process.env, AGENTMIXER_STATE: root, NO_COLOR: "1",
-      AGENTMIXER_CLAUDE: join(root, "no-such-claude"), AGENTMIXER_CODEX: join(root, "no-such-codex"),
+      ...process.env, XCB_STATE: root, NO_COLOR: "1",
+      XCB_CLAUDE: join(root, "no-such-claude"), XCB_CODEX: join(root, "no-such-codex"),
       PATH: join(root, "empty-path"), HOME: root,
     },
     stdin: input === undefined ? "ignore" : "pipe",
@@ -29,7 +29,7 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
   return { code, stdout, stderr };
 }
 
-describe("agentmixer CLI", () => {
+describe("xcb CLI", () => {
   test("--version prints the package version", async () => {
     const { code, stdout } = await cli(["--version"]);
     expect(code).toBe(0);

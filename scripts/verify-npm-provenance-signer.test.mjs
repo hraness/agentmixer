@@ -41,7 +41,7 @@ describe("npm Sigstore release signer policy", () => {
 
   test("rejects the former scoped release tag and workflow namespace", () => {
     expect(() => releaseSignerIdentity("agentrouter-v0.1.0", sha, invocation, workflow)).toThrow("coordinates");
-    expect(() => releaseSignerIdentity("agentmixer-v0.1.0", sha, invocation, workflow)).toThrow("coordinates");
+    expect(() => releaseSignerIdentity("xcb-v0.1.0", sha, invocation, workflow)).toThrow("coordinates");
     const former = releaseSignerIdentity(tag, sha, invocation, ".github/workflows/release-agentrouter.yml");
     expect(former.identity).not.toBe(identity);
     expect(new RegExp(former.options.certificateIdentityURI, "u").test(identity)).toBe(false);

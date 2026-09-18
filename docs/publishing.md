@@ -1,6 +1,6 @@
 # Publishing
 
-xcb publishes one package, `@hraness/agentmixer`, from one tag channel.
+xcb publishes one package, `@hraness/xcb`, from one tag channel.
 An immutable annotated `v<version>` tag at a reviewed commit in current `main`
 history is a release request. The tag version must equal `package.json`'s
 `version`; no other tag shape is admitted.
@@ -47,9 +47,9 @@ pre-npm job only admits a retry that is an exact continuation of the same run.
   ruleset: a tag names one commit forever.
 - Release-critical paths (workflows, release scripts, `package.json`,
   `bun.lock`, this document) are owned in `.github/CODEOWNERS`.
-- The former scoped tag namespaces (`agentmixer-v*`, `agentrouter-v*`) and the
-  former `hraness/textbutler` repository identity are rejected by the release
-  checks on purpose.
+- The former scoped tag namespaces (`agentmixer-v*`, `agentrouter-v*`,
+  `xcb-v*`) and the former `hraness/textbutler` repository identity are
+  rejected by the release checks on purpose.
 
 ## Site deployment
 
@@ -65,7 +65,7 @@ on a `v<version>` tag. It builds `xcb` for Ubuntu and macOS, packages it as
 uploads both to the same immutable GitHub Release. The release job uses the
 shared `scripts/build-native.sh` from the tagged source. Native artifacts are
 not published to npm; they are a separate release surface alongside the
-`@hraness/agentmixer` compatibility package.
+`@hraness/xcb` compatibility package.
 
 ## Site publication datum
 

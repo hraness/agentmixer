@@ -47,9 +47,9 @@ function release(overrides: Readonly<Record<string, unknown>> = {}) {
       },
     ],
     draft: false,
-    body: `Automated public release of @hraness/agentmixer@${version} from v${version}.`,
+    body: `Automated public release of @hraness/xcb@${version} from v${version}.`,
     immutable: true,
-    name: `AgentMixer v${version}`,
+    name: `XCB v${version}`,
     prerelease: false,
     tag_name: `v${version}`,
     ...overrides,
@@ -60,84 +60,84 @@ describe("public release distribution policy", () => {
   test("derives an older admitted release from its tag instead of newer current-main version metadata", () => {
     expect(releaseVersionForCurrentAdmission({
       license: "MIT",
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version: "9.9.9",
     }, "v0.8.1")).toBe("0.8.1");
     expect(() => releaseVersionForCurrentAdmission({
       license: "MIT",
-      name: "@hraness/not-agentmixer",
+      name: "@hraness/not-xcb",
     }, "v0.8.1")).toThrow("wrong public package");
     expect(() => releaseVersionForCurrentAdmission({
       license: "MIT",
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
     }, "latest")).toThrow("canonical stable version");
   });
 
   test("derives the exact scoped npm pack filename", () => {
-    expect(releaseArchiveName(version)).toBe("hraness-agentmixer-0.8.1.tgz");
+    expect(releaseArchiveName(version)).toBe("hraness-xcb-0.8.1.tgz");
     expect(() => releaseArchiveName("latest")).toThrow("release version");
   });
 
   test("binds the closed package descriptor to its tag, archive, and manifest", () => {
-    expect(releasePackageForName("@hraness/agentmixer")).toBe(rootReleasePackage);
+    expect(releasePackageForName("@hraness/xcb")).toBe(rootReleasePackage);
     expect(() => releasePackageForName("@hraness/other")).toThrow("manifest identity");
-    expect(() => releasePackageForName("agentmixer")).toThrow("manifest identity");
+    expect(() => releasePackageForName("xcb")).toThrow("manifest identity");
     expect(() => releasePackageForName("constructor")).toThrow("manifest identity");
     expect(() => releasePackageForName("hasOwnProperty")).toThrow("manifest identity");
 
     const root = releaseDistribution(rootReleasePackage);
     expect(root.releaseArchiveName(version)).toBe(releaseArchiveName(version));
-    expect(root.releaseArchiveName("0.1.0")).toBe("hraness-agentmixer-0.1.0.tgz");
+    expect(root.releaseArchiveName("0.1.0")).toBe("hraness-xcb-0.1.0.tgz");
     expect(root.stableTag.exec(`v${version}`)?.[1]).toBe(version);
-    expect(root.stableTag.test(`agentmixer-v${version}`)).toBe(false);
+    expect(root.stableTag.test(`xcb-v${version}`)).toBe(false);
     expect(root.stableTag.test("v0.1.0-rc.1")).toBe(false);
     expect(() => root.releaseVersionForCurrentAdmission({
       license: "MIT",
-      name: "@hraness/agentmixer",
-    }, `agentmixer-v${version}`)).toThrow("canonical stable version");
+      name: "@hraness/xcb",
+    }, `xcb-v${version}`)).toThrow("canonical stable version");
   });
 
   test("requires MIT npm identity and public-repository provenance", () => {
     const parsed = parseNpmRelease({
       _npmUser: npmUser,
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version,
       license: "MIT",
       dist: {
         attestations: {
           provenance: { predicateType: "https://slsa.dev/provenance/v1" },
-          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fagentmixer@${version}`,
+          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fxcb@${version}`,
         },
         integrity: "sha512-QUJDRA==",
         shasum: "b".repeat(40),
-        tarball: `https://registry.npmjs.org/@hraness/agentmixer/-/agentmixer-${version}.tgz`,
+        tarball: `https://registry.npmjs.org/@hraness/xcb/-/xcb-${version}.tgz`,
       },
     }, version);
     expect(parsed.integrity).toBe("sha512-QUJDRA==");
     expect(() => parseNpmRelease({
       _npmUser: npmUser,
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version,
       license: "MIT",
       dist: {
         integrity: "sha512-QUJDRA==",
         shasum: "b".repeat(40),
-        tarball: `https://registry.npmjs.org/@hraness/agentmixer/-/agentmixer-${version}.tgz`,
+        tarball: `https://registry.npmjs.org/@hraness/xcb/-/xcb-${version}.tgz`,
       },
     }, version)).toThrow("attestations");
     expect(() => parseNpmRelease({
       _npmUser: npmUser,
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version,
       license: "MIT",
       dist: {
         attestations: {
           provenance: { predicateType: "https://slsa.dev/provenance/v1" },
-          url: `https://registry.npmjs.org/-/npm/v1/attestations/@attacker%2fagentmixer@${version}`,
+          url: `https://registry.npmjs.org/-/npm/v1/attestations/@attacker%2fxcb@${version}`,
         },
         integrity: "sha512-QUJDRA==",
         shasum: "b".repeat(40),
-        tarball: `https://registry.npmjs.org/@hraness/agentmixer/-/agentmixer-${version}.tgz`,
+        tarball: `https://registry.npmjs.org/@hraness/xcb/-/xcb-${version}.tgz`,
       },
     }, version)).toThrow("provenance");
     expect(() => parseNpmRelease({
@@ -145,31 +145,31 @@ describe("public release distribution policy", () => {
         ...npmUser,
         trustedPublisher: { id: "github", oidcConfigId: "not-a-uuid" },
       },
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version,
       license: "MIT",
       dist: {
         attestations: {
           provenance: { predicateType: "https://slsa.dev/provenance/v1" },
-          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fagentmixer@${version}`,
+          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fxcb@${version}`,
         },
         integrity: "sha512-QUJDRA==",
         shasum: "b".repeat(40),
-        tarball: `https://registry.npmjs.org/@hraness/agentmixer/-/agentmixer-${version}.tgz`,
+        tarball: `https://registry.npmjs.org/@hraness/xcb/-/xcb-${version}.tgz`,
       },
     }, version)).toThrow("trusted-publisher provenance");
     const exactRelease = {
-      name: "@hraness/agentmixer",
+      name: "@hraness/xcb",
       version,
       license: "MIT",
       dist: {
         attestations: {
           provenance: { predicateType: "https://slsa.dev/provenance/v1" },
-          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fagentmixer@${version}`,
+          url: `https://registry.npmjs.org/-/npm/v1/attestations/@hraness%2fxcb@${version}`,
         },
         integrity: "sha512-QUJDRA==",
         shasum: "b".repeat(40),
-        tarball: `https://registry.npmjs.org/@hraness/agentmixer/-/agentmixer-${version}.tgz`,
+        tarball: `https://registry.npmjs.org/@hraness/xcb/-/xcb-${version}.tgz`,
       },
     };
     for (const badUser of [

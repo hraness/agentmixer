@@ -19,13 +19,13 @@ export type ReleasePackage = Readonly<{
   workflowPath: string;
 }>;
 
-export const publicPackageName = "@hraness/agentmixer";
+export const publicPackageName = "@hraness/xcb";
 export const publicRepository = "hraness/xcb";
 export const rootReleasePackage: ReleasePackage = Object.freeze({
   name: publicPackageName,
   repository: publicRepository,
   tagPrefix: "v",
-  title: "AgentMixer",
+  title: "XCB",
   workflowPath: ".github/workflows/release.yml",
 });
 const releasePackages: ReadonlyMap<string, ReleasePackage> = new Map([

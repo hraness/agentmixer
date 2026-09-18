@@ -11,7 +11,7 @@ import {
 } from "../src/egress-client.ts";
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-egress-client-test-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-egress-client-test-")));
   const socketPath = join(root, "egress.sock");
   return { root, socketPath, async cleanup() { await rm(root, { recursive: true, force: true }); } };
 }

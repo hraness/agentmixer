@@ -31,7 +31,7 @@ describe("startDevinToolRelay", () => {
     const relay = await startDevinToolRelay({ broker, bridgeExecutable: "/bin/sh" });
     try {
       const env = relay.bridgeEnv();
-      const base = env.AGENTMIXER_MCP_RELAY!, token = env.AGENTMIXER_MCP_TOKEN!;
+      const base = env.XCB_MCP_RELAY!, token = env.XCB_MCP_TOKEN!;
       const manifest = await fetch(base, { headers: { authorization: `Bearer ${token}` } });
       expect(manifest.status).toBe(200);
       expect(await manifest.json()).toEqual({ tools: [{ name: "document.read", description: "Read the assigned document.", inputSchema: documentTool.inputSchema }] });
@@ -55,7 +55,7 @@ describe("startDevinToolRelay", () => {
     const relay = await startDevinToolRelay({ broker, bridgeExecutable: "/bin/sh" });
     try {
       const env = relay.bridgeEnv();
-      const base = env.AGENTMIXER_MCP_RELAY!, token = env.AGENTMIXER_MCP_TOKEN!;
+      const base = env.XCB_MCP_RELAY!, token = env.XCB_MCP_TOKEN!;
       const wrongPath = base.replace(/[^/]+$/, "forged");
       for (const response of [
         await fetch(base), // no token
@@ -74,8 +74,8 @@ describe("startDevinToolRelay", () => {
     try {
       const env = relay.bridgeEnv();
       broker.revoke();
-      const response = await fetch(env.AGENTMIXER_MCP_RELAY!, { method: "POST",
-        headers: { authorization: `Bearer ${env.AGENTMIXER_MCP_TOKEN}`, "content-type": "application/json" },
+      const response = await fetch(env.XCB_MCP_RELAY!, { method: "POST",
+        headers: { authorization: `Bearer ${env.XCB_MCP_TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ name: "document.read", arguments: { value: "x" } }) });
       expect(response.status).toBe(403);
     } finally { await relay.stop(); }
@@ -86,7 +86,7 @@ describe("startDevinToolRelay", () => {
     const relay = await startDevinToolRelay({ broker, bridgeExecutable: process.execPath });
     const entry = relay.mcpServerEntry();
     try {
-      expect(entry).toMatchObject({ name: "agentmixer", command: process.execPath });
+      expect(entry).toMatchObject({ name: "xcb", command: process.execPath });
       const env = Object.fromEntries((entry.env as { name: string; value: string }[]).map(pair => [pair.name, pair.value]));
       const bridge = spawn(entry.command as string, [...(entry.args as string[]), ], { env: { ...env }, stdio: ["pipe", "pipe", "pipe"] });
       const responses: Record<string, unknown>[] = [];
@@ -109,7 +109,7 @@ describe("startDevinToolRelay", () => {
       bridge.stdin.end();
       expect(responses).toHaveLength(4);
       const byId = (id: number) => responses.find(message => message.id === id) as any;
-      expect(byId(1)).toMatchObject({ result: { serverInfo: { name: "agentmixer" } } });
+      expect(byId(1)).toMatchObject({ result: { serverInfo: { name: "xcb" } } });
       expect(byId(2)).toMatchObject({ result: { tools: [{ name: "document.read" }] } });
       expect(JSON.parse(byId(3).result.content[0].text)).toEqual({ body: "retained evidence" });
       expect(byId(4)).toMatchObject({ error: { code: -32601 } });
@@ -227,7 +227,7 @@ describe("createDevinAcpAdapter", () => {
       const newSession = f.peer.written.find(message => message.method === "session/new");
       const servers = newSession!.params.mcpServers as Record<string, unknown>[];
       expect(servers).toHaveLength(1);
-      expect(servers[0]).toMatchObject({ name: "agentmixer", command: "/bin/sh" });
+      expect(servers[0]).toMatchObject({ name: "xcb", command: "/bin/sh" });
       expect(servers[0]!.args).toEqual(["-e", DEVIN_MCP_BRIDGE_SOURCE]);
     } finally { f.db.close(); }
   });

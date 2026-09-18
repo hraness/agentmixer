@@ -76,8 +76,8 @@ export function startDevinToolRelay(options: DevinToolRelayOptions): Promise<Dev
   }).then((server: LoopbackServer) => Object.freeze({
     bridgeEnv(): Readonly<Record<string, string>> {
       return Object.freeze({
-        AGENTMIXER_MCP_RELAY: `http://127.0.0.1:${server.port}${path}`,
-        AGENTMIXER_MCP_TOKEN: token,
+        XCB_MCP_RELAY: `http://127.0.0.1:${server.port}${path}`,
+        XCB_MCP_TOKEN: token,
       });
     },
     /** Stdio MCP server entry for ACP session/new. The bridge executable and
@@ -86,7 +86,7 @@ export function startDevinToolRelay(options: DevinToolRelayOptions): Promise<Dev
     mcpServerEntry(): Readonly<Record<string, unknown>> {
       const env = this.bridgeEnv();
       return Object.freeze({
-        name: "agentmixer",
+        name: "xcb",
         command: executable,
         args: ["-e", DEVIN_MCP_BRIDGE_SOURCE],
         env: Object.entries(env).map(([name, value]) => ({ name, value })),
@@ -100,8 +100,8 @@ export function startDevinToolRelay(options: DevinToolRelayOptions): Promise<Dev
  * to the host relay. Spawned as `executable -e <this source>` by the Devin ACP
  * agent; uses only the runtime's own stdio/fetch surface. */
 export const DEVIN_MCP_BRIDGE_SOURCE: string = `
-const relay = process.env.AGENTMIXER_MCP_RELAY;
-const token = process.env.AGENTMIXER_MCP_TOKEN;
+const relay = process.env.XCB_MCP_RELAY;
+const token = process.env.XCB_MCP_TOKEN;
 const bound = 262144;
 let input = Buffer.alloc(0);
 const send = message => process.stdout.write(JSON.stringify(message) + "\\n");
@@ -125,7 +125,7 @@ async function handle(message) {
   const method = message.method;
   if (method === "initialize") {
     result(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} },
-      serverInfo: { name: "agentmixer", version: "1" } });
+      serverInfo: { name: "xcb", version: "1" } });
     return;
   }
   if (method === "ping") { result(id, {}); return; }

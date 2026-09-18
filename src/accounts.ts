@@ -15,13 +15,22 @@ export interface AccountLeaseStore {
 
 type Row = { provider: AgentProvider; account_id: string; owner: string | null; generation: number; expires_at: number };
 
+const TABLE = "xcb_account_leases";
+const LEGACY_TABLE = "agentmixer_account_leases";
+
 /**
  * Shared host database, outside every agent workspace. A heartbeat deadline is
  * diagnostic, never permission to steal custody from a possibly live process.
  */
 export class SqliteAccountLeases implements AccountLeaseStore {
   constructor(private readonly db: SqliteDatabase) {
-    db.exec(`CREATE TABLE IF NOT EXISTS agentmixer_account_leases (
+    const tables = new Set(db.query<Readonly<{ name: string }>, []>(
+      "SELECT name FROM sqlite_master WHERE type='table'",
+    ).all().map((row) => row.name));
+    if (tables.has(LEGACY_TABLE) && !tables.has(TABLE)) {
+      db.exec(`ALTER TABLE ${LEGACY_TABLE} RENAME TO ${TABLE}`);
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS ${TABLE} (
       provider TEXT NOT NULL, account_id TEXT NOT NULL, owner TEXT,
       generation INTEGER NOT NULL, expires_at INTEGER NOT NULL,
       PRIMARY KEY(provider, account_id)
@@ -31,11 +40,11 @@ export class SqliteAccountLeases implements AccountLeaseStore {
   acquire(input: { provider: AgentProvider; accountId: string; owner: string; now: number; ttlMs: number }): AccountLease {
     const p = provider(input.provider), id = identifier(input.accountId), owner = identifier(input.owner);
     const expiresAt = expiry(input.now, input.ttlMs);
-    const row = this.db.query<Row, [string, string, string, number]>(`INSERT INTO agentmixer_account_leases
+    const row = this.db.query<Row, [string, string, string, number]>(`INSERT INTO xcb_account_leases
       (provider, account_id, owner, generation, expires_at) VALUES (?, ?, ?, 1, ?)
       ON CONFLICT(provider, account_id) DO UPDATE SET owner=excluded.owner,
         generation=generation+1, expires_at=excluded.expires_at
-      WHERE agentmixer_account_leases.owner IS NULL RETURNING *`).get(p, id, owner, expiresAt);
+      WHERE xcb_account_leases.owner IS NULL RETURNING *`).get(p, id, owner, expiresAt);
     if (row === null) throw new Error("ACCOUNT_BUSY_OR_RECOVERY_REQUIRED");
     return leaseFrom(row);
   }
@@ -43,7 +52,7 @@ export class SqliteAccountLeases implements AccountLeaseStore {
   renew(lease: AccountLease, now: number, ttlMs: number): AccountLease {
     validateLease(lease);
     const expiresAt = expiry(now, ttlMs);
-    const row = this.db.query<Row, [number, string, string, string, number, number]>(`UPDATE agentmixer_account_leases
+    const row = this.db.query<Row, [number, string, string, string, number, number]>(`UPDATE xcb_account_leases
       SET expires_at=? WHERE provider=? AND account_id=? AND owner=? AND generation=? AND expires_at=? RETURNING *`)
       .get(expiresAt, lease.provider, lease.accountId, lease.owner, lease.generation, lease.expiresAt);
     if (row === null) throw new Error("STALE_ACCOUNT_LEASE");
@@ -53,14 +62,14 @@ export class SqliteAccountLeases implements AccountLeaseStore {
   /** Call only after the adapter proves its provider process/controller stopped. */
   release(lease: AccountLease): boolean {
     validateLease(lease);
-    const result = this.db.query(`UPDATE agentmixer_account_leases SET owner=NULL, expires_at=0
+    const result = this.db.query(`UPDATE xcb_account_leases SET owner=NULL, expires_at=0
       WHERE provider=? AND account_id=? AND owner=? AND generation=? AND expires_at=?`)
       .run(lease.provider, lease.accountId, lease.owner, lease.generation, lease.expiresAt);
     return result.changes === 1;
   }
 
   inspect(providerValue: AgentProvider, accountId: string): AccountLease | null {
-    const row = this.db.query<Row, [string, string]>("SELECT * FROM agentmixer_account_leases WHERE provider=? AND account_id=?")
+    const row = this.db.query<Row, [string, string]>("SELECT * FROM xcb_account_leases WHERE provider=? AND account_id=?")
       .get(provider(providerValue), identifier(accountId));
     return row === null || row.owner === null ? null : leaseFrom(row);
   }

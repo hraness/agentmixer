@@ -3,7 +3,7 @@ import { createClaudeApiAdapter, apiAdapter } from "../src/claude-api.ts";
 import { claudeApiClient, type ClaudeApiClient } from "../src/claude-api-transport.ts";
 import { createToolBroker, BROKER_TOOL_NAMES } from "../src/broker.ts";
 import { createEnvironmentClaudeApiKeyResolver } from "../src/claude-credentials.ts";
-import { AgentMixer, type AgentRunRequest, type RuntimeQualification } from "../src/runtime.ts";
+import { Xcb, type AgentRunRequest, type RuntimeQualification } from "../src/runtime.ts";
 import type { ModelCatalog } from "../src/models.ts";
 import type { MessageCreateParams } from "@anthropic-ai/sdk/resources/messages";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
@@ -16,7 +16,7 @@ const credentials = createEnvironmentClaudeApiKeyResolver({ owner: "SYNTHETIC_KE
 const now = 1_000_000;
 const modelCatalog: ModelCatalog = { provider: "claude", observedAt: now, models: [{ id: "synthetic-model", available: true,
   supportsStructuredOutput: true, classifierEligible: true, inputUsdPerMillion: 1, outputUsdPerMillion: 2 }] };
-const qualification: RuntimeQualification = { status: "qualified", profile: "agentmixer.scoped-tools.v1", runtimeVersion: "synthetic-api",
+const qualification: RuntimeQualification = { status: "qualified", profile: "xcb.scoped-tools.v1", runtimeVersion: "synthetic-api",
   runtimeDigest: "1".repeat(64), evidenceDigest: "2".repeat(64), expiresAt: now + 1000,
   controls: { noCommandTools: true, exactToolInventory: true, contactReadIsolation: true, contactWriteIsolation: true,
     isolatedConfiguration: true, authOutsideWorkspace: true, hostBrokerOnly: true } };
@@ -44,7 +44,7 @@ function adapter(responses: unknown[], seen: unknown[] = []) {
 }
 
 test("API profile admits its pinned host executor and classifier has zero tools", async () => {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-artifact-")));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "xcb-artifact-")));
   try {
     const entrypoint = join(directory, "synthetic-compiled-entry.js"), bytes = "synthetic compiled host fixture";
     await writeFile(entrypoint, bytes, { mode: 0o600 });
@@ -67,13 +67,13 @@ test("API tool loop denies shell, cross-folder and private URL inputs, while con
   const f = fixture(), seen: unknown[] = [];
   const first = response([
     call("a", "Bash", { command: "touch forbidden" }),
-    call("b", "agentmixer_files_read", { path: "../other" }),
-    call("c", "agentmixer_web_fetch", { url: "http://localhost/", maxBytes: 100 }),
-    call("d", "agentmixer_files_write", { path: "MEMORY.md", text: "edited", expectedRevision: "rev" }),
-    call("e", "agentmixer_messages_propose_text", { text: "reply", idempotencyKey: "reply-1" }),
-    call("f", "agentmixer_messages_propose_reaction", { messageId: "message-1", reaction: "like", idempotencyKey: "reaction-1" }),
-    call("g", "agentmixer_messages_propose_attachment", { path: "outbox/file.txt", caption: "file", idempotencyKey: "file-1" }),
-    call("h", "agentmixer_web_fetch", { url: "https://example.com/", maxBytes: 100 }),
+    call("b", "xcb_files_read", { path: "../other" }),
+    call("c", "xcb_web_fetch", { url: "http://localhost/", maxBytes: 100 }),
+    call("d", "xcb_files_write", { path: "MEMORY.md", text: "edited", expectedRevision: "rev" }),
+    call("e", "xcb_messages_propose_text", { text: "reply", idempotencyKey: "reply-1" }),
+    call("f", "xcb_messages_propose_reaction", { messageId: "message-1", reaction: "like", idempotencyKey: "reaction-1" }),
+    call("g", "xcb_messages_propose_attachment", { path: "outbox/file.txt", caption: "file", idempotencyKey: "file-1" }),
+    call("h", "xcb_web_fetch", { url: "https://example.com/", maxBytes: 100 }),
   ], "tool_use");
   const result = await adapter([first, response([text({ summary: "done", actions: [] })])], seen).run(f.request, f.broker);
   expect(result.output).toEqual({ summary: "done", actions: [] });
@@ -83,7 +83,7 @@ test("API tool loop denies shell, cross-folder and private URL inputs, while con
   const replies = (seen[1] as MessageCreateParams).messages.at(-1)?.content as { type: string; is_error?: boolean; content: string }[];
   expect(replies.filter(block => block.is_error)).toHaveLength(3);
   expect(replies[4]?.content).toBe('{"intentId":"staged"}');
-  expect((seen[0] as MessageCreateParams).tools?.every(tool => "name" in tool && tool.name.startsWith("agentmixer_") && !tool.type)).toBe(true);
+  expect((seen[0] as MessageCreateParams).tools?.every(tool => "name" in tool && tool.name.startsWith("xcb_") && !tool.type)).toBe(true);
 });
 
 test("unexpected server capabilities, mismatched model, duplicate tool IDs and incomplete output fail closed", async () => {
@@ -100,9 +100,9 @@ test("unexpected server capabilities, mismatched model, duplicate tool IDs and i
 
 test("revocation during provider response prevents tools and releases the no-process account custody", async () => {
   const f = fixture(); let released = false;
-  const client = { messages: { create: async () => { f.revoke(); return response([call("a", "agentmixer_files_write", { path: "MEMORY.md", text: "bad", expectedRevision: "rev" })], "tool_use"); } } } as unknown as ClaudeApiClient;
+  const client = { messages: { create: async () => { f.revoke(); return response([call("a", "xcb_files_write", { path: "MEMORY.md", text: "bad", expectedRevision: "rev" })], "tool_use"); } } } as unknown as ClaudeApiClient;
   const selected = apiAdapter({ credentials, modelCatalog: async () => modelCatalog, now: () => now }, qualification, () => client);
-  const router = new AgentMixer({ adapters: [selected], now: () => now, leases: {
+  const router = new Xcb({ adapters: [selected], now: () => now, leases: {
     acquire: input => ({ ...input, generation: 1, expiresAt: now + 1000 }),
     renew: lease => lease,
     release: () => { released = true; return true; },

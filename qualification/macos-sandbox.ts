@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { syntheticMacSandbox } from "./macos-sandbox-profile.ts";
 if (process.platform !== "darwin") throw new Error("REQUIRES_MACOS");
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-kernel-probe-")));
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-kernel-probe-")));
 let server: ReturnType<typeof Bun.serve> | undefined;
 try {
   const scratch = join(root, "allowed"), outside = join(root, "foreign");

@@ -8,7 +8,7 @@ import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { restrictedClaudeOptions } from "../src/claude-options.ts";
 import { syntheticMacSandbox } from "./macos-sandbox-profile.ts";
 if (process.argv.slice(2).some(argument => argument !== "--initialize")) throw new Error("INVALID_DIAGNOSTIC_ARGUMENT");
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-native-bootstrap-")));
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-native-bootstrap-")));
 try {
   const executable = await realpath(fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk-darwin-arm64/claude")));
   const home = join(root, "home"), cwd = join(root, "work"), temp = join(root, "tmp");

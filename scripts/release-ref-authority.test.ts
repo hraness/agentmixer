@@ -237,11 +237,11 @@ describe("bounded remote ref inventory", () => {
 
   test("rejects nonstandard tag refs and admits only the v namespace", () => {
     expect(() => parseRemoteSnapshot(inventory(
-      [tag, "refs/tags/agentmixer-v0.1.0"],
+      [tag, "refs/tags/xcb-v0.1.0"],
     ), "v0.1.0")).toThrow("unexpected ref");
     expect(() => parseRemoteSnapshot(inventory(
       [tag, "refs/tags/v0.1.0"],
-    ), "agentmixer-v0.1.0")).toThrow("canonical stable version");
+    ), "xcb-v0.1.0")).toThrow("canonical stable version");
     const parsed = parseRemoteSnapshot(inventory(
       [tag, "refs/tags/v0.1.0"],
       [tag, "refs/tags/v0.2.0-rc.1"],

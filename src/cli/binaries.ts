@@ -9,8 +9,11 @@ import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
 import { CODEX_NATIVE_SHA256, CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import { boundedText } from "../validation.ts";
 
-export const CLI_CODEX_ENV = "AGENTMIXER_CODEX";
-export const CLI_CLAUDE_ENV = "AGENTMIXER_CLAUDE";
+export const CLI_CODEX_ENV = "XCB_CODEX";
+export const CLI_CLAUDE_ENV = "XCB_CLAUDE";
+/** Pre-0.4.0 pin names, honored only when the XCB_* variable is unset. */
+const LEGACY_CLI_CODEX_ENV = "AGENTMIXER_CODEX";
+const LEGACY_CLI_CLAUDE_ENV = "AGENTMIXER_CLAUDE";
 
 export type CliProviderName = "codex" | "claude";
 export type CliBinaryInspection = Readonly<{
@@ -27,17 +30,17 @@ const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 
 /** Absolute, physical, user-owned executable file; bounded read for hashing. */
 export async function inspectCliExecutable(rawPath: unknown): Promise<{ executablePath: string; sha256: string; bytes: Uint8Array }> {
-  if (typeof rawPath !== "string" || !isAbsolute(rawPath) || /[\x00-\x1f\x7f]/u.test(rawPath)) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+  if (typeof rawPath !== "string" || !isAbsolute(rawPath) || /[\x00-\x1f\x7f]/u.test(rawPath)) throw new Error("XCB_EXECUTABLE_INVALID");
   const executablePath = await realpath(rawPath);
   const stat = await lstat(executablePath);
   const uid = process.getuid?.();
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || ![0, uid].includes(stat.uid)
     || (stat.mode & 0o022) !== 0 || (stat.mode & 0o111) === 0 || (stat.mode & 0o6000) !== 0
-    || stat.size < 1 || stat.size > MAX_EXECUTABLE_BYTES) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+    || stat.size < 1 || stat.size > MAX_EXECUTABLE_BYTES) throw new Error("XCB_EXECUTABLE_INVALID");
   const handle = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const bytes = await handle.readFile();
-    if (bytes.byteLength > MAX_EXECUTABLE_BYTES) throw new Error("AGENTMIXER_EXECUTABLE_INVALID");
+    if (bytes.byteLength > MAX_EXECUTABLE_BYTES) throw new Error("XCB_EXECUTABLE_INVALID");
     return { executablePath, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: new Uint8Array(bytes) };
   } finally {
     await handle.close();
@@ -63,7 +66,8 @@ function pathEntries(env: (name: string) => string | undefined): string[] {
 
 /** Closed discovery order: explicit env pin, PATH, then known install locations. */
 export function cliBinaryCandidates(provider: CliProviderName, env: (name: string) => string | undefined = (name) => process.env[name]): readonly string[] {
-  const pinned = env(provider === "codex" ? CLI_CODEX_ENV : CLI_CLAUDE_ENV);
+  const pinned = env(provider === "codex" ? CLI_CODEX_ENV : CLI_CLAUDE_ENV)
+    ?? env(provider === "codex" ? LEGACY_CLI_CODEX_ENV : LEGACY_CLI_CLAUDE_ENV);
   const command = provider === "codex" ? "codex" : "claude";
   const home = homedir();
   const known = provider === "claude"

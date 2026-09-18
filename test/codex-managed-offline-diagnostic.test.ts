@@ -25,7 +25,7 @@ type Fault = "wrong-home" | "config-drift" | "response-id" | "duplicate" | "extr
 /** Uses the real private filesystem, SQLite leases and process-owner code.
  * Only the native child/host observations are synthetic; no runtime is launched. */
 async function fixture(input: { fault?: Fault; failInspect?: number; throwSpawn?: number; cancelOnConfig?: boolean; writeAuth?: boolean; stderrErrorOnStop?: number } = {}) {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-offline-diagnostic-test-"))); await chmod(directory, 0o700);
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "xcb-offline-diagnostic-test-"))); await chmod(directory, 0o700);
   const executablePath = join(directory, "synthetic-executable"); await writeFile(executablePath, executable, { mode: 0o500 });
   const controller = new AbortController(), runtime = { executablePath, version: "synthetic-native", sha256: sha(executable), schemaSha256: schemaSha, parentRuntime: { expectedSha256: parentSha } };
   const options: CodexManagedOfflineDiagnosticOptions = { directory, runtime, signal: controller.signal,
@@ -41,7 +41,7 @@ async function fixture(input: { fault?: Fault; failInspect?: number; throwSpawn?
     spawn(request) {
       spawns.push(request); frames.push([]); const ordinal = spawns.length, accountHome = request.env.CODEX_HOME!, stateRoot = dirname(dirname(dirname(accountHome)));
       const db = new Database(join(dirname(stateRoot), "account-leases.sqlite"), { readonly: true });
-      try { leasesAtSpawn.push(db.query<{ generation: number; expires_at: number; owner: string }, []>("SELECT generation, expires_at, owner FROM agentmixer_account_leases").get()!); } finally { db.close(); }
+      try { leasesAtSpawn.push(db.query<{ generation: number; expires_at: number; owner: string }, []>("SELECT generation, expires_at, owner FROM xcb_account_leases").get()!); } finally { db.close(); }
       if (ordinal === input.throwSpawn) throw Error("synthetic uncertain launch");
       const native = new EventEmitter(), stdout = new PassThrough(), stderr = new PassThrough(), pid = 43000 + ordinal;
       let present = true, ended = false;
@@ -91,14 +91,14 @@ function stopped(receipt: CodexManagedOfflineDiagnosticReceipt) {
 }
 async function accountState(receipt: CodexManagedOfflineDiagnosticReceipt) {
   const db = new Database(join(receipt.root, "account-leases.sqlite"), { readonly: true });
-  try { return db.query<{ account_id: string; owner: string | null; generation: number }, []>("SELECT account_id, owner, generation FROM agentmixer_account_leases").get()!; } finally { db.close(); }
+  try { return db.query<{ account_id: string; owner: string | null; generation: number }, []>("SELECT account_id, owner, generation FROM xcb_account_leases").get()!; } finally { db.close(); }
 }
 
 test("fixed diagnostic joins two real lease generations and emits no account, model, thread or tool requests", async () => {
   const f = await fixture(), result = await f.run(); stopped(result); expect(result.passed).toBe(true); expect(result.failures).toEqual([]);
   expect(f.spawns).toHaveLength(2); expect(f.frames[0]).toEqual([]);
   expect(f.frames[1]).toEqual([
-    { id: 1, method: "initialize", params: { clientInfo: { name: "agentmixer-offline-diagnostic", version: "0.1.0" }, capabilities: { experimentalApi: false, requestAttestation: false } } },
+    { id: 1, method: "initialize", params: { clientInfo: { name: "xcb-offline-diagnostic", version: "0.4.0" }, capabilities: { experimentalApi: false, requestAttestation: false } } },
     { method: "initialized" }, { id: 2, method: "config/read", params: { cwd: f.spawns[1]!.cwd, includeLayers: false } },
   ]);
   expect(result.protocol).toEqual({ methods: ["initialize", "initialized", "config/read"], configurationObserved: true, disabledNotices: 1, frameCount: 3, failure: null, joined: true });

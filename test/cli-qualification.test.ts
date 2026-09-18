@@ -10,7 +10,7 @@ import { claudeTaskRuntimeIdentity } from "../src/claude-task-adapter.ts";
 const sha = (ch: string) => ch.repeat(64);
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
   await chmod(root, 0o700);
   const profile = createCliWorkspaceProfile(createCliWorkspace(root));
   const route = Object.freeze({ id: "claude-subscription", provider: "claude" as const, authentication: "subscription" as const });

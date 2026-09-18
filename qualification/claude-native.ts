@@ -55,6 +55,13 @@ async function scenario(name: string, attempted: (input: { sibling: string; mark
   const directory = join(root, name); await mkdir(directory, { mode: 0o700 });
   const cwd = join(directory, "work"), home = join(directory, "home"), config = join(directory, "config"), temp = join(directory, "tmp");
   for (const path of [cwd, home, config, temp]) await mkdir(path, { mode: 0o700 });
+  // Claude mkdirs its per-user /tmp/claude-<uid> dir at init. Seatbelt op
+  // families differ on symlink resolution — metadata checks evaluate the
+  // unresolved /tmp path while data ops report the canonical /private/tmp
+  // form — and the create also needs write on the parent literal, so both
+  // spellings of the dir and its parent are granted.
+  const uid = process.getuid?.();
+  const claudeTmp = [`/tmp/claude-${uid}`, `/private/tmp/claude-${uid}`];
   const memory = await ContactWorkspace.create(join(directory, "contact"));
   const sibling = join(directory, "other-contact.md"), marker = join(directory, "command-was-run");
   await writeFile(sibling, canary, { mode: 0o600 });
@@ -141,7 +148,8 @@ async function scenario(name: string, attempted: (input: { sibling: string; mark
       mcpServers: mcpTools.length ? { agentmixer: createSdkMcpServer({ name: "agentmixer", version: "1.0.0", tools: mcpTools }) } : {},
       spawnClaudeCodeProcess(input) {
         assert(!child && input.command === executable && input.cwd === cwd, "FIXTURE_SPAWN_MISMATCH");
-        const profile = osSandbox ? syntheticMacSandbox({ executable, scratch: [cwd, home, config, temp], port: server.port! }) : undefined;
+        const profile = osSandbox ? syntheticMacSandbox({ executable, scratch: [cwd, home, config, temp, ...claudeTmp],
+          createParents: ["/tmp", "/private/tmp"], runtimeSurface: true, port: server.port! }) : undefined;
         child = spawnBoundedProvider({ executable: profile ? "/usr/bin/sandbox-exec" : executable,
           args: profile ? ["-p", profile, executable, ...input.args] : input.args, cwd, env, onViolation: () => controller.abort() });
         return child.process;

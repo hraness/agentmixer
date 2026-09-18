@@ -15,7 +15,7 @@ export function parsePublishedRelease(value: unknown): PublishedRelease | null {
     || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(fields.version)
     || fields.version.split(".").some((part) => BigInt(part) > BigInt(Number.MAX_SAFE_INTEGER))
     || typeof fields.verificationRun !== "string"
-    || !/^https:\/\/github\.com\/hraness\/agentmixer\/actions\/runs\/[1-9][0-9]*$/u.test(fields.verificationRun)) {
+    || !/^https:\/\/github\.com\/hraness\/xcb\/actions\/runs\/[1-9][0-9]*$/u.test(fields.verificationRun)) {
     throw new TypeError("Published release must bind a stable version to its verification run.");
   }
   return { version: fields.version, verificationRun: fields.verificationRun };

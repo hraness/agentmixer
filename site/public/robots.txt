@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://agentmixer.dev/sitemap.xml
+Sitemap: https://xcb.dev/sitemap.xml

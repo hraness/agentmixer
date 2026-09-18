@@ -131,8 +131,9 @@ test("managed preflight denies projected tool defaults and keeps the subagent di
   const response = configResponse();
   // The native projection may omit agents; when present it must retain the disable.
   expect(assertCodexManagedConfigResponse(response, expected)).toBeUndefined();
+  expect(assertCodexManagedConfigResponse({ ...response, config: { ...response.config, agents: null } }, expected)).toBeUndefined();
   expect(assertCodexManagedConfigResponse({ ...response, config: { ...response.config, agents: { enabled: false } } }, expected)).toBeUndefined();
-  for (const agents of [{ enabled: true }, {}, null]) {
+  for (const agents of [{ enabled: true }, {}]) {
     expect(() => assertCodexManagedConfigResponse({ ...response, config: { ...response.config, agents } }, expected)).toThrow();
   }
 });

@@ -5,6 +5,7 @@ site/.next/
 site/out/
 site/next-env.d.ts
 site/tsconfig.tsbuildinfo
+site/public/theme-bootstrap.js
 .env
 .env.*
 !.env.example
@@ -15,3 +16,4 @@ site/.vercel
 coverage/
 artifacts/
 .env*
+site/public/theme-bootstrap.js

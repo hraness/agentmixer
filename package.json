@@ -1,17 +1,17 @@
 {
   "name": "@hraness/agentmixer",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "description": "Provider-neutral agent routing, account custody and scoped tool contracts.",
   "type": "module",
   "license": "MIT",
   "packageManager": "bun@1.3.14",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hraness/agentmixer.git"
+    "url": "git+https://github.com/hraness/xcb.git"
   },
-  "homepage": "https://agentmixer.dev",
+  "homepage": "https://xcb.dev",
   "bugs": {
-    "url": "https://github.com/hraness/agentmixer/issues"
+    "url": "https://github.com/hraness/xcb/issues"
   },
   "publishConfig": {
     "access": "public",
@@ -29,9 +29,13 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "agentmixer": "dist/cli.js"
+  },
   "files": [
     "dist",
-    "MANAGED-CODEX.md"
+    "MANAGED-CODEX.md",
+    "sandbox"
   ],
   "scripts": {
     "build:dist": "bun scripts/build-dist.ts",

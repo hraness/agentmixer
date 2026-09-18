@@ -10,19 +10,33 @@ import { inspectCodexHostExecutable, inspectCodexHostRuntime, type CodexHostRunt
 import { identifier, safeInteger } from "./validation.ts";
 import { providerProcessWriteResult, sameProviderProcessBinding, snapshotProviderProcessBinding, type ProviderProcessBinding, type ProviderProcessPort, type ProviderProcessWriteResult } from "./process-port.ts";
 import { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
+import { createSeatbeltOsSandbox, createBwrapOsSandbox } from "./os-sandbox.ts";
+import { createEgressBridge, egressBridgeDialer, type EgressBridge } from "./egress-bridge.ts";
 export { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
 
 /** Trusted distribution inputs. A supplied hash is checked, never self-admitted
  * as provenance, configuration/schema compatibility, or OAuth qualification. */
+export type CodexAccountSandboxAdmission = Readonly<{
+  /** Pinned bubblewrap artifact re-verified at plan time; required iff the
+   * admitted parent runtime is Linux. */
+  executable: string; sha256: string;
+  /** Host-admitted shared-library closure bound read-only inside the
+   * namespace. Canonical absolute paths only. */
+  readOnlyPaths?: readonly string[];
+  /** Required for provider-egress profiles on Linux: the host starts a
+   * unix-socket CONNECT bridge bound into the namespace. The allowlist is an
+   * exact-host set; absent admits any host on :443 (seatbelt parity). */
+  egress?: Readonly<{ allowlist?: readonly string[] }>;
+}>;
 export type CodexAccountRuntimeAdmission = Readonly<{
   executablePath: string; version: string; sha256: string; schemaSha256: string;
-  parentRuntime: CodexParentRuntimeBinding;
+  parentRuntime: CodexParentRuntimeBinding; sandbox?: CodexAccountSandboxAdmission;
 }>;
 /** Supplied only by the trusted host after reviewing this candidate profile for
  * these distribution pins. JSON shape/pin matching is not provenance, a native
  * network proof, or permission for model execution. Never load from owner JSON. */
 export type CodexAccountDeviceCodeAdmission = Readonly<{
-  profile: "codex-account-device-code-tcp443-dns-v1" | "codex-account-device-code-tcp443-dns-v2";
+  profile: "codex-account-device-code-tcp443-dns-v1" | "codex-account-device-code-tcp443-dns-v2" | "codex-account-device-code-tcp443-dns-v3";
   nativeSha256: string; schemaSha256: string; parentSha256: string;
 }>;
 export type CodexAccountProcessOptions = Readonly<{
@@ -31,7 +45,7 @@ export type CodexAccountProcessOptions = Readonly<{
 } & ({ mode: "offline"; deviceCodeAdmission?: never }
   | { mode: "device-code"; deviceCodeAdmission: CodexAccountDeviceCodeAdmission })>;
 export type CodexAccountSpawn = Readonly<{
-  executable: "/usr/bin/sandbox-exec"; args: readonly string[]; cwd: string;
+  executable: string; args: readonly string[]; cwd: string;
   env: Readonly<Record<string, string>>; detached: true; stdio: readonly ["pipe", "pipe", "pipe"];
 }>;
 /** Trusted system seam for synthetic process tests. This is not a plugin, agent
@@ -41,10 +55,13 @@ export interface CodexAccountProcessSystem {
   spawn(request: CodexAccountSpawn): ChildProcessWithoutNullStreams;
   processGroup(pid: number): number | null;
   signalGroup(pgid: number, signal: "SIGTERM" | "SIGKILL" | 0): boolean;
+  /** Host-owned unix-socket CONNECT bridge; required for provider-egress
+   * profiles on Linux. The returned handle is joined during cleanup. */
+  startEgressBridge?(options: { socketPath: string; allowlist?: readonly string[] }): Promise<EgressBridge>;
 }
 export type CodexAccountProcessReceipt = Readonly<{
   schema: "agentmixer.codex-account-process.v1"; binding: CodexAccountBinding;
-  productionQualified: false; network: "denied" | "tcp443-system-resolver-candidate" | "tcp443-system-resolver-var-metadata-candidate"; nativeVersion: string;
+  productionQualified: false; network: "denied" | "tcp443-system-resolver-candidate" | "tcp443-system-resolver-var-metadata-candidate" | "tcp443-system-resolver-var-metadata-ca-file-candidate"; nativeVersion: string;
   nativeSha256: string; schemaSha256: string; parentSha256: string;
   configurationSha256: string; profileSha256: string | null;
   journalPath: string | null; launchAttempted: boolean; pid: number | null; pgid: number | null;
@@ -71,6 +88,14 @@ function path(value: unknown): string {
   assert(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "CODEX_ACCOUNT_PROCESS_PATH_INVALID");
   return value as string;
 }
+/** Lowercase hostname grammar matching the egress bridge's CONNECT target
+ * normalization, so an admitted allowlist entry can never silently mismatch. */
+function egressHost(value: unknown): string {
+  assert(typeof value === "string", "CODEX_ACCOUNT_PROCESS_EGRESS_INVALID");
+  const lowered = (value as string).toLowerCase();
+  assert(lowered.length > 0 && Buffer.byteLength(lowered) <= 253 && /^[a-z0-9._:\[\]-]+$/u.test(lowered), "CODEX_ACCOUNT_PROCESS_EGRESS_INVALID");
+  return lowered;
+}
 function binding(value: CodexAccountBinding): CodexAccountBinding {
   const raw = object(value, ["accountId", "owner", "leaseGeneration", "processGeneration"]);
   return Object.freeze({ accountId: identifier(raw.accountId), owner: identifier(raw.owner), leaseGeneration: safeInteger(raw.leaseGeneration, 1, Number.MAX_SAFE_INTEGER), processGeneration: safeInteger(raw.processGeneration, 1, Number.MAX_SAFE_INTEGER) });
@@ -78,6 +103,7 @@ function binding(value: CodexAccountBinding): CodexAccountBinding {
 const same = (a: CodexAccountBinding, b: CodexAccountBinding) => a.accountId === b.accountId && a.owner === b.owner && a.leaseGeneration === b.leaseGeneration && a.processGeneration === b.processGeneration;
 const system: CodexAccountProcessSystem = {
   inspectParent: inspectCodexHostRuntime,
+  startEgressBridge: request => createEgressBridge({ socketPath: request.socketPath, ...(request.allowlist === undefined ? {} : { allowlist: request.allowlist }), dialer: egressBridgeDialer }),
   spawn: request => spawn(request.executable, [...request.args], { cwd: request.cwd, env: { ...request.env }, detached: true, stdio: ["pipe", "pipe", "pipe"] }),
   processGroup(pid) {
     const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "pgid="], { encoding: "utf8", timeout: 1_000, maxBuffer: 1024, env: { PATH: "/usr/bin:/bin" } });
@@ -118,6 +144,9 @@ export function codexAccountDeviceCodeSandbox(input: { executable: string; scrat
  * network destinations or services. DNS evidence does not qualify sign-in. */
 export function codexAccountDeviceCodeV2Sandbox(input: { executable: string; scratch: string; accountHome: string }): string {
   return codexAccountDeviceCodeSandbox(input) + '(allow file-read-metadata (literal "/var"))\n';
+}
+export function codexAccountDeviceCodeV3Sandbox(input: { executable: string; scratch: string; accountHome: string }): string {
+  return codexAccountDeviceCodeV2Sandbox(input) + '(allow file-read* (literal "/private/etc/ssl/cert.pem"))\n';
 }
 async function directory(value: string): Promise<BigIntStats> {
   const metadata = await lstat(value, { bigint: true });
@@ -161,29 +190,42 @@ async function bounded<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
 export function createCodexAccountProcess(options: CodexAccountProcessOptions, trustedSystem: CodexAccountProcessSystem = system): CodexAccountOwnedProcessPort {
   const raw = object(options, ["binding", "stateRoot", "runtime", "mode", "startupTimeoutMs", "deviceCodeAdmission"]), owned = binding(raw.binding as CodexAccountBinding);
   assert(raw.mode === "offline" || raw.mode === "device-code", "CODEX_ACCOUNT_PROCESS_OFFLINE_REQUIRED");
-  const stateRoot = path(raw.stateRoot), admission = object(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime"]);
+  const stateRoot = path(raw.stateRoot), admission = object(raw.runtime, ["executablePath", "version", "sha256", "schemaSha256", "parentRuntime", "sandbox"]);
   const parentRaw = object(admission.parentRuntime, ["expectedSha256"]), parentRuntime = Object.freeze({ expectedSha256: digest(parentRaw.expectedSha256) });
-  const runtime = Object.freeze({ executablePath: path(admission.executablePath), version: identifier(admission.version), sha256: digest(admission.sha256), schemaSha256: digest(admission.schemaSha256), parentRuntime });
+  const sandboxRaw = admission.sandbox === undefined ? undefined : object(admission.sandbox, ["executable", "sha256", "readOnlyPaths", "egress"]);
+  const sandbox = sandboxRaw === undefined ? undefined : Object.freeze({
+    executable: path(sandboxRaw.executable), sha256: digest(sandboxRaw.sha256),
+    readOnlyPaths: sandboxRaw.readOnlyPaths === undefined ? Object.freeze([] as readonly string[])
+      : Object.freeze((assert(Array.isArray(sandboxRaw.readOnlyPaths) && sandboxRaw.readOnlyPaths.length <= 256, "CODEX_ACCOUNT_PROCESS_SANDBOX_INVALID"), (sandboxRaw.readOnlyPaths as unknown[]).map(entry => path(entry)))),
+    ...(sandboxRaw.egress === undefined ? {} : { egress: (() => { const raw = object(sandboxRaw.egress, ["allowlist"]);
+      return Object.freeze({ allowlist: raw.allowlist === undefined ? undefined
+        : (assert(Array.isArray(raw.allowlist) && raw.allowlist.length <= 256, "CODEX_ACCOUNT_PROCESS_EGRESS_INVALID"),
+          Object.freeze((raw.allowlist as unknown[]).map(entry => egressHost(entry)))) }); })() }) });
+  const runtime = Object.freeze({ executablePath: path(admission.executablePath), version: identifier(admission.version), sha256: digest(admission.sha256), schemaSha256: digest(admission.schemaSha256), parentRuntime, ...(sandbox === undefined ? {} : { sandbox }) });
   const deviceCode = raw.mode === "device-code";
   let networkProfile: CodexAccountDeviceCodeAdmission["profile"] | undefined;
   if (deviceCode) {
     const network = object(raw.deviceCodeAdmission, ["profile", "nativeSha256", "schemaSha256", "parentSha256"]);
     const profile = network.profile;
-    if (profile !== "codex-account-device-code-tcp443-dns-v1" && profile !== "codex-account-device-code-tcp443-dns-v2") throw new Error("CODEX_ACCOUNT_PROCESS_NETWORK_ADMISSION_MISMATCH");
+    if (profile !== "codex-account-device-code-tcp443-dns-v1" && profile !== "codex-account-device-code-tcp443-dns-v2"
+      && profile !== "codex-account-device-code-tcp443-dns-v3") throw new Error("CODEX_ACCOUNT_PROCESS_NETWORK_ADMISSION_MISMATCH");
     assert(digest(network.nativeSha256) === runtime.sha256
       && digest(network.schemaSha256) === runtime.schemaSha256 && digest(network.parentSha256) === runtime.parentRuntime.expectedSha256, "CODEX_ACCOUNT_PROCESS_NETWORK_ADMISSION_MISMATCH");
     networkProfile = profile;
   } else assert(!Object.hasOwn(raw, "deviceCodeAdmission"), "CODEX_ACCOUNT_PROCESS_NETWORK_ADMISSION_UNEXPECTED");
-  const selectedProfile = networkProfile === "codex-account-device-code-tcp443-dns-v2" ? codexAccountDeviceCodeV2Sandbox
+  const selectedProfile = networkProfile === "codex-account-device-code-tcp443-dns-v3" ? codexAccountDeviceCodeV3Sandbox
+    : networkProfile === "codex-account-device-code-tcp443-dns-v2" ? codexAccountDeviceCodeV2Sandbox
     : networkProfile === "codex-account-device-code-tcp443-dns-v1" ? codexAccountDeviceCodeSandbox : codexAccountOfflineSandbox;
-  const network: CodexAccountProcessReceipt["network"] = networkProfile === "codex-account-device-code-tcp443-dns-v2" ? "tcp443-system-resolver-var-metadata-candidate"
+  const network: CodexAccountProcessReceipt["network"] = networkProfile === "codex-account-device-code-tcp443-dns-v3" ? "tcp443-system-resolver-var-metadata-ca-file-candidate"
+    : networkProfile === "codex-account-device-code-tcp443-dns-v2" ? "tcp443-system-resolver-var-metadata-candidate"
     : networkProfile === "codex-account-device-code-tcp443-dns-v1" ? "tcp443-system-resolver-candidate" : "denied";
   const startupMs = safeInteger(raw.startupTimeoutMs ?? 10_000, 1, 120_000), startupDeadline = Date.now() + startupMs;
-  const host = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem) });
+  const host = Object.freeze({ inspectParent: trustedSystem.inspectParent.bind(trustedSystem), spawn: trustedSystem.spawn.bind(trustedSystem), processGroup: trustedSystem.processGroup.bind(trustedSystem), signalGroup: trustedSystem.signalGroup.bind(trustedSystem),
+    startEgressBridge: trustedSystem.startEgressBridge?.bind(trustedSystem) });
   const configuration = codexAccountOfflineConfiguration();
   const failures = new Set<string>();
   const state = { phase: "preparing" as CodexAccountProcessReceipt["phase"], launchAttempted: false, pid: null as number | null, pgid: null as number | null, rootExited: false, groupAbsent: false, stdoutJoined: false, stderrJoined: false, lockReleased: false, scratchRetained: false, profileSha256: null as string | null, journalPath: null as string | null };
-  let child: ChildProcessWithoutNullStreams | undefined, root: string | undefined, scratch: string | undefined, runtimeRoot: string | undefined, lockPath: string | undefined, lockContents = "", scratchIdentity: BigIntStats | undefined, runtimeIdentity: BigIntStats | undefined;
+  let child: ChildProcessWithoutNullStreams | undefined, root: string | undefined, scratch: string | undefined, runtimeRoot: string | undefined, lockPath: string | undefined, lockContents = "", scratchIdentity: BigIntStats | undefined, runtimeIdentity: BigIntStats | undefined, bridge: EgressBridge | undefined;
   let lockOwned = false, journalFd: number | undefined, journalFailed = false, previous: string | null = null, sequence = 0;
   let closedEvent = false, nativeStdoutClosed = false, nativeStderrClosed = false, nativeStdinClosed = false, spawnEvent = false, spawnError = false, closing = false, stopTask: Promise<CodexAccountProcessCloseReceipt> | undefined;
   let resolveExit!: () => void, resolveClosed!: () => void;
@@ -209,7 +251,9 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
   function alivePreparation() { assert(!closing && Date.now() < startupDeadline, "CODEX_ACCOUNT_PROCESS_START_CANCELLED"); }
   const preparation = Promise.resolve().then(async () => {
     alivePreparation(); await directory(stateRoot); const parent = await host.inspectParent(parentRuntime);
-    assert(parent.sha256 === parentRuntime.expectedSha256 && parent.platform === "darwin" && parent.arch === "arm64" && parent.version === "1.3.14", "CODEX_ACCOUNT_PROCESS_PARENT_MISMATCH"); alivePreparation();
+    assert(parent.sha256 === parentRuntime.expectedSha256 && (parent.platform === "darwin" || parent.platform === "linux")
+      && (parent.arch === "arm64" || parent.arch === "x64") && parent.version === "1.3.14", "CODEX_ACCOUNT_PROCESS_PARENT_MISMATCH");
+    assert((parent.platform === "linux") === (runtime.sandbox !== undefined), "CODEX_ACCOUNT_PROCESS_SANDBOX_MISMATCH"); alivePreparation();
     await inspectCodexHostExecutable(runtime.executablePath, runtime.sha256); alivePreparation();
     const accounts = join(stateRoot, "accounts"), runs = join(stateRoot, "runs"); await ensureDirectory(accounts); await ensureDirectory(runs);
     const accountRoot = join(accounts, owned.accountId); let created = false;
@@ -252,14 +296,31 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
       } finally { await target.close(); }
     } finally { await source.close(); }
     await inspectCodexHostExecutable(executable, runtime.sha256);
-    const profile = selectedProfile({ executable, scratch, accountHome }); state.profileSha256 = hash(profile);
-    const profilePath = join(root, "sandbox.sb"); await durableFile(profilePath, profile); await syncDirectory(runtimeRoot);
+    const policyPath = join(root, parent.platform === "darwin" ? "sandbox.sb" : "sandbox.json");
+    if (parent.platform === "linux" && networkProfile !== undefined) {
+      const startBridge = host.startEgressBridge, egress = runtime.sandbox?.egress;
+      assert(startBridge !== undefined && egress !== undefined, "CODEX_ACCOUNT_PROCESS_EGRESS_UNAVAILABLE");
+      bridge = await startBridge!({ socketPath: join(root, "egress.sock"), ...(egress!.allowlist === undefined ? {} : { allowlist: egress!.allowlist }) });
+    }
+    const sandboxPlan = parent.platform === "darwin"
+      ? await createSeatbeltOsSandbox({ generateProfile: spec =>
+        selectedProfile({ executable: spec.executable, scratch: spec.scratch, accountHome: spec.accountHome! }) })
+        .plan({ platform: "darwin", executable, scratch, accountHome, network: networkProfile === undefined ? "denied" : "provider-tcp443-dns", policyPath })
+      : await createBwrapOsSandbox({ executable: runtime.sandbox!.executable, sha256: runtime.sandbox!.sha256 })
+        .plan({ platform: "linux", executable, scratch, accountHome, readOnlyPaths: runtime.sandbox!.readOnlyPaths ?? [], network: networkProfile === undefined ? "denied" : "provider-tcp443-dns",
+          ...(bridge === undefined ? {} : { egressSocket: bridge.socketPath }), policyPath });
+    state.profileSha256 = sandboxPlan.policySha256;
+    await durableFile(policyPath, sandboxPlan.policy); await syncDirectory(runtimeRoot);
     await fixedFile(join(accountHome, "config.toml"), configuration, false); await directory(accountHome); await directory(scratch); alivePreparation();
     alivePreparation(); state.phase = "launch-pending"; state.launchAttempted = true; persist();
     // The preceding durable record deliberately leaves the PID unknown. A
     // crash here requires independent recovery, even if no child was created.
-    child = host.spawn(Object.freeze({ executable: "/usr/bin/sandbox-exec", args: Object.freeze(["-f", profilePath, executable, "app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
-      env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }), detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
+    const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
+      env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
+        ...(networkProfile === "codex-account-device-code-tcp443-dns-v3" && parent.platform === "darwin" ? { SSL_CERT_FILE: "/etc/ssl/cert.pem" } : {}),
+        ...(bridge === undefined ? {} : { AGENTMIXER_EGRESS_SOCKET: bridge.socketPath }) }) });
+    child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd: join(scratch, "work"),
+      env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
     state.pid = child.pid ?? null;
     child.once("spawn", () => { spawnEvent = true; });
     child.once("exit", () => { state.rootExited = true; resolveExit(); });
@@ -327,6 +388,7 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
         stdin.end(); stdout.end(); stderr.end(); stdout.resume(); stderr.resume();
         await bounded(Promise.all([new Promise<void>(done => stdout.readableEnded ? done() : stdout.once("end", done)), new Promise<void>(done => stderr.readableEnded ? done() : stderr.once("end", done))]), deadline);
         state.stdoutJoined = true; state.stderrJoined = true;
+        if (bridge !== undefined) { const receipt = await bridge.close(); assert(receipt.listenerClosed && receipt.socketsJoined && receipt.socketRemoved, "CODEX_ACCOUNT_PROCESS_EGRESS_UNJOINED"); bridge = undefined; }
         if (lockOwned) {
           assert(!journalFailed, "CODEX_ACCOUNT_PROCESS_JOURNAL_FAILED");
           await fixedFile(lockPath!, lockContents, false);

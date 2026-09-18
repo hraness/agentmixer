@@ -169,7 +169,7 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
     const repository = manifest.repository as JsonRecord | undefined;
     if (
       repository?.type !== "git"
-      || repository.url !== "git+https://github.com/hraness/agentmixer.git"
+      || repository.url !== "git+https://github.com/hraness/xcb.git"
       || repository.directory !== undefined
     ) problems.push("packed repository must bind this repository for npm provenance");
     const files = manifest.files;
@@ -189,6 +189,10 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
         await access(join(packedRoot, forbidden));
         problems.push(`packed package contains unshipped entry ${forbidden}`);
       } catch { /* absent as required */ }
+    }
+    const bin = record(manifest.bin ?? {}, "packed bin");
+    if (Reflect.ownKeys(bin).length !== 1 || bin.agentmixer !== "dist/cli.js") {
+      problems.push(`packed bin must be exactly { agentmixer: "dist/cli.js" }`);
     }
     const exportsField = record(manifest.exports, "packed exports")["."];
     const exportPaths = typeof exportsField === "string" ? [exportsField] : Object.values(record(exportsField, "packed export entry"));
@@ -210,6 +214,13 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
       }
     }
     problems.push(...await dependencyCompleteness(packedRoot, new Set(Object.keys(dependencies))));
+    // The shipped CLI entry must be a node-shebang executable artifact.
+    try {
+      const cli = await readFile(join(packedRoot, "dist/cli.js"), "utf8");
+      if (!cli.startsWith("#!/usr/bin/env node")) problems.push("dist/cli.js must open with the node shebang");
+    } catch {
+      problems.push("dist/cli.js is missing from the packed package");
+    }
     if (problems.length > 0) {
       throw new Error(`AgentMixer packed manifest failed:\n${[...new Set(problems)].sort().join("\n")}`);
     }
@@ -277,6 +288,16 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
       const expectedRuntime = executable === "node" ? "node" : "bun";
       if (observed.runtime !== expectedRuntime) {
         throw new Error(`Installed AgentMixer smoke ran under ${String(observed.runtime)}, expected ${expectedRuntime}`);
+      }
+      // The installed CLI must answer --version/--help without provider access.
+      const installedCli = join(modules, "@hraness/agentmixer/dist/cli.js");
+      const version = (await run([executable, installedCli, "--version"], consumer)).trim();
+      if (version !== manifest.version) {
+        throw new Error(`Installed agentmixer --version returned ${version}, expected ${String(manifest.version)}`);
+      }
+      const help = await run([executable, installedCli, "--help"], consumer);
+      if (!help.includes("agentmixer auth claude") || !help.includes("agentmixer doctor")) {
+        throw new Error("Installed agentmixer --help did not print the usage surface");
       }
     }
     console.log("AgentMixer standalone package boundary verified under Bun and Node.");

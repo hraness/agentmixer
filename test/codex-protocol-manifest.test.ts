@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { assertCodexProtocolManifest } from "../src/codex-protocol-manifest.ts";
+import { assertCodexProtocolManifest, buildCodexProtocolManifest } from "../src/codex-protocol-manifest.ts";
 
 const digest = (seed: string) => seed.repeat(64).slice(0, 64);
 const runtime = { version: "0.154.0-alpha.6.2", sha256: digest("a"), schemaSha256: digest("b") };
-const valid = { protocol: "codex-app-server-experimental" as const, protocolVersion: "v2", sourceVersion: runtime.version,
-  executableSha256: runtime.sha256, schemaSha256: runtime.schemaSha256, manifestSha256: digest("c"), generatedAtUnixMs: 1_700_000_000_000 };
+const valid = buildCodexProtocolManifest({ protocolVersion: "v2", sourceVersion: runtime.version,
+  executableSha256: runtime.sha256, schemaSha256: runtime.schemaSha256, generatedAtUnixMs: 1_700_000_000_000 });
 
 describe("Codex protocol manifest", () => {
   test("binds the complete manifest to the exact runtime", () => {
@@ -19,6 +19,7 @@ describe("Codex protocol manifest", () => {
   test("rejects unknown fields and malformed digests before binding", () => {
     expect(() => assertCodexProtocolManifest({ ...valid, extra: true }, runtime)).toThrow("CODEX_PROTOCOL_MANIFEST_INVALID");
     expect(() => assertCodexProtocolManifest({ ...valid, manifestSha256: "short" }, runtime)).toThrow("CODEX_PROTOCOL_MANIFEST_DIGEST_INVALID");
+    expect(() => assertCodexProtocolManifest({ ...valid, manifestSha256: digest("c") }, runtime)).toThrow("CODEX_PROTOCOL_MANIFEST_DIGEST_INVALID");
   });
   test("rejects getters and prototype-backed records without invoking them", () => {
     let invoked = false;

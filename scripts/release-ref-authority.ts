@@ -3,7 +3,7 @@ import { existsSync, lstatSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 
-const REPOSITORY_URL = "https://github.com/hraness/agentmixer.git";
+const REPOSITORY_URL = "https://github.com/hraness/xcb.git";
 const MAIN_BRANCH = "main";
 const MAIN_REF = `refs/heads/${MAIN_BRANCH}`;
 const LOCAL_MAIN_REF = `refs/remotes/origin/${MAIN_BRANCH}`;
@@ -569,8 +569,8 @@ function main(): void {
       "Usage: release-ref-authority.ts release TAG | promotion TAG WORKFLOW_SHA [EXPECTED_RELEASE_SHA]",
     );
   }
-  if (process.env.GITHUB_REPOSITORY !== "hraness/agentmixer" || process.env.DEFAULT_BRANCH !== MAIN_BRANCH) {
-    fail("Release-ref authority must run for hraness/agentmixer on exact default branch main.");
+  if (process.env.GITHUB_REPOSITORY !== "hraness/xcb" || process.env.DEFAULT_BRANCH !== MAIN_BRANCH) {
+    fail("Release-ref authority must run for hraness/xcb on exact default branch main.");
   }
   const authority = verifyReleaseRefAuthority({
     mode,

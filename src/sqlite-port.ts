@@ -6,6 +6,7 @@
 export type SqliteBinding = string | number | bigint | boolean | null | Uint8Array;
 export interface SqliteStatement<Row, _Params extends SqliteBinding[] = SqliteBinding[]> {
   get(...params: unknown[]): Row | null;
+  all(...params: unknown[]): Row[];
   run(...params: unknown[]): { changes: number };
 }
 export interface SqliteDatabase {
@@ -16,6 +17,7 @@ export interface SqliteDatabase {
 
 type NativeStatement = {
   get(...params: never[]): unknown;
+  all(...params: never[]): unknown[];
   run(...params: never[]): { changes: number | bigint };
 };
 type NativeDatabase = {
@@ -39,6 +41,7 @@ export function wrapSqliteDatabase(database: NativeDatabase): SqliteDatabase {
       const statement = database.prepare(sql);
       return {
         get: (...params: unknown[]) => ((statement.get as (...args: unknown[]) => unknown)(...bind(params)) ?? null) as never,
+        all: (...params: unknown[]) => ((statement.all as (...args: unknown[]) => unknown[])(...bind(params))) as never,
         run: (...params: unknown[]) => ({ changes: Number((statement.run as (...args: unknown[]) => { changes: number | bigint })(...bind(params)).changes) }),
       };
     },

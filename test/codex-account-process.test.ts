@@ -9,7 +9,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { CodexAccountBinding } from "../src/codex-account.ts";
 import type { CodexHostRuntime } from "../src/codex-host.ts";
-import { codexAccountDeviceCodeSandbox, codexAccountDeviceCodeV2Sandbox, codexAccountOfflineConfiguration, codexAccountOfflineSandbox, createCodexAccountProcess, type CodexAccountDeviceCodeAdmission, type CodexAccountOwnedProcessPort, type CodexAccountProcessOptions, type CodexAccountProcessSystem, type CodexAccountSpawn } from "../src/codex-account-process.ts";
+import { codexAccountDeviceCodeSandbox, codexAccountDeviceCodeV2Sandbox, codexAccountDeviceCodeV3Sandbox, codexAccountOfflineConfiguration, codexAccountOfflineSandbox, createCodexAccountProcess, type CodexAccountDeviceCodeAdmission, type CodexAccountOwnedProcessPort, type CodexAccountProcessOptions, type CodexAccountProcessSystem, type CodexAccountSpawn } from "../src/codex-account-process.ts";
 
 const sha = (input: string) => createHash("sha256").update(input).digest("hex");
 const binding: CodexAccountBinding = { accountId: "synthetic-account", owner: "synthetic-owner", leaseGeneration: 2, processGeneration: 3 };
@@ -294,14 +294,29 @@ test("explicit v2 device-code admission adds only the reviewed var metadata rule
     && value.network === "tcp443-system-resolver-var-metadata-candidate")).toBe(true);
 });
 
-test("v1 policy and baseline bytes stay pinned while v2 matches the reviewed DNS-only delta", () => {
+test("explicit v3 device-code admission supplies only the reviewed CA file", async () => {
+  const f = await fixture(), port = f.create(deviceCodeOptions(f, "codex-account-device-code-tcp443-dns-v3"));
+  await port.ready;
+  const request = f.spawns[0]!, profile = await readFile(request.args[1]!, "utf8");
+  expect(profile).toBe(codexAccountDeviceCodeV3Sandbox({ executable: request.args[2]!, scratch: dirname(request.cwd), accountHome: request.env.CODEX_HOME! }));
+  expect(profile).not.toMatch(/SecurityServer|securityd|keychain/iu);
+  expect(port.receipt()).toMatchObject({ network: "tcp443-system-resolver-var-metadata-ca-file-candidate", productionQualified: false,
+    profileSha256: sha(profile) });
+  expect(request.env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
+  expect(Object.keys(request.env).sort()).toEqual(["CODEX_HOME", "CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", "HOME", "NO_COLOR", "PATH", "SSL_CERT_FILE", "TMPDIR"]);
+  expectJoined(await f.stop(port));
+});
+
+test("v1 and v2 stay pinned while v3 adds only the reviewed CA file", () => {
   const paths = { executable: "/DNS_PROBE_EXECUTABLE", scratch: "/DNS_PROBE_SCRATCH", accountHome: "/DNS_PROBE_ACCOUNT_HOME" };
-  const v1 = codexAccountDeviceCodeSandbox(paths), v2 = codexAccountDeviceCodeV2Sandbox(paths);
+  const v1 = codexAccountDeviceCodeSandbox(paths), v2 = codexAccountDeviceCodeV2Sandbox(paths), v3 = codexAccountDeviceCodeV3Sandbox(paths);
   expect(sha(v1)).toBe("15d755e84c3dd59457355d7e14cb0d32eff68c1a9b14f2f8bbcf14538f8b2126");
   expect(sha(v2)).toBe("8d89f5860de208f9e95a04d513cf840f600ad3f24d0381d6cdd4bf3a3bfd3e2d");
+  expect(sha(v3)).toBe("b54cbb4db9e77469da4399765ff9fd25f5c3387f0926e6e83ab85626db29e2fe");
   expect(sha(codexAccountOfflineConfiguration())).toBe("9833be747176d26b0915621439e2cbea1bff12aeca6f7854e45265777bb98ae8");
   expect(v1).toBe(codexAccountOfflineSandbox(paths) + '(allow network-outbound (literal "/private/var/run/mDNSResponder") (remote tcp "*:443"))\n');
   expect(v2).toBe(v1 + '(allow file-read-metadata (literal "/var"))\n');
+  expect(v3).toBe(v2 + '(allow file-read* (literal "/private/etc/ssl/cert.pem"))\n');
   expect(codexAccountOfflineSandbox(paths)).not.toContain('(literal "/var")');
 });
 
@@ -376,8 +391,116 @@ test("an uncertain device-code launcher cannot release or relabel its admitted c
 });
 
 test("device-code policy generation preserves the offline path-confinement validation", () => {
-  for (const generate of [codexAccountDeviceCodeSandbox, codexAccountDeviceCodeV2Sandbox]) {
+  for (const generate of [codexAccountDeviceCodeSandbox, codexAccountDeviceCodeV2Sandbox, codexAccountDeviceCodeV3Sandbox]) {
     for (const executable of ["/private/account/codex", "/private/scratch/codex"]) expect(() => generate({ executable, scratch: "/private/scratch", accountHome: "/private/account" })).toThrow("LAYOUT_INVALID");
     expect(() => generate({ executable: "/private/runtime/codex", scratch: "/private/scratch", accountHome: '/private/account"' })).toThrow("PATH_INVALID");
   }
+});
+
+test("a linux parent launches through the admitted bwrap artifact instead of seatbelt", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap"), library = join(f.root, "lib");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 }); await mkdir(library, { mode: 0o700 });
+  const port = f.create({ runtime: { ...f.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), readOnlyPaths: [library] } } },
+    { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux", arch: "x64" }) });
+  await port.ready;
+  const request = f.spawns[0]!;
+  expect(request.executable).toBe(wrapper);
+  expect(request.args).toContain("--unshare-all"); expect(request.args).toContain("--die-with-parent");
+  expect(request.args).not.toContain("-f");
+  const inner = request.args.indexOf("--");
+  expect(request.args.slice(inner + 1, inner + 5)).toEqual([request.args[inner + 1]!, "app-server", "--strict-config", "--listen"]);
+  const binds: string[] = [];
+  for (let index = 0; index < request.args.length; index++) if (request.args[index] === "--ro-bind") binds.push(request.args[index + 1]!);
+  expect(binds).toContain(library);
+  const policyPath = join(dirname(port.receipt().journalPath!), "sandbox.json");
+  const policy = JSON.parse(await readFile(policyPath, "utf8"));
+  expect(policy).toMatchObject({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap", executable: request.args[inner + 1]! });
+  expect(port.receipt()).toMatchObject({ productionQualified: false, network: "denied", phase: "running" });
+  expectJoined(await f.stop(port));
+});
+
+test("a linux parent without a sandbox admission is refused, and a darwin parent refuses an admitted wrapper", async () => {
+  const linux = await fixture();
+  const refused = linux.create({}, { ...linux.host, inspectParent: () => Promise.resolve({ ...linux.parent, platform: "linux", arch: "x64" }) });
+  await expect(refused.ready).rejects.toThrow("UNAVAILABLE"); expectJoined(await linux.stop(refused), refused.binding); expect(linux.spawns).toHaveLength(0);
+
+  const darwin = await fixture(), wrapper = join(darwin.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const mismatched = darwin.create({ runtime: { ...darwin.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } });
+  await expect(mismatched.ready).rejects.toThrow("UNAVAILABLE"); expectJoined(await darwin.stop(mismatched), mismatched.binding); expect(darwin.spawns).toHaveLength(0);
+});
+
+test("a linux device-code launch refuses without an admitted egress bridge", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const linuxParent = { ...f.parent, platform: "linux" as const, arch: "x64" as const };
+  // No sandbox.egress admission at all.
+  const port = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime, sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes") } } },
+    { ...f.host, inspectParent: () => Promise.resolve(linuxParent), startEgressBridge: () => Promise.reject(new Error("must not start")) });
+  await expect(port.ready).rejects.toThrow("UNAVAILABLE"); expect(f.spawns).toHaveLength(0);
+  // Egress admitted but no host bridge seam — separate fixture so the first
+  // port's retained lock cannot mask this refusal's own cause.
+  const g = await fixture();
+  const noSeam = g.create({ ...deviceCodeOptions(g), runtime: { ...g.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} } } },
+    { ...g.host, inspectParent: () => Promise.resolve({ ...g.parent, platform: "linux" as const, arch: "x64" as const }) });
+  await expect(noSeam.ready).rejects.toThrow("UNAVAILABLE"); expect(g.spawns).toHaveLength(0);
+});
+
+test("a linux device-code launch rides the admitted egress bridge and joins it on cleanup", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const bridgeRequests: { socketPath: string; allowlist?: readonly string[] }[] = [];
+  let bridgeClosed = false;
+  const host = { ...f.host, inspectParent: () => Promise.resolve({ ...f.parent, platform: "linux" as const, arch: "x64" as const }),
+    startEgressBridge(request: { socketPath: string; allowlist?: readonly string[] }) {
+      bridgeRequests.push(request);
+      return Promise.resolve({ socketPath: request.socketPath, connections: 0,
+        close: () => { bridgeClosed = true; return Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+          connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: true, socketRemoved: true })); } });
+    } };
+  const port = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime,
+    sandbox: { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: { allowlist: ["API.example.com"] } } } }, host);
+  await port.ready;
+  expect(bridgeRequests).toHaveLength(1);
+  const socketPath = bridgeRequests[0]!.socketPath;
+  // Admission lowercases allowlist entries to match bridge normalization.
+  expect(bridgeRequests[0]!.allowlist).toEqual(["api.example.com"]);
+  const request = f.spawns[0]!;
+  const pairs = (flag: string) => request.args.flatMap((value, index) => value === flag ? [request.args[index + 1]!] : []);
+  // The child's env rides --setenv KEY VALUE pairs; the wrapper env stays minimal.
+  const setenvAt = request.args.findIndex((value, index) => value === "--setenv" && request.args[index + 1] === "AGENTMIXER_EGRESS_SOCKET");
+  expect(request.args[setenvAt + 2]).toBe(socketPath);
+  expect(request.env.AGENTMIXER_EGRESS_SOCKET).toBeUndefined();
+  const binds = pairs("--bind");
+  expect(binds).toContain(socketPath);
+  const policy = JSON.parse(await readFile(join(dirname(port.receipt().journalPath!), "sandbox.json"), "utf8"));
+  expect(policy.egress).toEqual({ socket: socketPath, protocol: "connect-tcp443" });
+  expect(port.receipt()).toMatchObject({ productionQualified: false, network: "tcp443-system-resolver-candidate" });
+  expectJoined(await f.stop(port));
+  expect(bridgeClosed).toBe(true);
+});
+
+test("a linux provider launch retains custody when bridge startup or join fails", async () => {
+  const f = await fixture(), wrapper = join(f.root, "synthetic-bwrap");
+  await writeFile(wrapper, "synthetic wrapper bytes", { mode: 0o500 });
+  const linuxParent = { ...f.parent, platform: "linux" as const, arch: "x64" as const };
+  const sandbox = { executable: wrapper, sha256: sha("synthetic wrapper bytes"), egress: {} };
+  // Startup failure: no launch attempted, custody never released silently.
+  const failing = f.create({ ...deviceCodeOptions(f), runtime: { ...f.options.runtime, sandbox } },
+    { ...f.host, inspectParent: () => Promise.resolve(linuxParent), startEgressBridge: () => Promise.reject(new Error("synthetic bridge failure")) });
+  await expect(failing.ready).rejects.toThrow("UNAVAILABLE"); expect(f.spawns).toHaveLength(0);
+  expect(await readFile(join(f.accountRoot, "active.json"), "utf8")).toContain("synthetic-account");
+  // Unjoined bridge: the close proof fails, custody stays recovery-required.
+  const g = await fixture();
+  const unjoined = g.create({ ...deviceCodeOptions(g), runtime: { ...g.options.runtime, sandbox } },
+    { ...g.host, inspectParent: () => Promise.resolve({ ...g.parent, platform: "linux" as const, arch: "x64" as const }),
+      startEgressBridge: (request: { socketPath: string }) => Promise.resolve({ socketPath: request.socketPath, connections: 1,
+        close: () => Promise.resolve(Object.freeze({ socketPath: request.socketPath, productionQualified: false as const,
+          connectionsAccepted: 0, connectionsRefused: 0, bytesIn: 0, bytesOut: 0, listenerClosed: true, socketsJoined: false, socketRemoved: false })) }) });
+  await unjoined.ready;
+  const result = await unjoined.stopAndJoin({ binding: unjoined.binding, deadlineMs: Date.now() + 1000 });
+  expect(result).toMatchObject({ processExited: true });
+  expect(unjoined.receipt()).toMatchObject({ phase: "recovery-required", lockReleased: false });
 });

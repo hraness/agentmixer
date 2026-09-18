@@ -36,8 +36,10 @@ code, not an owner-JSON setting or an agent tool.
 
 ## Offline native process helper
 
-`createCodexAccountProcess()` in `src/codex-account-process.ts` supplies a macOS
-process port for offline account-protocol checks. The caller provides an admitted
+`createCodexAccountProcess()` in `src/codex-account-process.ts` supplies a
+process port for offline account-protocol checks on the admitted parent
+platform (`darwin` or `linux`; the launcher selects seatbelt or the admitted
+bwrap artifact accordingly). The caller provides an admitted
 executable, its expected hash and version, a schema digest, a parent-runtime hash,
 and an owner-private state directory. The helper verifies executable and parent
 runtime hashes and records the caller-admitted version and schema digest. These
@@ -89,6 +91,31 @@ authentication hostname on the tested Mac and proved process cleanup. That
 result may use the resolver cache. It establishes neither native Codex TLS
 compatibility nor device-code sign-in, authentication or model execution.
 Both profile variants remain candidates with `productionQualified: false`.
+
+On Linux the same device-code mode plans through the bwrap backend instead:
+the runtime admission carries the pinned `bwrap` artifact and read-only
+library closure, and a `sandbox.egress` admission is additionally required.
+The host seam `startEgressBridge` then starts a unix-socket CONNECT bridge in
+the private run directory; the socket is bind-mounted into the namespace and
+reaches the child as `AGENTMIXER_EGRESS_SOCKET`. The child's own network
+namespace never has a route — DNS resolution and TCP dialing happen on the
+host side of the bridge, bounded to port 443 and an optional exact-host
+allowlist. Cleanup joins the bridge (listener closed, sockets joined, socket
+removed) before the account lock may release; a failed start or unproven join
+holds custody like any other launch-boundary failure. How a provider runtime
+consumes the socket is its own integration contract — the environment
+variable is admission plumbing, not a native Codex consumption guarantee.
+Two consumption paths now exist: a cooperative runtime links the public
+`egress-client.ts` surface, and a stock binary rides the spec's
+`egressForward` entry — the shipped `sandbox/loopback-forwarder.cjs` becomes
+the namespace entry point under an admitted JS runtime, serves `CONNECT` on
+a fixed loopback port, and launches the child with standard `HTTPS_PROXY`
+variables. `qualification/linux-egress.ts` is the kernel-boundary evidence
+fixture for the bridge path, and `qualification/linux-loopback.ts` exercises
+the shipped forwarder end-to-end with stock `curl`; the `Qualification`
+workflow runs both on `ubuntu-24.04`. Note that Ubuntu's default AppArmor
+user-namespace restriction denies bwrap outright — the host must lift it
+(`kernel.apparmor_restrict_unprivileged_userns=0`) before any plan can run.
 
 `createManagedCodexAccountFactory()` in Textbutler's `managed-codex.ts` composes
 the controller, stdio transport and process helper. Its admission inputs come

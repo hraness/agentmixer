@@ -92,26 +92,32 @@ async function stopBuiltSite(server: Awaited<ReturnType<typeof startBuiltSite>>)
   await Promise.allSettled(server.captureTasks);
 }
 
-describe("built AgentMixer site", () => {
+describe("built xcb site", () => {
   test("serves the homepage, docs, and static discovery files through Next", async () => {
     const server = await startBuiltSite();
     try {
-      const [homeResponse, docsResponse, robotsResponse, missingResponse] = await Promise.all([
+      const [homeResponse, docsResponse, robotsResponse, llmsResponse, missingResponse] = await Promise.all([
         fetch(`${server.origin}/`, { redirect: "manual" }),
         fetch(`${server.origin}/docs`, { redirect: "manual" }),
         fetch(`${server.origin}/robots.txt`, { redirect: "manual" }),
+        fetch(`${server.origin}/llms.txt`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
       ]);
-      const [home, docs, robots] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text()]);
+      const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
       expect(homeResponse.status).toBe(200);
-      expect(home).toContain(publishedRelease === null ? "First AgentMixer release in preparation" : `Current verified release · v${publishedRelease.version}`);
-      expect(home).toContain('<link rel="canonical" href="https://agentmixer.dev"');
+      expect(home).toContain(publishedRelease === null ? "First AgentMixer release in preparation" : `Current verified compatibility release · v${publishedRelease.version}`);
+      expect(home).toContain('<link rel="canonical" href="https://xcb.dev"');
       expect(home).toContain('aria-label="Ask AI about this"');
       expect(docsResponse.status).toBe(200);
-      expect(docs).toContain('<link rel="canonical" href="https://agentmixer.dev/docs"');
+      expect(docs).toContain('<link rel="canonical" href="https://xcb.dev/docs"');
       expect(docs).toContain('id="standalone-package"');
       expect(robotsResponse.status).toBe(200);
-      expect(robots).toContain("Sitemap: https://agentmixer.dev/sitemap.xml");
+      expect(robots).toContain("Sitemap: https://xcb.dev/sitemap.xml");
+      expect(llmsResponse.status).toBe(200);
+      expect(llms).toContain("https://xcb.dev/docs");
+      expect(docs).toContain('og:site_name" content="xcb"');
+      expect(docs).toContain('twitter:title" content="xcb documentation"');
+      expect(docs).toContain('twitter:card" content="summary_large_image"');
       expect(missingResponse.status).toBe(404);
     } finally {
       await stopBuiltSite(server);

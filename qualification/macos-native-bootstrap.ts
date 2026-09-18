@@ -13,7 +13,15 @@ try {
   const executable = await realpath(fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk-darwin-arm64/claude")));
   const home = join(root, "home"), cwd = join(root, "work"), temp = join(root, "tmp");
   for (const path of [home, cwd, temp]) await mkdir(path, { mode: 0o700 });
-  const profile = syntheticMacSandbox({ executable, scratch: [home, cwd, temp], port: 1 });
+  // Claude mkdirs its per-user /tmp/claude-<uid> dir at init. Seatbelt op
+  // families differ on symlink resolution — metadata checks evaluate the
+  // unresolved /tmp path while data ops report the canonical /private/tmp
+  // form — and the create also needs write on the parent literal, so both
+  // spellings of the dir and its parent are granted.
+  const uid = process.getuid?.();
+  const profile = syntheticMacSandbox({ executable, scratch: [home, cwd, temp,
+    `/tmp/claude-${uid}`, `/private/tmp/claude-${uid}`],
+    createParents: ["/tmp", "/private/tmp"], runtimeSurface: true, port: 1 });
   if (process.argv.includes("--initialize")) {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 15_000);
     let native: ChildProcessWithoutNullStreams | undefined, stderr = "", bytes = 0, release!: () => void, joined = false;

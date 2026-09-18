@@ -1,0 +1,70 @@
+{
+  "schema": "agentmixer.live-provider-smoke.v1",
+  "evidenceKind": "live-claude-subscription-cli-smoke",
+  "observedAt": "2026-09-17T16:26:11.605Z",
+  "platform": "darwin-arm64",
+  "host": {
+    "product": "macOS",
+    "version": "26.5.1",
+    "build": "25F80"
+  },
+  "source": {
+    "publicMainCommit": "1ead097b22c931ea8528c66475d051824a79f510",
+    "gitTree": "a4a8f39a62febe2cbc45678340d6d4fb5ef2c99e",
+    "cliSandboxSourceSha256": "b4d72bcc7142fea13ce0c80fd3cf19d3d3ac7f0fda9aeab1949c4c1e25de1593",
+    "claudeTaskAdapterSourceSha256": "dd079867f0e41e43b1c4fb82d2af1b9104de6ea2bd72917ec2465a4571814857"
+  },
+  "runtime": {
+    "provider": "claude",
+    "version": "claude-sdk/0.3.268;claude-code/2.1.268;task",
+    "executableSha256": "06a96d5423f83770f120859f1c58e60d7252cc4c122aa13043b7e7cd716bc76a",
+    "runtimeDigest": "5eaaf212a05cb9178a7157d8197016e975f2e83aa5fdd3347f60fd865c3f505e"
+  },
+  "admission": {
+    "recordVersion": "agentmixer.cli-qualification.v1",
+    "routeId": "claude-subscription",
+    "authentication": "subscription",
+    "profileDigest": "7cc668b29aae3cb3dc7ce985ff151e883881038ddcf3530126cfa872e8e8b1d9",
+    "evidenceDigest": "30a4c4e9c9a6edcda69f4c2d8189471387d5572b7e3b46526399fc7feafb5bf0",
+    "admittedAt": "2026-09-17T16:25:15.669Z",
+    "expiresAt": "2026-09-24T16:25:15.669Z"
+  },
+  "sandbox": {
+    "backend": "seatbelt",
+    "policyGeneratedPerRun": true,
+    "unsandboxedFallbackAvailableOnDarwin": false,
+    "runArtifactsRemovedAfterJoin": true,
+    "independentSyntheticBoundaryEvidence": "qualification/2026-09-17-darwin-arm64.json"
+  },
+  "request": {
+    "model": "claude-sonnet-4-5",
+    "workspace": "disposable-empty-directory",
+    "prompt": "Reply with exactly: agentmixer live",
+    "expectedOutput": "agentmixer live",
+    "observedOutput": "agentmixer live",
+    "completed": true,
+    "liveProviderRequests": 1,
+    "billingImpact": "subscription-plan-consumption-not-measured"
+  },
+  "custody": {
+    "providerExitedAndJoinedBeforeCompletionPersisted": true,
+    "sessionTranscriptPersisted": true,
+    "runArtifactsRemovedAfterProvenJoin": true
+  },
+  "privacy": {
+    "realCredentialUsed": true,
+    "credentialMaterialRecorded": false,
+    "accountIdentityRecorded": false,
+    "authorizationUrlRecorded": false,
+    "localFilesystemPathsRecorded": false,
+    "localSessionIdentifierRecorded": false
+  },
+  "claims": {
+    "authenticatedProviderTurnObserved": true,
+    "exactExpectedResponseObserved": true,
+    "freshRuntimeProfileAdmissionObserved": true,
+    "runtimeInitializationAdmissionPassed": true,
+    "productionQualificationIssued": false,
+    "productionActivationIssued": false
+  }
+}

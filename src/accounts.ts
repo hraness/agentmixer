@@ -6,6 +6,11 @@ export interface AccountLeaseStore {
   acquire(input: { provider: AgentProvider; accountId: string; owner: string; now: number; ttlMs: number }): AccountLease;
   renew(lease: AccountLease, now: number, ttlMs: number): AccountLease;
   release(lease: AccountLease): boolean;
+  /** Optional read of a currently held lease, for host recovery flows. */
+  inspect?(provider: AgentProvider, accountId: string): AccountLease | null;
+  /** Optional host recovery; proveStopped must supply independent
+   * process-exit evidence — a TTL or heartbeat is never sufficient. */
+  recover?(lease: AccountLease, proveStopped: (lease: AccountLease) => Promise<boolean>): Promise<boolean>;
 }
 
 type Row = { provider: AgentProvider; account_id: string; owner: string | null; generation: number; expires_at: number };

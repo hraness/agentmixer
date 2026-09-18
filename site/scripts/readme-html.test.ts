@@ -9,18 +9,18 @@ const repository = join(import.meta.dir, "..", "..");
 
 test("site installation coordinates stay on the admitted release while new source is prepared", () => {
   const source = [
-    "bun add https://github.com/hraness/agentmixer/releases/download/v0.1.2/hraness-agentmixer-0.1.2.tgz",
+    "bun add https://github.com/hraness/xcb/releases/download/v0.1.2/hraness-agentmixer-0.1.2.tgz",
     "npm install @hraness/agentmixer@0.1.2",
-    "bun add github:hraness/agentmixer#v0.1.2",
+    "bun add github:hraness/xcb#v0.1.2",
     "Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.",
-    "Unrelated @hraness/agentmixer@0.1.20 and hraness/agentmixer#v0.1.2-beta.1 stay literal.",
+    "Unrelated @hraness/agentmixer@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.",
   ].join("\n");
   const projected = publishedReadme(source, "0.1.2", "0.1.1");
   expect(projected).toContain("/v0.1.1/hraness-agentmixer-0.1.1.tgz");
   expect(projected).toContain("npm install @hraness/agentmixer@0.1.1");
-  expect(projected).toContain("hraness/agentmixer#v0.1.1");
+  expect(projected).toContain("hraness/xcb#v0.1.1");
   expect(projected).toContain("Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.");
-  expect(projected).toContain("Unrelated @hraness/agentmixer@0.1.20 and hraness/agentmixer#v0.1.2-beta.1 stay literal.");
+  expect(projected).toContain("Unrelated @hraness/agentmixer@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.");
   expect(publishedReadme(source, "0.1.2", "0.1.2")).toBe(source);
   expect(publishedReadme(source, "0.1.2", null)).toBe(source);
   expect(() => publishedReadme(source, "0.1.2", "latest")).toThrow();
@@ -31,7 +31,7 @@ test("renders the repository README with stable heading fragments and repository
   const html = renderReadmeHtml(source);
   expect(html).toContain('<h2 id="standalone-package">Standalone package</h2>');
   expect(html).toContain('<h2 id="application-owned-capability-profiles">Application-owned capability profiles</h2>');
-  expect(html).toContain('href="https://github.com/hraness/agentmixer/blob/main/MANAGED-CODEX.md"');
+  expect(html).toContain('href="https://github.com/hraness/xcb/blob/main/MANAGED-CODEX.md"');
   expect(html).not.toContain("<script");
 });
 
@@ -40,9 +40,9 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_START)).toBeGreaterThanOrEqual(0);
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
-  expect(landing.title).toBe("AgentMixer");
-  expect(landing.lead).toContain("provider-neutral foundation");
-  expect(landing.markdown).toContain("small, explicit tool surface");
+  expect(landing.title).toBe("xcb");
+  expect(landing.lead).toContain("terminal-first workspace");
+  expect(landing.markdown).toContain("composable extensions");
 });
 
 test("rejects unsafe README link targets", () => {
@@ -55,7 +55,7 @@ test("rejects unsafe README link targets", () => {
 test("omits repository landing markers", async () => {
   const source = await Bun.file(new URL("../../README.md", import.meta.url)).text();
   const html = renderReadmeHtml(source);
-  expect(html).not.toContain("hraness:agentmixer-landing");
+  expect(html).not.toContain("hraness:xcb-landing");
 });
 
 
@@ -103,7 +103,7 @@ describe("README HTML boundary", () => {
       expect(() => renderReadmeHtml(`![image](${target})`)).toThrow();
     }
     expect(renderReadmeHtml("[Reference](docs/example.md)")).toContain(
-      'href="https://github.com/hraness/agentmixer/blob/main/docs/example.md"',
+      'href="https://github.com/hraness/xcb/blob/main/docs/example.md"',
     );
   });
 });

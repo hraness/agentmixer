@@ -23,10 +23,12 @@ export * from "./codex-account.ts";
 export { createCodexAccountStdioTransport } from "./codex-account-transport.ts";
 export type { CodexAccountTransportOptions, CodexAccountProcessPort, CodexAccountProcessCloseReceipt } from "./codex-account-transport.ts";
 export { bindCodexAccountProcess, createCodexAccountProcess } from "./codex-account-process.ts";
-export type { CodexAccountProcessOptions, CodexAccountRuntimeAdmission, CodexAccountDeviceCodeAdmission, CodexAccountProcessReceipt } from "./codex-account-process.ts";
+export type { CodexAccountProcessOptions, CodexAccountRuntimeAdmission, CodexAccountSandboxAdmission, CodexAccountDeviceCodeAdmission, CodexAccountProcessReceipt } from "./codex-account-process.ts";
 export type { ProviderProcessBinding, ProviderProcessPort, ProviderProcessSettlement, ProviderProcessWriteResult } from "./process-port.ts";
 export { createCodexManagedTaskAdapter } from "./codex-managed-task-adapter.ts";
 export type { CodexManagedTaskAdapterOptions } from "./codex-managed-task-adapter.ts";
+export { createClaudeTaskAdapter, claudeTaskRuntimeIdentity } from "./claude-task-adapter.ts";
+export type { ClaudeTaskAdapterOptions, ClaudeTaskAuthentication, ClaudeTaskEvents, ClaudeSubscriptionTokenResolver } from "./claude-task-adapter.ts";
 export type { CodexManagedProcessLauncher } from "./codex-managed-config.ts";
 export * from "./codex-protocol-manifest.ts";
 export { bindCodexTaskProcess } from "./codex-task-process.ts";
@@ -52,3 +54,10 @@ export type { ManagedAccountBinding, ManagedAccountCloseReceipt, ManagedAccountC
   ManagedAccountLoginChallenge, ManagedAccountLoginMethod, ManagedAccountOptions, ManagedAccountProjection,
   ManagedAccountRequest, ManagedAccountResponse, ManagedAccountSemantics, ManagedAccountSnapshot, ManagedAccountState,
   ManagedAccountTransport, ManagedAccountUsage, ManagedAccountUsageReader, ManagedAccountUsageWindow } from "./managed-account.ts";
+export { createSeatbeltOsSandbox, createBwrapOsSandbox, planSeatbeltPolicy, planBwrapPolicy,
+  verifyOsSandboxExecutable, createSandboxedProviderProcessFactory } from "./os-sandbox.ts";
+export type { OsSandboxBackend, OsSandboxBackendName, OsSandboxNetworkPolicy, OsSandboxPlan,
+  OsSandboxPlatform, OsSandboxSpec, OsSandboxWrapInput } from "./os-sandbox.ts";
+export { EGRESS_SOCKET_ENV, connectEgress, connectEgressTls, createEgressHttpsAgent,
+  egressSocketFromEnv, fetchViaEgress } from "./egress-client.ts";
+export type { EgressConnectOptions, EgressFetchInput, EgressFetchResponse } from "./egress-client.ts";

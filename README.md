@@ -1,13 +1,70 @@
-<!-- hraness:agentmixer-landing:start -->
-# AgentMixer
+<!-- hraness:xcb-landing:start -->
+# xcb
 
-AgentMixer is a provider-neutral foundation for applications that give an agent
-a small, explicit tool surface. Its first consumer is Textbutler. The package's
-public contract and provider qualification are still being developed; see the
-qualification limits below before relying on any provider adapter.
-<!-- hraness:agentmixer-landing:end -->
+xcb (Excalibur) is a local, terminal-first workspace for coding agents. Bring
+your accounts, choose your models, and shape the interface around your work.
+Small, composable extensions handle usage, continuation, and context management;
+the kernel keeps sessions, credentials, and execution under explicit custody.
+<!-- hraness:xcb-landing:end -->
 
-It provides:
+[Project site](https://xcb.dev) · [Native interface](#native-xcb) · [Compatibility package](#standalone-package)
+
+## Native xcb
+
+xcb is the new name and direction for AgentMixer. The native Rust kernel and
+Ratatui interface are in development. The published
+`@hraness/agentmixer@0.3.0` package below is the retained TypeScript compatibility
+release, not a release of the new native interface. Existing AgentMixer account
+state, transcripts, imports, and release coordinates are not silently renamed
+or overwritten.
+
+The native design is deliberately local. There is no required daemon, cloud
+account, synchronization service, or task-shape router. Pick a provider and model,
+set your favorites, and keep working in one terminal.
+
+- **Accounts and subscriptions.** Named accounts, compact quota windows, observed
+  token velocity, and estimated runway. Missing or stale quota stays unknown;
+  token counts are not treated as a provider's billing statement.
+- **A quiet session view.** Your latest input and the selected model stay visible.
+  Thinking and older responses collapse; tool activity stays out of the way.
+  Subagent state, a semantic status badge, and a live usage meter carry the signal.
+- **Userspace panes.** `/pane` selects a preset or a local declaration. Edit or
+  generate a pane without rebuilding the terminal. Reload validates the whole
+  candidate and retains the last working view on error.
+- **Optional behavior.** Auto-continue and Gobstopper context management default
+  on, with bounded execution and explicit off switches. Hooks extend named
+  lifecycle events; a view is never permission to execute a hook.
+- **Simple model choice.** Favorites precede the rest of the observed provider
+  catalog. Limit failover uses your order and a settled handoff, never a blind
+  replay of an uncertain turn.
+- **aiCharts integration.** Reuse its local measurement formats. Publishing is
+  separate and opt-in at idle boundaries; no session text or credentials belong
+  in numeric exports. The upstream usage service is not yet live-qualified.
+
+The implementation references Pi's malleable extensions, Codex's native terminal
+foundation, Ghostget's named capability boundaries, and Oompa's usage and recovery
+lessons. It does not inherit Oompa's cloud control plane or make promises about
+provider features that have not been admitted.
+
+### Devin model modes
+
+Fixed models, Adaptive, and Fusion are different selections. Adaptive delegates
+routing to Devin. Fusion pairs a frontier lead with a sidekick; its supported
+pairings have provider-issued model identifiers. xcb must select those exact
+observed identifiers, not synthesize combinations or assign a single capability
+score to every pairing. The selected mode and any provider-reported serving
+models remain separate usage dimensions. Promotional prices are not a durable
+subscription contract.
+
+The source behavior was checked against Devin CLI 3000.10.31's model catalog
+and the public [Adaptive documentation](https://docs.devin.ai/cli/adaptive) and
+[Fusion architecture](https://cognition.com/blog/local-fusion). Catalog presence
+proves a selection exists; native adapter admission and live behavior remain
+separate checks.
+
+## TypeScript compatibility
+
+The retained application package provides:
 
 - A Codex/Claude/Devin adapter interface with explicit runtime qualification.
 - Shared SQLite account custody, generation fencing and process-aware recovery.
@@ -24,13 +81,13 @@ Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
 versioned GitHub archive to a Bun project:
 
 ```sh
-bun add --exact --ignore-scripts https://github.com/hraness/agentmixer/releases/download/v0.1.1/hraness-agentmixer-0.1.1.tgz
+bun add --exact --ignore-scripts https://github.com/hraness/xcb/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz
 ```
 
 The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):
 
 ```sh
-npm install --save-exact --ignore-scripts @hraness/agentmixer@0.1.1
+npm install --save-exact --ignore-scripts @hraness/agentmixer@0.3.0
 ```
 
 ## Standalone package
@@ -58,6 +115,90 @@ runtimes. Releases are published through the repository's
 canonical artifact and `@hraness/agentmixer` on npm is an exact-byte mirror
 published with OIDC provenance. See `docs/publishing.md` for the release
 contract.
+
+## Command-line interface
+
+The package ships an `agentmixer` executable — a standalone terminal interface
+that drives the same task runtime the library exposes. Installing the package
+puts `agentmixer` on the PATH:
+
+```sh
+npm install -g --ignore-scripts @hraness/agentmixer
+agentmixer doctor            # inspect provider binaries, admit this runtime
+agentmixer auth claude       # sign in with a Claude subscription
+agentmixer auth status       # show stored sign-in state
+agentmixer auth logout       # remove the stored credential
+agentmixer                   # open the chat in the current directory
+agentmixer run -p "task"     # one headless turn (--cwd picks the workspace)
+agentmixer sessions          # list local sessions
+agentmixer sessions rm <id>  # remove a session and its transcript
+agentmixer sessions prune    # drop sessions idle over 30 days (or N days)
+agentmixer resume [id]       # continue a session (default: most recent)
+```
+
+Assistant text streams into the chat as the provider completes each content
+block, and provider-declared errors (for example a plan's session limit) print
+their own message next to the typed outcome code. Piped output stays clean:
+streaming, spinners and ANSI styling only engage on a TTY.
+
+`agentmixer` is the kernel layer: one local CLI that keeps provider account
+custody, process lifecycle, brokered workspace tools, and unified responses on
+this machine. Cloud sync and orchestration belong to higher-level products
+built on this package; sessions are local-only.
+
+The chat keeps the model's entire tool surface inside the opened directory:
+`workspace.list`, `workspace.read`, `workspace.search`, `workspace.write`, and
+bounded public `web.fetch`. There is no shell, process, or arbitrary-path
+operation. Writes are atomic and require the file's current revision, so a
+stale or speculative edit fails instead of clobbering. `/help` lists the
+in-session commands; Ctrl-C cancels a running turn and Ctrl-D exits.
+
+State lives under `~/.agentmixer` (mode `0700`, override with
+`AGENTMIXER_STATE`): a SQLite session registry, bounded JSONL transcripts,
+per-provider config directories, the local admission records `doctor` writes,
+and the subscription credential `auth` stores.
+
+`agentmixer auth claude` runs `claude setup-token` to mint a long-lived
+(one-year) subscription OAuth token, captured and stored mode-0600 in the
+private state root — not the shared login keychain, so it cannot overwrite or
+be overwritten by a normal `claude` sign-in. The token reaches the provider
+only as `CLAUDE_CODE_OAUTH_TOKEN` inside the run's environment; it is never
+written into a workspace or the managed config directory. Claude's config
+directory is still redirected so provider hooks, plugins, skills and settings
+cannot leak into a task.
+
+On macOS each Claude run executes under a seatbelt profile: the provider
+process can exec only its own verified snapshot, write only to the per-run
+scratch and the managed config directory, and reach the network only over TCP
+443 and the system resolver — with no keychain, Mach credential service, or
+other-binary execution access (a provider's attempts to spawn `sh`, `git` or
+`security` are denied and observed). On Linux each run plans through an
+admitted `bwrap` artifact: private user/mount/pid/net namespaces, read-only
+binds for the snapshot and its library closure, and egress through the
+session's unix-socket bridge via the shipped in-namespace CONNECT forwarder
+(`sandbox/loopback-forwarder.cjs`), which hands the provider standard
+`HTTPS_PROXY` semantics on a loopback port — no provider cooperation needed.
+When that surface cannot be admitted (no bwrap, or a host that refuses
+unprivileged user namespaces — stock Ubuntu 23.10+ requires
+`sysctl kernel.apparmor_restrict_unprivileged_userns=0`), the CLI refuses to
+run rather than fall back unsandboxed. Other platforms keep bounded-process
+custody without an OS-confinement claim. The sandbox is enforcement on top of
+the broker boundary, not a substitute for it.
+
+`doctor` inspects the provider binary (explicit `AGENTMIXER_CLAUDE` /
+`AGENTMIXER_CODEX` pin, then PATH and known install locations), requires the
+exact pinned version, records its SHA-256, and writes a time-boxed local
+admission record binding that executable, this runtime build, and the
+capability profile digest. Any drift — a replaced binary, a new release, an
+edited profile — revokes admission until `doctor` runs again. The adapter
+re-proves the effective boundary on every run: `doctor`'s record is a gate,
+not a sandbox attestation.
+
+Claude is the working provider today. Codex discovery is implemented, but
+managed sign-in and task admission stay gated: they require the trusted
+protocol manifest and pinned parent runtime described in
+[MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot
+self-produce. `--provider codex` fails closed until that evidence exists.
 
 ## Application-owned capability profiles
 
@@ -487,6 +628,80 @@ credentials or raw payloads. A missing reader returns `null` — it is not a
 zero-usage claim. Nothing here is execution or authentication
 qualification; provider runtime admission remains separate host evidence.
 
+## OS-confinement port
+
+`src/os-sandbox.ts` is the provider-neutral boundary between a closed launch
+specification and the platform sandbox mechanism. A backend turns an
+`OsSandboxSpec` — the admitted executable snapshot, the per-run scratch root,
+an optional persistent account root, a closed read-only file list, a network
+policy label and the durable policy-artifact path — into an `OsSandboxPlan`.
+Planning is asynchronous so a backend can re-verify its own wrapper artifact
+from a checked descriptor; the plan's `wrap()` is synchronous so it can run
+inside provider SDKs that spawn from a synchronous callback. The spec rejects
+relative paths, control bytes, undeclared fields, writable roots that contain
+or enclose the executable, overlapping writable roots, and a policy artifact
+placed inside a writable root.
+
+Two backends ship with the port. `createSeatbeltOsSandbox()` (macOS) accepts a
+host-owned reviewed SBPL generator and wraps argv as the fixed literal
+`/usr/bin/sandbox-exec -f <policy> <executable> ...` — the managed Codex
+launchers now plan through it, byte-identically to their previous inline
+behavior. `createBwrapOsSandbox()` (Linux) re-verifies the admitted `bwrap`
+binary's SHA-256 at plan time and emits private user/mount/pid/ipc/uts/cgroup/
+net namespaces, per-file `--ro-bind` entries, `--bind` for the writable roots,
+`--die-with-parent`, `--new-session`, `--clearenv`, and the closed environment
+rebuilt in sorted `--setenv` order. Bubblewrap cannot express per-destination
+egress, so on Linux `network: "provider-tcp443-dns"` is plannable only with an
+admitted `egressSocket`: a host-side unix-socket CONNECT bridge bound into the
+namespace as its own read-write mount. The in-sandbox runtime never performs
+DNS or TCP itself — it speaks `CONNECT host:443` over the socket and the host
+bridge resolves and dials, refusing every port but 443 and any host outside
+the admitted exact-host allowlist. The network namespace stays unshared either
+way, so the socket is the child's only egress path; without one, provider
+networking still refuses to plan.
+
+Two consumption paths exist. A cooperative in-sandbox runtime uses the public
+consumer (`src/egress-client.ts`): `connectEgress` /
+`connectEgressTls` / `createEgressHttpsAgent` / `fetchViaEgress` speak the
+`AGENTMIXER_EGRESS_SOCKET` contract directly, bound CONNECT size and response
+bytes, pin TLS SNI to the target host, and refuse anything but HTTPS on 443.
+A stock binary that does not know the contract gets an `egressForward` spec
+entry instead: an admitted JS runtime and the shipped forwarder script become
+the namespace entry point, the forwarder serves `CONNECT` on a fixed loopback
+port, and the child receives `HTTPS_PROXY` — the private netns is created
+empty, so the fixed port cannot collide. The bridge itself remains an
+internal host seam (`src/egress-bridge.ts`), not a public export. There
+is no fallback — a spec whose admitted platform the backend cannot enforce,
+an unverified artifact, or an unexpressible policy refuses the plan rather
+than launching unsandboxed. The spec's `platform` is admission evidence about
+the runtime being launched, not the build host: a backend refuses a spec whose
+declared platform it cannot enforce, so synthetic custody tests exercise the
+real launch path on any host.
+
+`createSandboxedProviderProcessFactory(plan)` composes a plan onto the
+unchanged bounded-provider custody — stdout/stderr bounds, the detached
+process group and SIGTERM/SIGKILL join are identical underneath every backend
+— and `verifyOsSandboxExecutable()` re-checks an admitted artifact's owner,
+file identity, no-follow canonical path and SHA-256. A plan proves policy
+construction and artifact admission only, never kernel enforcement; receipts
+continue to report `productionQualified: false`. `qualification/linux-sandbox.ts`
+is the explicit kernel-boundary fixture for the bwrap backend: a statically
+linked synthetic canary asserts scratch writes, foreign-path absence, a
+routeless network namespace and PID-namespace isolation on the host that runs
+it, and reports blocked evidence instead of guessing when the toolchain or
+namespaces are unavailable. `qualification/linux-egress.ts` is the bridge
+boundary's companion: the canary asserts the mounted socket answers CONNECT,
+bytes tunnel through it, a foreign unix path and a direct TCP connect are
+denied inside the same namespace, and the join receipt reports listener,
+socket-set and path removal — against a synthetic dialer, with no resolver
+or provider endpoint involved. `qualification/linux-loopback.ts` completes
+the chain: a stock `curl` under `HTTPS_PROXY` traverses forwarder → bridge →
+a local `openssl s_server`, proving the stock-binary path without provider
+cooperation. The `Qualification` workflow runs all three on `ubuntu-24.04`
+CI and uploads the JSON evidence — including the recorded fact that Ubuntu's
+default AppArmor user-namespace restriction blocks bwrap entirely until the
+host lifts it (`kernel.apparmor_restrict_unprivileged_userns=0`).
+
 ## Ownership boundaries
 
 The account and task consumers accept a structural `ProviderProcessPort` through
@@ -637,6 +852,27 @@ sync and removal can outlast that deadline, so the retained cleanup promise
 must still join before any lease release. Receipt hash fields remain empty
 until the corresponding snapshots are completed. These synthetic
 custody checks do not prove native tool inventory or auth-home confinement.
+
+The managed and account process owners admit a parent runtime of
+`darwin|linux` × `arm64|x64` and select the sandbox backend from the inspected
+parent platform. Darwin plans through the seatbelt backend exactly as before.
+A Linux parent requires the runtime admission to carry a `sandbox` artifact —
+the pinned `bwrap` executable SHA-256 plus the host-admitted read-only library
+closure the copied runtime needs inside the namespace — and plans through the
+bwrap backend with `network: "denied"`. A Linux parent without that artifact,
+or a Darwin parent carrying one, is refused as a sandbox-admission mismatch.
+A Linux provider-egress profile additionally requires a `sandbox.egress`
+admission and a trusted-host `startEgressBridge` seam: the owner starts the
+unix-socket CONNECT bridge inside the run directory, binds the socket into
+the bwrap plan, hands the child its path as `AGENTMIXER_EGRESS_SOCKET`, and
+joins the bridge — listener closed, sockets joined, socket removed — before
+the account lock may release. A missing admission, a missing seam, a failed
+start, or an unproven join refuses or holds custody exactly like any other
+launch boundary failure. Neither mechanism is qualified for production:
+receipts continue to report `productionQualified: false`. The
+`codex-process.ts` loopback relay stays Darwin-only
+because a network-namespace cut would sever the relay socket it exists to
+serve.
 
 `runCodexManagedOfflineDiagnostic()` in the same internal module exercises the
 shared process owner without fabricating task qualification. Its separate

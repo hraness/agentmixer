@@ -9,8 +9,10 @@ export type CodexParentRuntimeBinding = Readonly<{
   /** Supplied by an independently admitted distribution, never derived here or from contact/owner JSON. */
   expectedSha256: string;
 }>;
+export type CodexHostPlatform = "darwin" | "linux";
+export type CodexHostArch = "arm64" | "x64";
 export type CodexHostRuntime = Readonly<{
-  executablePath: string; version: "1.3.14"; platform: "darwin"; arch: "arm64"; sha256: string;
+  executablePath: string; version: "1.3.14"; platform: CodexHostPlatform; arch: CodexHostArch; sha256: string;
 }>;
 type RuntimeFacts = Readonly<{
   version: string | undefined; reportedVersion: string | undefined; platform: string; arch: string;
@@ -33,7 +35,7 @@ function bindingDigest(value: CodexParentRuntimeBinding): string {
 /** Pure internal validation seam. The actual entrypoint supplies these facts itself. */
 export function assertCodexHostRuntimeFacts(facts: RuntimeFacts): void {
   if (facts.version !== CODEX_HOST_BUN_VERSION || facts.reportedVersion !== CODEX_HOST_BUN_VERSION
-    || facts.platform !== "darwin" || facts.arch !== "arm64"
+    || (facts.platform !== "darwin" && facts.platform !== "linux") || (facts.arch !== "arm64" && facts.arch !== "x64")
     || !Number.isSafeInteger(facts.uid) || Number(facts.uid) < 0 || facts.uid !== facts.effectiveUid) {
     throw new Error("CODEX_HOST_RUNTIME_UNSUPPORTED");
   }
@@ -110,5 +112,6 @@ export async function inspectCodexHostRuntime(binding: CodexParentRuntimeBinding
   };
   assertCodexHostRuntimeFacts(facts);
   const executable = await inspectCodexHostExecutable(executablePath, expectedSha256);
-  return Object.freeze({ ...executable, version: CODEX_HOST_BUN_VERSION, platform: "darwin", arch: "arm64" });
+  return Object.freeze({ ...executable, version: CODEX_HOST_BUN_VERSION,
+    platform: facts.platform as CodexHostPlatform, arch: facts.arch as CodexHostArch });
 }

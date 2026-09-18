@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { boundedText, safeInteger } from "./validation.ts";
 
 /** Immutable identity emitted by a trusted host after it has inspected the
@@ -31,6 +32,27 @@ function record(value: unknown, keys: readonly string[]): Record<string, unknown
   return value as Record<string, unknown>;
 }
 
+function manifestHash(value: Readonly<{
+  protocol: "codex-app-server-experimental"; protocolVersion: string; sourceVersion: string;
+  executableSha256: string; schemaSha256: string; generatedAtUnixMs: number;
+}>): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function buildCodexProtocolManifest(input: Readonly<{
+  protocolVersion: string; sourceVersion: string; executableSha256: string;
+  schemaSha256: string; generatedAtUnixMs: number;
+}>): CodexProtocolManifest {
+  const content = Object.freeze({
+    protocol: "codex-app-server-experimental" as const,
+    protocolVersion: boundedText(input.protocolVersion, 160), sourceVersion: boundedText(input.sourceVersion, 160),
+    executableSha256: digest(input.executableSha256, "CODEX_PROTOCOL_EXECUTABLE_DIGEST_INVALID"),
+    schemaSha256: digest(input.schemaSha256, "CODEX_PROTOCOL_SCHEMA_DIGEST_INVALID"),
+    generatedAtUnixMs: safeInteger(input.generatedAtUnixMs, 0, Number.MAX_SAFE_INTEGER),
+  });
+  return Object.freeze({ ...content, manifestSha256: manifestHash(content) });
+}
+
 /** Bind a trusted host manifest to the runtime selected for a task. This does
  * not inspect files or execute Codex; those effects belong to the host that
  * created the manifest. */
@@ -47,5 +69,7 @@ export function assertCodexProtocolManifest(value: unknown, runtime: Readonly<{
   const generatedAtUnixMs = safeInteger(raw.generatedAtUnixMs, 0, Number.MAX_SAFE_INTEGER);
   if (sourceVersion !== runtime.version || executableSha256 !== runtime.sha256 || schemaSha256 !== runtime.schemaSha256)
     throw new Error("CODEX_PROTOCOL_RUNTIME_MISMATCH");
-  return Object.freeze({ protocol: raw.protocol, protocolVersion, sourceVersion, executableSha256, schemaSha256, manifestSha256, generatedAtUnixMs });
+  const content = { protocol: raw.protocol, protocolVersion, sourceVersion, executableSha256, schemaSha256, generatedAtUnixMs } as const;
+  if (manifestHash(content) !== manifestSha256) throw new Error("CODEX_PROTOCOL_MANIFEST_DIGEST_INVALID");
+  return Object.freeze({ ...content, manifestSha256 });
 }

@@ -1,19 +1,39 @@
 # Contents
 
+- `crates/` owns the native xcb (Excalibur) Rust kernel, local runtime, Ratatui
+  frontend, and CLI. Panes are bounded userspace data; executable hooks require
+  separate trust. Keep local metering separate from opt-in aiCharts publishing.
 - `src/` owns provider-neutral routing, account leases, model selection,
   scoped tool contracts, the unqualified Devin ACP task adapter
   (`devin-acp.ts`, `devin-client.ts`, `devin-adapter.ts`, `devin-mcp.ts`),
   per-account browser-session custody (`browser-session.ts`), and the
-  provider-neutral managed-account controller (`managed-account.ts`).
+  provider-neutral managed-account controller (`managed-account.ts`), and
+  the OS-confinement port every provider launcher plans through
+  (`os-sandbox.ts`; never add a silent unsandboxed fallback), and the
+  host-side unix-socket CONNECT egress bridge (`egress-bridge.ts`) that makes
+  `provider-tcp443-dns` plannable on Linux bwrap without unsharing the child's
+  network namespace — plus its two consumers: the public `egress-client.ts`
+  for cooperative runtimes and `sandbox/loopback-forwarder.cjs`, the shipped
+  in-namespace forwarder that gives stock binaries standard `HTTPS_PROXY`
+  egress through the socket.
   `src/index.ts` is the package's complete public surface.
+- `src/cli/` is the standalone `agentmixer` terminal surface (`cli.ts` entry,
+  chat/run/resume/sessions/doctor/auth commands) built on the same task
+  runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the seatbelted
+  subscription route it drives.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
-  Textbutler import.
+  Textbutler import. `linux-sandbox.ts` is the bwrap kernel-boundary probe,
+  `linux-egress.ts` is the CONNECT-bridge boundary probe, and
+  `linux-loopback.ts` is the stock-binary forwarder probe; all are evidence,
+  not activation. The `Qualification` workflow runs them on `ubuntu-24.04`
+  and uploads the JSON evidence.
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
-- `site/` is the informational public project page (Next.js, deployed to
-  agentmixer.dev on Vercel); it has no product-runtime connection.
+- `site/` is the informational xcb product page (Next.js, canonical origin
+  xcb.dev); it has no product-runtime connection. The AgentMixer package and
+  its verified publication datum remain a separate compatibility surface.
 - `.github/workflows/` holds the read-only CI matrix and the tag-gated
   immutable release pipeline.
 - `README.md`, `MANAGED-CODEX.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
@@ -22,9 +42,12 @@
 
 # Guidelines
 
-- Use Bun 1.3.14 and run `bun run check` before handing off a change. The site
-  has its own `bun run check` inside `site/`. Do not add another package
-  manager or lockfile.
+- Use Bun 1.3.14 for the compatibility package and site, and Rust 1.97.1 for
+  native xcb. The owner selected a full Rust migration; Cargo.lock is the
+  native dependency lock and bun.lock remains the JavaScript lock. Run
+  `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, `cargo fmt --all -- --check`, and `bun run check`.
+  The site has its own `bun run check` inside `site/`.
 - Keep account credentials and provider runtime state outside consumer
   workspaces. Resolve authentication through a trusted host adapter.
 - Never equate a prompt, cwd, tool list or expired lease with OS isolation or

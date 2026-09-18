@@ -98,7 +98,7 @@ export function parseEditorTranscript(value: unknown): EditorTranscript {
   const rawItems = field(root, "items");
   if (!Array.isArray(rawItems) || rawItems.length > GOBSTOPPER_EDITOR_LIMITS.items) throw new Error("TRANSCRIPT_ITEMS_INVALID");
   const items = rawItems.map(raw => {
-    const item = closed(raw, 8);
+    const item = closed(raw, 16);
     const lineIndex = safeInteger(field(item, "line_index"), 0, Number.MAX_SAFE_INTEGER);
     const kind = boundedText(field(item, "kind"), 32);
     if (!ITEM_KINDS.has(kind)) throw new Error("TRANSCRIPT_ITEM_KIND_INVALID");
@@ -129,6 +129,9 @@ async function readStdin(limit: number): Promise<string> {
 function itemIndex(value: unknown, itemCount: number): number {
   return safeInteger(value, 0, Math.max(0, itemCount - 1));
 }
+function rangeEnd(value: unknown, itemCount: number): number {
+  return safeInteger(value, 1, itemCount);
+}
 
 /** Fixed `EditorCall` tool surface. Handlers only record the call — the broker
  * is the sole effect channel and it performs no filesystem or process work. */
@@ -136,6 +139,7 @@ export function createEditorCapabilityProfile(options: { itemCount: number; call
   const count = safeInteger(options.itemCount, 1, GOBSTOPPER_EDITOR_LIMITS.items);
   const calls = options.calls;
   const index = { type: "integer", minimum: 0, maximum: count - 1 };
+  const end = { type: "integer", minimum: 1, maximum: count };
   const record = (call: EditorCall): CapabilityJson => {
     if (calls.length >= GOBSTOPPER_EDITOR_LIMITS.calls) throw new Error("EDITOR_CALL_LIMIT");
     calls.push(call);
@@ -143,15 +147,15 @@ export function createEditorCapabilityProfile(options: { itemCount: number; call
   };
   const range = (parsed: CapabilityJson): { fromItem: number; toItem: number } => {
     const input = parsed as { from_item: unknown; to_item: unknown };
-    return { fromItem: itemIndex(input.from_item, count), toItem: itemIndex(input.to_item, count) };
+    return { fromItem: itemIndex(input.from_item, count), toItem: rangeEnd(input.to_item, count) };
   };
   const tools = [
     {
-      name: "keep", description: "Mark the inclusive item range [from_item, to_item] to preserve verbatim. Advisory; produces no edit.",
-      inputSchema: { type: "object", properties: { from_item: index, to_item: index }, required: ["from_item", "to_item"], additionalProperties: false },
+      name: "keep", description: "Mark the half-open item range [from_item, to_item) to preserve verbatim. Produces no edit.",
+      inputSchema: { type: "object", properties: { from_item: index, to_item: end }, required: ["from_item", "to_item"], additionalProperties: false },
       parseInput(input: CapabilityObject): CapabilityJson {
-        const from = itemIndex(input.from_item, count), to = itemIndex(input.to_item, count);
-        if (from > to) throw new Error("EDITOR_RANGE_INVALID");
+        const from = itemIndex(input.from_item, count), to = rangeEnd(input.to_item, count);
+        if (from >= to) throw new Error("EDITOR_RANGE_INVALID");
         return { from_item: from, to_item: to };
       },
       execute(parsed: CapabilityJson) { const { fromItem, toItem } = range(parsed); return record({ tool: "keep", fromItem, toItem }); },
@@ -172,12 +176,12 @@ export function createEditorCapabilityProfile(options: { itemCount: number; call
       },
     },
     {
-      name: "summarize", description: "Write a structured digest covering items [from_item, to_item]. Injects a digest line; elide the range's elidable items to reclaim its tokens.",
-      inputSchema: { type: "object", properties: { from_item: index, to_item: index,
+      name: "summarize", description: "Write a structured digest covering the half-open range [from_item, to_item). Injects a digest line; elide the range's elidable items to reclaim its tokens.",
+      inputSchema: { type: "object", properties: { from_item: index, to_item: end,
         digest: { type: "string", minLength: 1, maxLength: GOBSTOPPER_EDITOR_LIMITS.digestBytes } },
         required: ["from_item", "to_item", "digest"], additionalProperties: false },
       parseInput(input: CapabilityObject): CapabilityJson {
-        const from = itemIndex(input.from_item, count), to = itemIndex(input.to_item, count);
+        const from = itemIndex(input.from_item, count), to = rangeEnd(input.to_item, count);
         if (from >= to) throw new Error("EDITOR_RANGE_INVALID");
         return { from_item: from, to_item: to, digest: boundedText(input.digest, GOBSTOPPER_EDITOR_LIMITS.digestBytes) };
       },
@@ -208,13 +212,22 @@ export function createEditorCapabilityProfile(options: { itemCount: number; call
 export function callsToEdits(transcript: EditorTranscript, calls: readonly EditorCall[], protectTail: number): EditorPlan {
   const count = transcript.items.length;
   const protectedFrom = count - Math.min(count, safeInteger(protectTail, 0, GOBSTOPPER_EDITOR_LIMITS.items));
+  const invalid = (): EditorPlan => Object.freeze({ edits: Object.freeze([]), contextTokensAfter: transcript.contextTokens, deferred: "invalid_editor_calls" });
+  const kept = new Set<number>();
+  for (const call of calls) {
+    if (call.tool !== "keep") continue;
+    if (call.fromItem < 0 || call.fromItem >= call.toItem || call.toItem > count) return invalid();
+    for (let position = call.fromItem; position < call.toItem; position += 1) kept.add(position);
+  }
   const edits: GobstopperEdit[] = [];
   const elided = new Set<number>();
+  let summaries = 0;
   let after = transcript.contextTokens;
   for (const call of calls) {
     if (call.tool === "defer") return Object.freeze({ edits: Object.freeze([]), contextTokensAfter: transcript.contextTokens, deferred: call.reason });
     if (call.tool === "keep") continue;
     if (call.tool === "elide") {
+      if (call.items.some(position => position < 0 || position >= count || kept.has(position))) return invalid();
       const lines: number[] = [];
       for (const position of call.items) {
         const item = transcript.items[position];
@@ -227,7 +240,8 @@ export function callsToEdits(transcript: EditorTranscript, calls: readonly Edito
       continue;
     }
     const { fromItem, toItem, digest } = call;
-    if (toItem <= fromItem || toItem >= count || toItem >= protectedFrom) continue;
+    if (fromItem < 0 || toItem <= fromItem || toItem > count || toItem > protectedFrom || summaries > 0) return invalid();
+    summaries += 1;
     edits.push(Object.freeze({ op: "inject_digest" as const,
       digest: Object.freeze({ goal: digest, decisions: Object.freeze([]), files_touched: Object.freeze([]), open_tasks: Object.freeze([]), covers_items: toItem - fromItem }) }));
   }

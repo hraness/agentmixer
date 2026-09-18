@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { MessageCreateParams } from "@anthropic-ai/sdk/resources/messages";
 import { Database } from "bun:sqlite";
 import { SqliteAccountLeases } from "../src/accounts.ts";
-import { createCapabilityBroker, type CapabilityBroker } from "../src/capabilities.ts";
+import { createCapabilityBroker, type CapabilityBroker, type CapabilityObject } from "../src/capabilities.ts";
 import { createEnvironmentClaudeApiKeyResolver } from "../src/claude-credentials.ts";
 import type { ClaudeApiClient } from "../src/claude-api-transport.ts";
 import type { ModelCatalog } from "../src/models.ts";
@@ -37,6 +37,8 @@ test("transcript parsing accepts the gobstopper preset payload and tolerates ext
   expect(parsed.contextTokens).toBe(5420);
   const withExtra = JSON.parse(payload([item(0, "user", 10, null)]));
   withExtra.future_field = { nested: true };
+  withExtra.items[0].elidable_parts = 0;
+  withExtra.items[0].tool_use_ids = [];
   expect(parseEditorTranscript(withExtra).items).toHaveLength(1);
   // Missing usage.context_tokens falls back to the item estimate sum.
   const noUsage = JSON.parse(payload([item(0, "user", 10, null), item(1, "assistant", 20, null)]));
@@ -74,7 +76,6 @@ test("calls lower to gobstopper edits: elide maps positions to line_indexes, sum
     { tool: "keep", fromItem: 4, toItem: 5 },
     { tool: "elide", items: [1, 2, 0, 5] }, // 0 not elidable; 5 inside protected tail
     { tool: "summarize", fromItem: 0, toItem: 3, digest: "resolved setup thread" },
-    { tool: "summarize", fromItem: 3, toItem: 5, digest: "reaches into tail" },
   ];
   const plan = callsToEdits(t, calls, 2);
   expect(plan.deferred).toBeNull();
@@ -96,9 +97,15 @@ test("any defer discards the whole plan; out-of-range and reversed calls are ign
   const dropped = callsToEdits(t, [
     { tool: "elide", items: [] },
     { tool: "summarize", fromItem: 1, toItem: 1, digest: "empty" },
-    { tool: "summarize", fromItem: 0, toItem: 2, digest: "past end" },
+    { tool: "summarize", fromItem: 0, toItem: 3, digest: "past end" },
   ], 0);
   expect(dropped.edits).toEqual([]);
+  expect(dropped.deferred).toBe("invalid_editor_calls");
+  const kept = callsToEdits(t, [
+    { tool: "keep", fromItem: 0, toItem: 1 },
+    { tool: "elide", items: [0] },
+  ], 0);
+  expect(kept.deferred).toBe("invalid_editor_calls");
 });
 
 test("capability profile exposes exactly the EditorCall tool surface", () => {
@@ -110,6 +117,10 @@ test("capability profile exposes exactly the EditorCall tool surface", () => {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.additionalProperties).toBe(false);
   }
+  const keepProperties = profile.tools.find(tool => tool.name === "keep")?.inputSchema.properties as CapabilityObject;
+  const summarizeProperties = profile.tools.find(tool => tool.name === "summarize")?.inputSchema.properties as CapabilityObject;
+  expect(keepProperties.to_item).toMatchObject({ maximum: 4 });
+  expect(summarizeProperties.to_item).toMatchObject({ maximum: 4 });
 });
 
 const key = ["sk", "ant", "api03", "synthetic", "fixture", "credential"].join("-");

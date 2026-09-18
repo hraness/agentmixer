@@ -130,9 +130,9 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     if !sandbox::available() {
@@ -183,9 +183,9 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     let status = sandbox::linux_sandbox(root);
@@ -399,7 +399,10 @@ pub fn validate_init(value: &Value, cwd: &Path, model: &ModelChoice, tools: bool
         .get("mcp_servers")
         .and_then(Value::as_array)
         .ok_or(Error::Protocol("MCP inventory"))?;
-    if value.get("claude_code_version").and_then(Value::as_str) != Some(claude::VERSION)
+    if value
+        .get("claude_code_version")
+        .and_then(Value::as_str)
+        .is_none_or(|version| !claude::version_admitted(version))
         || value.get("cwd").and_then(Value::as_str) != cwd.to_str()
         || value.get("model").and_then(Value::as_str) != Some(model.id.as_str())
         || value.get("apiKeySource").and_then(Value::as_str) != Some("none")
@@ -680,6 +683,11 @@ pub async fn run(
         let mut byte_count = 0usize;
         let mut completed_output = 0u64;
         let mut current_output = 0u64;
+        // Velocity is a display meter; the authoritative usage lands via
+        // record_usage at settle. Per-delta fsync'd transactions would
+        // serialize every parallel terminal on one writer, so stream samples
+        // are decimated and the true total is written once at the result.
+        let mut last_velocity_ms = started;
         for _ in 0..16_384 {
             if *cancel.borrow() {
                 return Ok((Terminal::Cancelled, vec![]));
@@ -710,15 +718,19 @@ pub async fn run(
                                 })
                                 .ok_or(Error::Protocol("stream token counter"))?;
                             current_output = total;
-                            store.record_velocity(
-                                &session.id,
-                                VelocitySample {
-                                    at_ms: now_ms(),
-                                    output_tokens: baseline
-                                        .saturating_add(completed_output)
-                                        .saturating_add(current_output),
-                                },
-                            )?;
+                            let now = now_ms();
+                            if now.saturating_sub(last_velocity_ms) >= 250 {
+                                last_velocity_ms = now;
+                                store.record_velocity(
+                                    &session.id,
+                                    VelocitySample {
+                                        at_ms: now,
+                                        output_tokens: baseline
+                                            .saturating_add(completed_output)
+                                            .saturating_add(current_output),
+                                    },
+                                )?;
+                            }
                         }
                     }
                     _ => (),
@@ -863,6 +875,17 @@ pub async fn run(
                 } if admitted => {
                     if !text.is_empty() {
                         final_text = text;
+                    }
+                    if input.config.extensions.usage {
+                        store.record_velocity(
+                            &session.id,
+                            VelocitySample {
+                                at_ms: now_ms(),
+                                output_tokens: baseline
+                                    .saturating_add(completed_output)
+                                    .saturating_add(current_output),
+                            },
+                        )?;
                     }
                     return Ok((terminal, models));
                 }

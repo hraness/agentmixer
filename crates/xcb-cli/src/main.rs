@@ -464,7 +464,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     Ok(pin) => {
                         pin.save(&root)?;
                         let native = provider == Provider::Claude
-                            && pin.version == xcb_runtime::claude::VERSION
+                            && xcb_runtime::claude::version_admitted(&pin.version)
                             && xcb_runtime::sandbox::available();
                         let detail = if native {
                             "pinned · per-run boundary verification required"

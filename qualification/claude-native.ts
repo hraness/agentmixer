@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { assertClaudeInitialization, inspectClaudeSdkRuntime } from "../src/claude-sdk.ts";
+import { CLAUDE_SDK_CODE_VERSION, assertClaudeInitialization, inspectClaudeSdkRuntime } from "../src/claude-sdk.ts";
 import { literalClaudePrompt, restrictedClaudeOptions } from "../src/claude-options.ts";
 import { spawnBoundedProvider } from "../src/provider-process.ts";
 import { createToolBroker, type BrokerToolName } from "../src/broker.ts";
@@ -20,7 +20,7 @@ if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error("
 if (process.argv.slice(2).some(argument => argument !== "--os-sandbox")) throw new Error("INVALID_QUALIFICATION_ARGUMENT");
 const osSandbox = process.argv.includes("--os-sandbox");
 const executable = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"));
-const inspected = await inspectClaudeSdkRuntime({ executablePath: executable, executableSha256: createHash("sha256").update(await readFile(executable)).digest("hex") });
+const inspected = await inspectClaudeSdkRuntime({ executablePath: executable, executableSha256: createHash("sha256").update(await readFile(executable)).digest("hex"), cliVersion: CLAUDE_SDK_CODE_VERSION });
 const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-native-scope-")));
 const canary = "SYNTHETIC_OTHER_CONTACT_CANARY_483159";
 const instructionCanary = "SYNTHETIC_INHERITED_INSTRUCTION_831405";

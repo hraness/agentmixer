@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 
-import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
+import { claudeCodeVersionAdmitted } from "../claude-sdk.ts";
 import { CODEX_NATIVE_SHA256, CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import { boundedText } from "../validation.ts";
 
@@ -139,11 +139,10 @@ export async function inspectCliBinary(provider: CliProviderName, env: (name: st
     }
     const version = reportedVersion(inspected.executablePath);
     if (version === null) continue;
-    const expectedVersion = provider === "codex" ? CODEX_NATIVE_VERSION : CLAUDE_CODE_VERSION;
     const pinnedSha256 = provider === "codex" ? CODEX_NATIVE_SHA256 : null;
     return Object.freeze({
       provider, executablePath: inspected.executablePath, version, sha256: inspected.sha256,
-      pinnedSha256, versionMatches: version === expectedVersion,
+      pinnedSha256, versionMatches: provider === "codex" ? version === CODEX_NATIVE_VERSION : claudeCodeVersionAdmitted(version),
       digestMatches: pinnedSha256 === null ? true : inspected.sha256 === pinnedSha256,
     });
   }

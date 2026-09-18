@@ -6,7 +6,42 @@ use xcb_core::{
     usage::Counters,
 };
 
-pub const VERSION: &str = "2.1.268";
+/// Oldest admitted installed Claude Code release within major 2. The
+/// qualification record still binds the exact inspected version and
+/// executable SHA-256, and the init assertion re-proves the effective
+/// boundary on every run; the floor only decides which binaries doctor may
+/// admit so routine CLI patch/minor releases stop revoking native execution.
+pub const MIN_VERSION: &str = "2.1.268";
+pub const MAX_MAJOR: u64 = 2;
+
+fn version_tuple(version: &str) -> Option<[u64; 3]> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty() || part.len() > 9 || !part.bytes().all(|b| b.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    let mut tuple = [0u64; 3];
+    for (index, part) in parts.iter().enumerate() {
+        tuple[index] = part.parse().ok()?;
+    }
+    Some(tuple)
+}
+
+pub fn version_admitted(version: &str) -> bool {
+    let Some(got) = version_tuple(version) else {
+        return false;
+    };
+    let Some(min) = version_tuple(MIN_VERSION) else {
+        return false;
+    };
+    if got[0] != MAX_MAJOR {
+        return false;
+    }
+    got[1] > min[1] || (got[1] == min[1] && got[2] >= min[2])
+}
 
 #[derive(Debug)]
 pub enum Event {

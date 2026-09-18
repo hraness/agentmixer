@@ -73,6 +73,34 @@ pub fn open_file(path: &Path, max: u64) -> Result<File> {
     Ok(file)
 }
 
+/// Open a private file whose name a cooperating peer may retire concurrently —
+/// SQLite deletes its journal sidecars when the last connection closes, which
+/// can race a sibling's startup scan outside the initialization lock. A
+/// descriptor whose link count reached zero no longer has any name to check:
+/// it is treated exactly like an absent file. A surviving name still gets the
+/// full private-file check, including the single-name requirement.
+pub fn open_file_maybe_vanished(path: &Path, max: u64) -> Result<Option<File>> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if file.metadata()?.nlink() == 0 {
+        return Ok(None);
+    }
+    check_file(&file, max)?;
+    Ok(Some(file))
+}
+
 pub fn read(path: &Path, max: usize) -> Result<Vec<u8>> {
     let file = open_file(path, max as u64)?;
     let mut bytes = Vec::new();

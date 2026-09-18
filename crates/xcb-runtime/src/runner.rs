@@ -3,7 +3,7 @@ use crate::{
     broker::{self, Workspace},
     claude::{self, Event},
     config::Config,
-    context, digest, new_id, now_ms, private,
+    context, digest, egress, new_id, now_ms, private,
     process::{Pin, StreamProcess, environment},
     sandbox,
     store::{Store, UsageObservation},
@@ -49,9 +49,79 @@ pub fn should_idle_export(pane_generation: bool, facts: &TurnFacts, state: State
 struct Launch {
     command: Command,
     cwd: PathBuf,
+    bridge: Option<egress::EgressBridge>,
 }
 
-fn prepare(
+fn provider_args(model: &ModelChoice, tools: bool) -> Vec<String> {
+    let mut args = vec![
+        "--print".into(),
+        "--input-format".into(),
+        "stream-json".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--include-partial-messages".into(),
+        "--tools".into(),
+        "".into(),
+        "--permission-mode".into(),
+        "dontAsk".into(),
+        "--permission-prompt-tool".into(),
+        "stdio".into(),
+        "--setting-sources".into(),
+        "".into(),
+        "--strict-mcp-config".into(),
+        "--no-session-persistence".into(),
+        "--max-turns".into(),
+        "32".into(),
+    ];
+    args.push("--model".into());
+    args.push(model.id.as_str().into());
+    if let Some(effort) = &model.effort {
+        args.push("--effort".into());
+        args.push(effort.as_str().into());
+    }
+    args.push("--settings".into());
+    args.push(json!({"disableAllHooks":true,"disableClaudeAiConnectors":true,"autoMemoryEnabled":false,"disableBundledSkills":true,"disableSkillShellExecution":true,"enableWorkflows":false,"workflowKeywordTriggerEnabled":false,"skillOverrides":{"doctor":"off","checkup":"off"}}).to_string());
+    if tools {
+        args.push("--allowedTools".into());
+        args.push(
+            broker::descriptors()
+                .iter()
+                .map(|tool| format!("mcp__xcb__{}", tool["name"].as_str().expect("tool name")))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    args
+}
+
+#[cfg(target_os = "linux")]
+fn child_env(
+    home: &Path,
+    config: &Path,
+    tmp: &Path,
+    token: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert("HOME".into(), home.to_string_lossy().into_owned());
+    env.insert("TMPDIR".into(), tmp.to_string_lossy().into_owned());
+    env.insert(
+        "CLAUDE_CONFIG_DIR".into(),
+        config.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
+        "1".into(),
+    );
+    env.insert("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into());
+    if let Some(token) = token {
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), token.to_owned());
+    }
+    env
+}
+
+#[cfg(target_os = "macos")]
+async fn prepare(
     pin: &Pin,
     root: &Path,
     model: &ModelChoice,
@@ -93,43 +163,101 @@ fn prepare(
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), token.to_owned());
     }
     let mut command = Command::new("/usr/bin/sandbox-exec");
-    command.arg("-f").arg(policy_path).arg(executable).args([
-        "--print",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        "--tools",
-        "",
-        "--permission-mode",
-        "dontAsk",
-        "--permission-prompt-tool",
-        "stdio",
-        "--setting-sources",
-        "",
-        "--strict-mcp-config",
-        "--no-session-persistence",
-        "--max-turns",
-        "32",
-    ]);
-    command.arg("--model").arg(model.id.as_str());
-    if let Some(effort) = &model.effort {
-        command.arg("--effort").arg(effort.as_str());
-    }
-    command.arg("--settings").arg(json!({"disableAllHooks":true,"disableClaudeAiConnectors":true,"autoMemoryEnabled":false,"disableBundledSkills":true,"disableSkillShellExecution":true,"enableWorkflows":false,"workflowKeywordTriggerEnabled":false,"skillOverrides":{"doctor":"off","checkup":"off"}}).to_string());
-    if tools {
-        command.arg("--allowedTools").arg(
-            broker::descriptors()
-                .iter()
-                .map(|tool| format!("mcp__xcb__{}", tool["name"].as_str().expect("tool name")))
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-    }
+    command.arg("-f").arg(policy_path).arg(executable);
+    command.args(provider_args(model, tools));
     command.env_clear().envs(env).current_dir(&cwd);
-    Ok(Launch { command, cwd })
+    Ok(Launch {
+        command,
+        cwd,
+        bridge: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn prepare(
+    pin: &Pin,
+    root: &Path,
+    model: &ModelChoice,
+    token: Option<&str>,
+    tools: bool,
+) -> Result<Launch> {
+    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+        return Err(Error::Unavailable(
+            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+        ));
+    }
+    let status = sandbox::linux_sandbox(root);
+    if !status.qualified {
+        return Err(Error::Unavailable(
+            "native OS confinement is not qualified on this platform; no unsandboxed fallback",
+        ));
+    }
+    let bwrap = status
+        .candidate
+        .as_deref()
+        .and_then(sandbox::BwrapPin::admit)
+        .ok_or(Error::Unavailable("bwrap not admitted"))?;
+    let directory = private::directory(&root.join("runs").join(new_id("launch").as_str()))?;
+    let executable = pin.snapshot(&directory)?;
+    let scratch = private::directory(&directory.join("scratch"))?;
+    let cwd = private::directory(&scratch.join("work"))?;
+    let home = private::directory(&scratch.join("home"))?;
+    let config = private::directory(&scratch.join("config"))?;
+    let tmp = private::directory(&home.join("tmp"))?;
+    let env_file = egress::write_forwarder_env(&scratch, &child_env(&home, &config, &tmp, token))?;
+    let socket_dir = private::directory(&directory.join("egress"))?;
+    let socket = socket_dir.join("egress.sock");
+    let bridge =
+        egress::EgressBridge::start(egress::EgressBridgeOptions::new(socket.clone())).await?;
+    let xcb = std::env::current_exe()?.canonicalize()?;
+    let spec = sandbox::BwrapSpec {
+        executable: executable.clone(),
+        scratch: scratch.clone(),
+        account_home: None,
+        policy_path: directory.join("sandbox.json"),
+        read_only: [executable.clone(), xcb.clone()].into_iter().collect(),
+        egress: sandbox::Egress::Tcp443Dns,
+        socket: Some(socket),
+        forwarder: Some(sandbox::Forwarder {
+            runtime: xcb,
+            lo_up: None,
+            env_file: Some(env_file),
+            port: 48123,
+        }),
+    };
+    let wrapper_env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
+    let launch = sandbox::bwrap_launch(
+        &bwrap,
+        &spec,
+        &provider_args(model, tools),
+        &wrapper_env,
+        &cwd,
+    )?;
+    private::create(&launch.policy_path, launch.policy.as_bytes())?;
+    let mut command = Command::new(&bwrap.executable);
+    command
+        .args(launch.args)
+        .env_clear()
+        .envs(launch.env)
+        .current_dir(&cwd);
+    Ok(Launch {
+        command,
+        cwd,
+        bridge: Some(bridge),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn prepare(
+    _pin: &Pin,
+    _root: &Path,
+    _model: &ModelChoice,
+    _token: Option<&str>,
+    _tools: bool,
+) -> Result<Launch> {
+    Err(Error::Unavailable(
+        "native OS confinement is not supported on this platform",
+    ))
 }
 
 fn initialize(tools: bool, system: &str) -> Value {
@@ -398,13 +526,15 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         observed_at_ms: now,
     };
     let token = account.map(|id| auth::token(store, id)).transpose()?;
-    let launch = prepare(
+    let mut launch = prepare(
         pin,
         store.root(),
         &model,
         token.as_deref().map(|token| token.as_str()),
         false,
-    )?;
+    )
+    .await?;
+    let bridge = launch.bridge.take();
     let run = account
         .map(|id| store.prepare_probe(id, Some(model.clone()), now))
         .transpose()?;
@@ -438,6 +568,9 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         Ok::<_, Error>(models)
     }.await;
     let joined = process.join().await;
+    if let Some(bridge) = bridge {
+        let _ = bridge.close().await;
+    }
     if !joined {
         return Err(Error::Unavailable(
             "metadata process stop is unproven; account custody retained",
@@ -474,7 +607,8 @@ pub async fn run(
     let pin = Pin::load(store.root(), Provider::Claude)?;
     let credential = auth::token(&store, &session.account)?;
     let tools = !input.pane_generation;
-    let launch = prepare(&pin, store.root(), &session.model, Some(&credential), tools)?;
+    let mut launch = prepare(&pin, store.root(), &session.model, Some(&credential), tools).await?;
+    let bridge = launch.bridge.take();
     let workspace = Workspace::open(Path::new(&session.workspace))?;
     let run = store.prepare_run(&session.id, session.revision, now_ms())?;
     let mut process = match StreamProcess::spawn(launch.command) {
@@ -769,6 +903,9 @@ pub async fn run(
     )
     .await;
     let joined = process.join().await;
+    if let Some(bridge) = bridge {
+        let _ = bridge.close().await;
+    }
     let (terminal, models, failure) = match result {
         Ok(Ok((terminal, models))) => (
             terminal,

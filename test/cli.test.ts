@@ -18,7 +18,7 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
     cwd: ROOT,
     env: {
       ...process.env, XCB_STATE: root, NO_COLOR: "1",
-      XCB_CLAUDE: join(root, "no-such-claude"), XCB_CODEX: join(root, "no-such-codex"),
+      XCB_CLAUDE: join(root, "no-such-claude"), XCB_CODEX: join(root, "no-such-codex"), XCB_DEVIN: join(root, "no-such-devin"),
       PATH: join(root, "empty-path"), HOME: root,
     },
     stdin: input === undefined ? "ignore" : "pipe",
@@ -39,7 +39,7 @@ describe("xcb CLI", () => {
   test("--help prints the command surface", async () => {
     const { code, stdout } = await cli(["--help"]);
     expect(code).toBe(0);
-    for (const command of ["auth claude", "auth status", "auth logout", "doctor", "sessions", "resume", "run [-p", "--cwd"]) expect(stdout).toContain(command);
+    for (const command of ["auth claude", "auth devin", "auth status", "auth logout", "doctor", "sessions", "resume", "run [-p", "--cwd", "devin"]) expect(stdout).toContain(command);
   });
 
   test("doctor reports missing providers and exits nonzero", async () => {
@@ -59,6 +59,29 @@ describe("xcb CLI", () => {
     const { code, stderr } = await cli(["auth", "codex"]);
     expect(code).toBe(2);
     expect(stderr).toContain("codex binary not found");
+  });
+
+  test("auth devin refuses when the pinned binary is absent", async () => {
+    const { code, stderr } = await cli(["auth", "devin"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("devin binary not found");
+  });
+
+  test("doctor reports devin among the missing providers", async () => {
+    const { stdout } = await cli(["doctor"]);
+    expect(stdout).toContain("devin: not found");
+  });
+
+  test("run --provider devin refuses before provider admission", async () => {
+    const { code, stderr } = await cli(["run", "--provider", "devin", "-p", "hi"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("provider not admitted");
+  });
+
+  test("chat --provider devin refuses before provider admission", async () => {
+    const { code, stderr } = await cli(["--provider", "devin"], "hello\n");
+    expect(code).toBe(2);
+    expect(stderr).toContain("devin binary not found");
   });
 
   test("run refuses before provider admission", async () => {

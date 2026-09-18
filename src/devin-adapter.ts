@@ -32,6 +32,12 @@ export type DevinAcpAdapterOptions = Readonly<{
   /** Runtime executable that runs the stdio MCP bridge (`-e` source), e.g. a
    * pinned bun/node path. Required when a task profile declares tools. */
   bridgeExecutable?: string;
+  /** Where the tool relay listens: default is an ephemeral host TCP port.
+   * On Linux the provider runs inside a private net namespace, so the relay
+   * binds `socketPath` (mounted into the namespace) and the in-namespace
+   * forwarder re-publishes it at `127.0.0.1:port` — the advertised bridge
+   * URL uses that port either way. */
+  relayListen?: Readonly<{ socketPath: string; port: number }>;
   /** Canonical absolute cwd for the Devin session's workspace. */
   workspaceCwd: (workspaceId: string) => string;
   /** Session mode pinned for every task, e.g. "plan" or "ask". */
@@ -112,7 +118,8 @@ export function createDevinAcpAdapter(options: DevinAcpAdapterOptions): AgentTas
           const mcpServers: Record<string, unknown>[] = [];
           if (broker.profile.tools.length > 0) {
             if (options.bridgeExecutable === undefined) throw new Error("DEVIN_BRIDGE_REQUIRED");
-            relay = await startDevinToolRelay({ broker, bridgeExecutable: options.bridgeExecutable, signal });
+            relay = await startDevinToolRelay({ broker, bridgeExecutable: options.bridgeExecutable,
+              ...(options.relayListen === undefined ? {} : { listen: options.relayListen }), signal });
             mcpServers.push(relay.mcpServerEntry());
           }
           try {

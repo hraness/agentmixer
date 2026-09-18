@@ -10,13 +10,14 @@ import { boundedText } from "../validation.ts";
 import { assertWorkspaceStateSeparation, ensureCliState } from "./state.ts";
 import { CliSessionStore, type CliSession, type CliTranscriptEntry } from "./sessions.ts";
 import { createCliWorkspace, createCliWorkspaceProfile } from "./workspace.ts";
-import { openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./provider.ts";
+import { openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL, CLI_DEVIN_DEFAULT_MODEL } from "./provider.ts";
 import type { ClaudeTaskEvents } from "../claude-task-adapter.ts";
 import { inspectCliBinary, type CliProviderName } from "./binaries.ts";
 import { runCliTurn } from "./run.ts";
 import { LineEditor, bold, cyan, dim, green, red, startSpinner, printTool, printRemainingText, yellow } from "./tui.ts";
 import { claudeAuthStatus } from "./auth.ts";
 import { codexAuthStatus } from "./codex.ts";
+import { devinAuthStatus } from "./devin.ts";
 
 const ACCOUNT_ID = "local";
 
@@ -90,7 +91,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   const profile = createCliWorkspaceProfile(workspace, { fetch: (url, signal) => web.fetchPublic(url, 256 * 1024, signal).then((r) => ({ text: r.text })) });
   const providerName: CliProviderName = options.provider ?? "claude";
   const events: ClaudeTaskEvents = {};
-  const opened = await openCliProvider(stateRoot, providerName, profile, events);
+  const opened = await openCliProvider(stateRoot, providerName, profile, events, { workspaceRoot: workspace.root });
   if (opened.status !== "ready") {
     process.stderr.write(`${red("xcb:")} ${describe(opened, providerName)}\n`);
     sessions.close();
@@ -115,7 +116,19 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
       }
     }
   }
-  const model = boundedText(options.model ?? (providerName === "claude" ? CLI_CLAUDE_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL), 160);
+  if (providerName === "devin") {
+    const devinInspection = await inspectCliBinary("devin");
+    if (devinInspection !== null) {
+      const devin = await devinAuthStatus(stateRoot, devinInspection);
+      if (!devin.loggedIn) {
+        process.stderr.write(`${red("xcb:")} not signed in — run ${bold("xcb auth devin")} first.\n`);
+        sessions.close();
+        return 2;
+      }
+    }
+  }
+  const model = boundedText(options.model ?? (providerName === "claude" ? CLI_CLAUDE_DEFAULT_MODEL
+    : providerName === "devin" ? CLI_DEVIN_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL), 160);
   let session: CliSession;
   if (resumed !== null) {
     if (resumed.provider !== providerName) {

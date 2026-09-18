@@ -8,12 +8,13 @@ import { createPublicWeb } from "./public-web.ts";
 import { boundedText } from "./validation.ts";
 
 import { assertWorkspaceStateSeparation, ensureCliState, migrateLegacyState } from "./cli/state.ts";
-import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, type CliProviderName } from "./cli/binaries.ts";
+import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, CLI_DEVIN_ENV, type CliProviderName } from "./cli/binaries.ts";
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
 import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
+import { CLI_DEVIN_MIN_VERSION, devinAuthStatus, devinLogin, devinLogout } from "./cli/devin.ts";
 import { seatbeltAvailable } from "./cli/sandbox.ts";
 import type { ClaudeTaskEvents } from "./claude-task-adapter.ts";
-import { admitCliProvider, openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL } from "./cli/provider.ts";
+import { admitCliProvider, openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL, CLI_DEVIN_DEFAULT_MODEL } from "./cli/provider.ts";
 import { CliSessionStore } from "./cli/sessions.ts";
 import { createCliWorkspace, createCliWorkspaceProfile } from "./cli/workspace.ts";
 import { runCliTurn } from "./cli/run.ts";
@@ -28,6 +29,7 @@ Usage:
   xcb [path]            open the chat in a workspace (default: .)
   xcb auth claude       sign in with your Claude subscription
   xcb auth codex        sign in with your ChatGPT subscription
+  xcb auth devin        sign in with your Devin account
   xcb auth status       show stored sign-in state
   xcb auth logout [p]   remove the stored credential (default: claude)
   xcb doctor            inspect provider binaries and admit this runtime
@@ -40,13 +42,14 @@ Usage:
   xcb --version
 
 Options:
-  --provider <claude|codex>    pick the provider for run/chat/resume (default claude)
+  --provider <claude|codex|devin>  pick the provider for run/chat/resume (default claude)
   --model <id>                 model for this run or session
   --cwd <path>                 workspace for run (default: current directory)
 
 Environment:
   ${CLI_CLAUDE_ENV}    pin an exact claude executable path
   ${CLI_CODEX_ENV}     pin an exact codex executable path
+  ${CLI_DEVIN_ENV}     pin an exact devin executable path
   XCB_STATE     override the state root (default ~/.xcb)
 `;
 
@@ -59,7 +62,7 @@ function parseFlags(args: readonly string[]): { provider: CliProviderName; model
       const value = args[++i];
       if (value === undefined) fail(`option ${arg} requires a value`);
       if (arg === "--provider") {
-        if (value !== "claude" && value !== "codex") fail(`unknown provider ${value} — supported: claude, codex`);
+        if (value !== "claude" && value !== "codex" && value !== "devin") fail(`unknown provider ${value} — supported: claude, codex, devin`);
         provider = value as CliProviderName;
       } else if (arg === "--model") model = boundedText(value, 160);
       else if (arg === "--cwd") cwd = value;
@@ -91,13 +94,15 @@ async function cliProfileFor(workspace: string) {
   return { profile, workspace: ws };
 }
 
+const PROVIDER_PIN_ENV: Record<CliProviderName, string> = { claude: CLI_CLAUDE_ENV, codex: CLI_CODEX_ENV, devin: CLI_DEVIN_ENV };
+
 async function commandDoctor(stateRoot: string): Promise<number> {
   const { profile } = await cliProfileFor(process.cwd());
   let admitted = 0;
-  for (const provider of ["claude", "codex"] as const) {
+  for (const provider of ["claude", "codex", "devin"] as const) {
     const admission = await admitCliProvider(stateRoot, provider, profile);
     if (admission.inspection === null) {
-      process.stdout.write(`${dim("○")} ${provider}: not found (checked ${dim("$" + (provider === "claude" ? CLI_CLAUDE_ENV : CLI_CODEX_ENV))}, PATH, known locations)\n`);
+      process.stdout.write(`${dim("○")} ${provider}: not found (checked ${dim("$" + PROVIDER_PIN_ENV[provider])}, PATH, known locations)\n`);
       continue;
     }
     const detail = admission.record !== null ? green(admission.detail) : yellow(admission.detail);
@@ -132,7 +137,20 @@ async function commandAuth(provider: string, stateRoot: string): Promise<number>
     process.stdout.write(`${green("✓")} codex: signed in (${snapshot.planType ?? "ChatGPT"})\n`);
     return 0;
   }
-  if (provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex`);
+  if (provider === "devin") {
+    const inspection = await inspectCliBinary("devin");
+    if (inspection === null) return fail("devin binary not found — install the Devin CLI, then retry.");
+    if (!inspection.versionMatches) return fail(`devin ${inspection.version} found; this build requires devin >= ${CLI_DEVIN_MIN_VERSION} — run \`xcb doctor\`.`);
+    const existing = await devinAuthStatus(stateRoot, inspection);
+    if (existing.loggedIn) { process.stdout.write(`${green("✓")} devin: already signed in (${existing.planType ?? "Devin"})\n`); return 0; }
+    process.stdout.write(`${dim("Opening Devin sign-in (credentials are stored under ~/.xcb only)…")}\n`);
+    await devinLogin(stateRoot, inspection);
+    const status = await devinAuthStatus(stateRoot, inspection);
+    if (!status.loggedIn) return fail("sign-in did not produce credentials — re-run `xcb auth devin`.");
+    process.stdout.write(`${green("✓")} devin: signed in (${status.planType ?? "Devin"})\n`);
+    return 0;
+  }
+  if (provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex, devin`);
   const inspection = await inspectCliBinary("claude");
   if (inspection === null) return fail("claude binary not found — install Claude Code, then retry.");
   if (!inspection.versionMatches) return fail(`claude ${inspection.version} found; this build admits only the pinned version — run \`xcb doctor\`.`);
@@ -159,6 +177,16 @@ async function commandAuthStatus(stateRoot: string): Promise<number> {
       process.stdout.write(`codex: error checking status\n`);
     }
   }
+  const devinInspection = await inspectCliBinary("devin");
+  if (devinInspection !== null) {
+    try {
+      const devin = await devinAuthStatus(stateRoot, devinInspection);
+      process.stdout.write(`devin: ${devin.loggedIn ? `signed in (${devin.planType ?? "Devin"})` : "signed out"}\n`);
+      if (devin.loggedIn) any = true;
+    } catch {
+      process.stdout.write(`devin: error checking status\n`);
+    }
+  }
   return any ? 0 : 1;
 }
 
@@ -170,7 +198,14 @@ async function commandAuthLogout(provider: string | undefined, stateRoot: string
     process.stdout.write(`codex: signed out\n`);
     return 0;
   }
-  if (provider !== undefined && provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex`);
+  if (provider === "devin") {
+    const inspection = await inspectCliBinary("devin");
+    if (inspection === null) return fail("devin binary not found.");
+    await devinLogout(stateRoot, inspection);
+    process.stdout.write(`devin: signed out\n`);
+    return 0;
+  }
+  if (provider !== undefined && provider !== "claude") return fail(`unknown provider ${provider} — supported: claude, codex, devin`);
   await clearClaudeOAuthToken(stateRoot);
   process.stdout.write(`claude: signed out\n`);
   return 0;
@@ -218,9 +253,9 @@ async function commandSessions(stateRoot: string, rest: readonly string[]): Prom
 async function commandRun(prompt: string, workspace: string, stateRoot: string, provider: CliProviderName, model: string | undefined): Promise<number> {
   const prepared = await cliProfileFor(workspace);
   assertWorkspaceStateSeparation(prepared.workspace.root, stateRoot);
-  const { profile } = prepared;
+  const { profile, workspace: ws } = prepared;
   const events: ClaudeTaskEvents = {};
-  const opened = await openCliProvider(stateRoot, provider, profile, events);
+  const opened = await openCliProvider(stateRoot, provider, profile, events, { workspaceRoot: ws.root });
   if (opened.status !== "ready") return fail(`provider not admitted — run \`xcb doctor\` and \`xcb auth ${provider}\` first.`);
   if (provider === "claude") {
     const auth = await claudeAuthStatus(stateRoot);
@@ -233,9 +268,17 @@ async function commandRun(prompt: string, workspace: string, stateRoot: string, 
       if (!codex.loggedIn) return fail("not signed in — run `xcb auth codex` first.");
     }
   }
+  if (provider === "devin") {
+    const inspection = await inspectCliBinary("devin");
+    if (inspection !== null) {
+      const devin = await devinAuthStatus(stateRoot, inspection);
+      if (!devin.loggedIn) return fail("not signed in — run `xcb auth devin` first.");
+    }
+  }
   const leases = new SqliteAccountLeases(await openAccountDatabase(join(stateRoot, "account-leases.sqlite")));
   const sessions = await CliSessionStore.open(join(stateRoot, "sessions"));
-  const runModel = model ?? (provider === "claude" ? CLI_CLAUDE_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL);
+  const runModel = model ?? (provider === "claude" ? CLI_CLAUDE_DEFAULT_MODEL
+    : provider === "devin" ? CLI_DEVIN_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL);
   let streamedAll = "", streamedLast = "", providerError: string | null = null;
   events.onAssistantText = (block) => {
     if (!process.stdout.isTTY) return;

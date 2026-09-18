@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -146,21 +146,92 @@ async fn forwarder_conn(
     Ok(())
 }
 
+fn env_key_valid(key: &str) -> bool {
+    key.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+const MAX_ENV_FILE_BYTES: usize = 64 * 1024;
+
+fn read_env_file(path: &Path) -> Result<Vec<(String, String)>> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() > MAX_ENV_FILE_BYTES {
+        return Err(Error::Unavailable("forwarder env file limit"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| Error::Protocol("env file encoding"))?;
+    let mut pairs = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or(Error::Protocol("env file line invalid"))?;
+        if !env_key_valid(key) || value.contains('\0') {
+            return Err(Error::Protocol("env file entry invalid"));
+        }
+        pairs.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(pairs)
+}
+
+const PROXY_ENV_KEYS: &[&str] = &[
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+];
+
+pub fn write_forwarder_env(scratch: &Path, pairs: &BTreeMap<String, String>) -> Result<PathBuf> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut body = String::new();
+    for (key, value) in pairs {
+        if !env_key_valid(key)
+            || value.contains('\0')
+            || value.len() > MAX_ENV_FILE_BYTES
+            || PROXY_ENV_KEYS.contains(&key.as_str())
+        {
+            return Err(Error::Unavailable("forwarder env entry invalid"));
+        }
+        body.push_str(key);
+        body.push('=');
+        body.push_str(value);
+        body.push('\n');
+    }
+    if body.len() > MAX_ENV_FILE_BYTES {
+        return Err(Error::Unavailable("forwarder env file limit"));
+    }
+    let path = scratch.join("forwarder.env");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    use std::io::Write;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
+    Ok(path)
+}
+
 pub async fn run_forwarder(
     socket: &Path,
     port: u16,
     allowed_port: u16,
     lo_up: Option<&Path>,
+    env_file: Option<&Path>,
     child: &[String],
 ) -> Result<i32> {
     if child.is_empty() {
         return Err(Error::Unavailable("forwarder requires a child command"));
     }
-    if let Some(cap) = read_cap_eff() {
-        eprintln!("FWD capEff={cap}");
-    }
     if let Some(ip) = lo_up {
-        let status = tokio::time::timeout(
+        let _ = tokio::time::timeout(
             Duration::from_secs(5),
             tokio::process::Command::new(ip)
                 .args(["link", "set", "lo", "up"])
@@ -170,18 +241,25 @@ pub async fn run_forwarder(
                 .status(),
         )
         .await;
-        eprintln!("FWD loUpStatus={status:?}");
     }
+    let secrets = match env_file {
+        Some(path) => {
+            let pairs = read_env_file(path);
+            let _ = std::fs::remove_file(path);
+            pairs?
+        }
+        None => Vec::new(),
+    };
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-    eprintln!("FWD listening=127.0.0.1:{port}");
     let counters = Arc::new(Counters::default());
-    let proxy = format!("http://127.0.0.1:{port}");
+    let proxy = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     let mut command = tokio::process::Command::new(&child[0]);
     command
         .args(&child[1..])
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
+        .envs(secrets)
         .env("http_proxy", &proxy)
         .env("HTTP_PROXY", &proxy)
         .env("https_proxy", &proxy)
@@ -227,19 +305,7 @@ pub async fn run_forwarder(
     };
     conns.abort_all();
     while conns.join_next().await.is_some() {}
-    eprintln!(
-        "FWD childExit={code:?} accepted={} refused={}",
-        counters.accepted.load(Ordering::Relaxed),
-        counters.refused.load(Ordering::Relaxed)
-    );
     Ok(code.unwrap_or(1))
-}
-
-fn read_cap_eff() -> Option<String> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("CapEff:").map(|v| v.trim().to_owned()))
 }
 
 pub struct EgressBridgeOptions {
@@ -587,9 +653,8 @@ mod tests {
             .write_all(format!("CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n").as_bytes())
             .await
             .unwrap();
-        let mut reply = vec![0u8; 64];
-        let n = client.read(&mut reply).await.unwrap();
-        assert!(String::from_utf8_lossy(&reply[..n]).contains("200 Connection Established"));
+        let reply = read_head(&mut client).await.unwrap();
+        assert!(String::from_utf8_lossy(&reply).contains("200 Connection Established"));
         client.write_all(b"ping-through-bridge").await.unwrap();
         let mut echoed = vec![0u8; 19];
         client.read_exact(&mut echoed).await.unwrap();
@@ -640,15 +705,150 @@ mod tests {
             .write_all(format!("CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n").as_bytes())
             .await
             .unwrap();
-        let mut reply = vec![0u8; 64];
-        let n = client.read(&mut reply).await.unwrap();
-        assert!(String::from_utf8_lossy(&reply[..n]).contains("200"));
+        let reply = read_head(&mut client).await.unwrap();
+        assert!(String::from_utf8_lossy(&reply).contains("200"));
         client.write_all(b"tunneled").await.unwrap();
         let mut echoed = vec![0u8; 8];
         client.read_exact(&mut echoed).await.unwrap();
         assert_eq!(&echoed, b"tunneled");
         drop(client);
         assert!(fwd.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn env_file_parses_bounded_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forwarder.env");
+        std::fs::write(&path, "ALPHA=one\n\nTOKEN=abc=def\n_LAST=x\n").unwrap();
+        assert_eq!(
+            read_env_file(&path).unwrap(),
+            [
+                ("ALPHA".to_owned(), "one".to_owned()),
+                ("TOKEN".to_owned(), "abc=def".to_owned()),
+                ("_LAST".to_owned(), "x".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_file_rejects_malformed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forwarder.env");
+        for (label, bytes) in [
+            ("missing equals", b"NOEQUALS\n".as_slice()),
+            ("bad key", b"9BAD=v\n".as_slice()),
+            ("key dash", b"BAD-KEY=v\n".as_slice()),
+            ("nul value", b"OK=has\0nul\n".as_slice()),
+            ("invalid utf8", &[0xff, 0xfe, b'=', b'v', b'\n'][..]),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(read_env_file(&path).is_err(), "{label} should fail");
+        }
+        let oversized = vec![b'x'; 64 * 1024 + 1];
+        std::fs::write(&path, oversized).unwrap();
+        assert!(read_env_file(&path).is_err(), "oversized should fail");
+    }
+
+    #[test]
+    fn write_forwarder_env_round_trips_with_private_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let pairs = BTreeMap::from([
+            ("ALPHA".to_owned(), "one".to_owned()),
+            ("TOKEN".to_owned(), "secret=value".to_owned()),
+        ]);
+        let path = write_forwarder_env(dir.path(), &pairs).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(read_env_file(&path).unwrap(), Vec::from_iter(pairs.clone()));
+        assert!(
+            write_forwarder_env(dir.path(), &pairs).is_err(),
+            "existing env file must not be overwritten",
+        );
+    }
+
+    #[test]
+    fn write_forwarder_env_rejects_invalid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, pairs) in [
+            (
+                "bad key",
+                BTreeMap::from([("9BAD".to_owned(), "v".to_owned())]),
+            ),
+            (
+                "nul value",
+                BTreeMap::from([("OK".to_owned(), "has\0nul".to_owned())]),
+            ),
+            (
+                "oversized value",
+                BTreeMap::from([("OK".to_owned(), "x".repeat(MAX_ENV_FILE_BYTES))]),
+            ),
+            (
+                "proxy key",
+                BTreeMap::from([("HTTPS_PROXY".to_owned(), "http://evil".to_owned())]),
+            ),
+        ] {
+            let scratch = dir.path().join(label.replace(' ', "-"));
+            std::fs::create_dir(&scratch).unwrap();
+            assert!(
+                write_forwarder_env(&scratch, &pairs).is_err(),
+                "{label} should fail",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarder_consumes_env_file_and_injects_child_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("forwarder.env");
+        std::fs::write(&env_path, "XCB_TEST_SECRET=abc123\n").unwrap();
+        let out = dir.path().join("child.out");
+        let child = vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            format!(
+                "printf %s \"$XCB_TEST_SECRET\" > '{}' && printf %s \"$HTTPS_PROXY\" >> '{}'",
+                out.display(),
+                out.display()
+            ),
+        ];
+        let code = run_forwarder(
+            Path::new("/nonexistent-egress.sock"),
+            0,
+            443,
+            None,
+            Some(&env_path),
+            &child,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(!env_path.exists(), "env file must be deleted before launch");
+        let observed = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            observed.starts_with("abc123http://127.0.0.1:"),
+            "child env missing secret or proxy: {observed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarder_removes_env_file_on_parse_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("forwarder.env");
+        std::fs::write(&env_path, "BAD-KEY=v\n").unwrap();
+        let result = run_forwarder(
+            Path::new("/nonexistent-egress.sock"),
+            0,
+            443,
+            None,
+            Some(&env_path),
+            &["/bin/true".to_owned()],
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            !env_path.exists(),
+            "env file must be removed even on parse failure"
+        );
     }
 
     #[tokio::test]

@@ -76,6 +76,12 @@ pub enum Egress {
 pub struct Forwarder {
     pub runtime: PathBuf,
     pub lo_up: Option<PathBuf>,
+    /// Private env file inside a writable bind that the forwarder reads,
+    /// deletes, and injects into the child environment. This is the only
+    /// channel for secrets: `--setenv` values are visible in bwrap's own
+    /// command line, so `bwrap_launch`'s `env` map must hold only
+    /// non-sensitive variables.
+    pub env_file: Option<PathBuf>,
     pub port: u16,
 }
 
@@ -215,6 +221,11 @@ pub fn bwrap_launch(
             Ok((
                 canonical(&forwarder.runtime)?,
                 forwarder.lo_up.as_deref().map(canonical).transpose()?,
+                forwarder
+                    .env_file
+                    .as_deref()
+                    .map(canonical_child)
+                    .transpose()?,
                 forwarder.port,
             ))
         })
@@ -251,7 +262,7 @@ pub fn bwrap_launch(
     {
         return Err(invalid());
     }
-    if let Some((runtime, lo_up, _)) = &forwarder {
+    if let Some((runtime, lo_up, env_file, _)) = &forwarder {
         let artifacts = [Some(runtime.as_str()), lo_up.as_deref()];
         if artifacts.into_iter().flatten().any(|artifact| {
             inside(artifact, &scratch)
@@ -260,6 +271,14 @@ pub fn bwrap_launch(
                     .is_some_and(|home| inside(artifact, home))
         }) {
             return Err(invalid());
+        }
+        if let Some(env_file) = env_file
+            && !(inside(env_file, &scratch)
+                || account_home
+                    .as_ref()
+                    .is_some_and(|home| inside(env_file, home)))
+        {
+            return Err(Error::Unavailable("sandbox env file outside writable root"));
         }
     }
     let mut binds: Vec<(bool, &str)> = Vec::new();
@@ -281,7 +300,7 @@ pub fn bwrap_launch(
     if let Some(socket) = &socket {
         binds.push((false, socket));
     }
-    if let Some((runtime, lo_up, _)) = &forwarder {
+    if let Some((runtime, lo_up, _, _)) = &forwarder {
         binds.push((true, runtime));
         if let Some(lo_up) = lo_up {
             binds.push((true, lo_up));
@@ -331,10 +350,11 @@ pub fn bwrap_launch(
         "egress": socket.as_ref().map(|socket| json!({
             "socket": socket,
             "protocol": "connect-tcp443",
-            "forwarder": forwarder.as_ref().map(|(runtime, lo_up, port)| json!({
+            "forwarder": forwarder.as_ref().map(|(runtime, lo_up, env_file, port)| json!({
                 "runtime": runtime,
                 "subcommand": "egress-forward",
                 "loUp": lo_up,
+                "envFile": env_file,
                 "port": port,
                 "protocol": "http-connect-loopback",
             })),
@@ -376,12 +396,13 @@ pub fn bwrap_launch(
     argv.push("--".to_owned());
     match &forwarder {
         None => argv.push(executable),
-        Some((runtime, lo_up, port)) => {
+        Some((runtime, lo_up, env_file, port)) => {
             argv.push(runtime.clone());
             argv.push("egress-forward".to_owned());
             argv.push(socket.clone().expect("forwarder implies socket"));
             argv.push(port.to_string());
             argv.push(lo_up.clone().unwrap_or_else(|| "-".to_owned()));
+            argv.push(env_file.clone().unwrap_or_else(|| "-".to_owned()));
             argv.push("--".to_owned());
             argv.push(executable);
         }
@@ -438,6 +459,7 @@ mod tests {
             Forwarder {
                 runtime,
                 lo_up: None,
+                env_file: None,
                 port: 48123,
             }
         });
@@ -560,6 +582,7 @@ mod tests {
                 layout.spec.socket.unwrap().to_str().unwrap(),
                 "48123",
                 "-",
+                "-",
                 "--",
                 layout.spec.executable.to_str().unwrap(),
             ]
@@ -621,6 +644,33 @@ mod tests {
         assert!(bwrap_launch(&layout2.pin, &layout2.spec, &[], &env(), &cwd(&layout2)).is_err());
         let mut layout = make_layout(Egress::Tcp443Dns, true, true);
         layout.spec.socket = None;
+        assert!(bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).is_err());
+    }
+
+    #[test]
+    fn env_file_path_reaches_forwarder_inside_writable_root() {
+        let mut layout = make_layout(Egress::Tcp443Dns, true, true);
+        let env_file = layout.spec.scratch.join("forwarder.env");
+        file(&env_file, 0o600);
+        layout.spec.forwarder.as_mut().unwrap().env_file = Some(env_file.clone());
+        let launch = bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).unwrap();
+        assert!(
+            launch.args.contains(&env_file.to_str().unwrap().to_owned()),
+            "env file path must reach the forwarder argv",
+        );
+        let policy: serde_json::Value = serde_json::from_str(&launch.policy).unwrap();
+        assert_eq!(
+            policy["egress"]["forwarder"]["envFile"],
+            env_file.to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_env_file_outside_writable_roots() {
+        let mut layout = make_layout(Egress::Tcp443Dns, true, true);
+        let env_file = layout.base.join("forwarder.env");
+        file(&env_file, 0o600);
+        layout.spec.forwarder.as_mut().unwrap().env_file = Some(env_file);
         assert!(bwrap_launch(&layout.pin, &layout.spec, &[], &env(), &cwd(&layout)).is_err());
     }
 

@@ -491,13 +491,13 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             if cli.json {
                 let mut report = json!({"version":1,"providers":reports,"unsettledRuns":store.unsettled_runs()?});
                 if cfg!(target_os = "linux") {
-                    let status = xcb_runtime::sandbox::linux_sandbox();
-                    report["sandbox"] = json!({"backend":"bwrap","candidate":status.candidate,"admitted":status.admitted,"unprivilegedUsernsClone":status.unprivileged_userns_clone,"maxUserNamespaces":status.max_user_namespaces,"qualified":false});
+                    let status = xcb_runtime::sandbox::linux_sandbox(&root);
+                    report["sandbox"] = json!({"backend":"bwrap","candidate":status.candidate,"admitted":status.admitted,"unprivilegedUsernsClone":status.unprivileged_userns_clone,"maxUserNamespaces":status.max_user_namespaces,"qualified":status.qualified});
                 }
                 print_json(report)?;
             } else {
                 if cfg!(target_os = "linux") {
-                    let status = xcb_runtime::sandbox::linux_sandbox();
+                    let status = xcb_runtime::sandbox::linux_sandbox(&root);
                     let detail = match &status.candidate {
                         Some(path) if status.admitted => {
                             format!("bwrap candidate {} admitted", path.display())
@@ -512,7 +512,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                             (Some(false), _) | (_, Some(0)) => " · user namespaces restricted",
                             _ => "",
                         };
-                    println!("sandbox: {detail}{userns} · unqualified (egress bridge pending)");
+                    let qual = if status.qualified {
+                        "qualified"
+                    } else {
+                        "unqualified · place a current qualification receipt"
+                    };
+                    println!("sandbox: {detail}{userns} · {qual}");
                 }
                 for run in store.unsettled_runs()? {
                     println!("Unsettled run {} · custody retained", run.id);

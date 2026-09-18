@@ -150,25 +150,33 @@ pub struct LinuxSandbox {
     pub admitted: bool,
     pub unprivileged_userns_clone: Option<bool>,
     pub max_user_namespaces: Option<u64>,
+    pub qualified: bool,
 }
 
-pub fn linux_sandbox() -> LinuxSandbox {
+pub fn linux_sandbox(root: &std::path::Path) -> LinuxSandbox {
     let sysctl = |path: &str| {
         std::fs::read_to_string(path)
             .ok()
             .map(|text| text.trim().to_owned())
     };
     let candidate = bwrap_candidate();
+    let pin = candidate
+        .as_deref()
+        .and_then(|path| BwrapPin::admit(path).ok());
+    let admitted = pin.is_some();
+    let qualified = match (&pin, &candidate) {
+        (Some(pin), Some(candidate)) => crate::qualification::LinuxQualification::load(root)
+            .is_ok_and(|receipt| receipt.qualified(candidate, &pin.sha256)),
+        _ => false,
+    };
     LinuxSandbox {
-        admitted: candidate
-            .as_deref()
-            .and_then(|path| BwrapPin::admit(path).ok())
-            .is_some(),
+        admitted,
         candidate,
         unprivileged_userns_clone: sysctl("/proc/sys/kernel/unprivileged_userns_clone")
             .map(|value| value == "1"),
         max_user_namespaces: sysctl("/proc/sys/user/max_user_namespaces")
             .and_then(|value| value.parse().ok()),
+        qualified,
     }
 }
 

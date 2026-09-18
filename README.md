@@ -48,14 +48,16 @@ provider features that have not been admitted.
 
 ### Install the native binary
 
-The `xcb` CLI builds with Rust 1.97.1 and works on macOS and Linux. A release
-tarball for your OS and architecture is attached to every `v<version>` GitHub
-Release as `xcb-<version>-<os>-<arch>.tar.gz` plus a `.sha256` checksum.
+The `xcb` CLI builds with Rust 1.97.1 and works on macOS and Linux. The release
+pipeline attaches `xcb-<version>-<os>-<arch>.tar.gz` plus an adjacent `.sha256`
+checksum to `v<version>` GitHub Releases. No release carrying native artifacts
+has been published yet; until one is, install from source.
 
-Install the latest release to `~/.local/bin`:
+Once a native release exists, install it to `~/.local/bin` (the leading `v` is
+optional):
 
 ```sh
-XCB_VERSION=0.1.0 ./scripts/install-native.sh
+XCB_VERSION=<version> ./scripts/install-native.sh
 ```
 
 Build and install from source instead:

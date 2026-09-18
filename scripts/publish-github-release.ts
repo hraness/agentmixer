@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 import {
+  assertNativeAssetBytes,
   assertReleaseAssetBytes,
+  nativeAssetFilePairs,
   publicRepository,
   releaseDistribution,
   releasePackageForName,
@@ -13,12 +15,15 @@ import { parseGitHubIncludedJsonResponse } from "./release-included-response.ts"
 import { publicReleaseEnvironment } from "./release-process-environment.ts";
 import { assertReviewedMainComparison } from "./release-ref-authority.ts";
 
-const [tagArgument, tarballArgument, checksumArgument, manifestArgument] = process.argv.slice(2);
+const [tagArgument, tarballArgument, checksumArgument, manifestArgument, nativeDirectoryArgument] =
+  process.argv.slice(2);
 if (
   tagArgument === undefined || tarballArgument === undefined || checksumArgument === undefined
-  || process.argv.length > 6
+  || process.argv.length > 7
 ) {
-  throw new Error("Usage: publish-github-release.ts TAG ARTIFACT.tgz SHA256SUMS [MANIFEST.json]");
+  throw new Error(
+    "Usage: publish-github-release.ts TAG ARTIFACT.tgz SHA256SUMS [MANIFEST.json [NATIVE_ASSETS_DIR]]",
+  );
 }
 if (process.env.GITHUB_REPOSITORY !== publicRepository) {
   throw new Error(`GitHub Release publication must run in ${publicRepository}.`);
@@ -61,6 +66,56 @@ const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 const expectedTitle = `${releasePackage.title} ${tagArgument}`;
 const expectedBody =
   `Automated public release of ${releasePackage.name}@${manifest.version} from ${tagArgument}.`;
+
+type NativeSource = Readonly<{
+  archiveBytes: Buffer;
+  archivePath: string;
+  checksumBytes: Buffer;
+  checksumPath: string;
+}>;
+
+/** Every file in the optional native asset directory must be one complete
+ * `xcb-<version>-<os>-<arch>.tar.gz` + `.sha256` pair whose checksum text binds
+ * the exact archive bytes. These join the compat artifacts on the same draft
+ * before the release becomes immutable. */
+const nativeSources: readonly NativeSource[] = (() => {
+  if (nativeDirectoryArgument === undefined) return Object.freeze([]);
+  const directory = resolve(nativeDirectoryArgument);
+  const entries = readdirSync(directory).toSorted();
+  for (const entry of entries) {
+    const information = lstatSync(join(directory, entry));
+    if (!information.isFile() || information.isSymbolicLink()) {
+      throw new Error(`Native release asset ${entry} is not one regular non-symlink file.`);
+    }
+  }
+  const pairs = nativeAssetFilePairs(entries, releaseVersion);
+  if (pairs.length === 0) {
+    throw new Error("The native release asset directory contains no exact archive/checksum pairs.");
+  }
+  return Object.freeze(pairs.map((pair) => {
+    const archivePath = join(directory, pair.archive);
+    const checksumPath = join(directory, pair.checksum);
+    const archiveBytes = readFileSync(archivePath);
+    const checksumBytes = readFileSync(checksumPath);
+    let checksumText: string;
+    try {
+      checksumText = new TextDecoder("utf-8", { fatal: true }).decode(checksumBytes);
+    } catch {
+      throw new Error(`Native release checksum ${pair.checksum} is not valid UTF-8.`);
+    }
+    if (checksumText !== `${sha256(archiveBytes)}\n`) {
+      throw new Error(`Native release checksum ${pair.checksum} does not match its archive bytes.`);
+    }
+    return Object.freeze({ archiveBytes, archivePath, checksumBytes, checksumPath });
+  }));
+})();
+
+const sources = Object.freeze([
+  tarball,
+  checksum,
+  ...nativeSources.flatMap((source) => [source.archivePath, source.checksumPath]),
+]);
+const expectedAssetNames = new Set(sources.map((source) => basename(source)));
 // GitHub's release list lags `gh release create` by a few seconds (v0.8.1,
 // v0.8.2, and v0.8.3 each missed the draft on the first read). Bound the
 // read-after-write wait; ambiguity and shape checks in findDraft still fail closed.
@@ -217,13 +272,13 @@ function exactDraft(value: unknown): ExactDraft {
     || !Number.isSafeInteger(draft.id)
     || Number(draft.id) <= 0
     || !Array.isArray(draft.assets)
-    || draft.assets.length > 2
+    || draft.assets.length > expectedAssetNames.size
   ) throw new Error(`Residual draft for ${tagArgument} does not match the exact recoverable release.`);
   const assets = draft.assets.map((asset) => record(asset, "Residual draft asset"));
   const names = new Set(assets.map((asset) => asset.name));
   if (
     names.size !== assets.length
-    || [...names].some((name) => name !== basename(tarball) && name !== basename(checksum))
+    || [...names].some((name) => typeof name !== "string" || !expectedAssetNames.has(name))
   ) throw new Error(`Residual draft for ${tagArgument} contains ambiguous assets.`);
   return Object.freeze({ assets: Object.freeze(assets), id: Number(draft.id) });
 }
@@ -253,7 +308,7 @@ async function readDraftById(id: number): Promise<ExactDraft> {
 
 async function verifyDraftAssets(draft: ExactDraft): Promise<readonly string[]> {
   const missing: string[] = [];
-  for (const source of [tarball, checksum]) {
+  for (const source of sources) {
     const expectedName = basename(source);
     const asset = draft.assets.find((candidate) => candidate.name === expectedName);
     if (asset === undefined) {
@@ -281,7 +336,7 @@ async function verifyDraftAssets(draft: ExactDraft): Promise<readonly string[]> 
 
 async function completeDraftAssets(draft: ExactDraft): Promise<ExactDraft> {
   let current = await readDraftById(draft.id);
-  for (const source of [tarball, checksum]) {
+  for (const source of sources) {
     const missing = await verifyDraftAssets(current);
     if (!missing.includes(source)) continue;
     await run([
@@ -304,16 +359,29 @@ async function verifyPublishedRelease(): Promise<void> {
     try {
       const coordinate = distribution.parseGitHubRelease(await readRelease(), releaseVersion);
       assertReleaseAssetBytes(coordinate, tarballBytes, checksumBytes, sha256);
+      if (coordinate.natives.length !== nativeSources.length) {
+        throw new Error(`GitHub Release ${tagArgument} does not carry the exact native asset set.`);
+      }
+      for (const source of nativeSources) {
+        const pair = coordinate.natives.find(
+          (candidate) => candidate.archive.name === basename(source.archivePath),
+        );
+        if (pair === undefined || pair.checksum.name !== basename(source.checksumPath)) {
+          throw new Error(
+            `GitHub Release ${tagArgument} is missing native asset ${basename(source.archivePath)}.`,
+          );
+        }
+        assertNativeAssetBytes(pair, source.archiveBytes, source.checksumBytes, sha256);
+      }
       const directory = mkdtempSync(join(tmpdir(), "xcb-release-assets-"));
       try {
         await run([
           "gh", "release", "download", releaseTag,
           "--repo", publicRepository,
           "--dir", directory,
-          "--pattern", basename(tarball),
-          "--pattern", basename(checksum),
+          ...sources.flatMap((source) => ["--pattern", basename(source)]),
         ]);
-        for (const source of [tarball, checksum]) {
+        for (const source of sources) {
           if (!readFileSync(source).equals(readFileSync(join(directory, basename(source))))) {
             throw new Error(`GitHub Release ${tagArgument} contains different ${basename(source)} bytes.`);
           }

@@ -27,10 +27,18 @@ install_from_release() {
   base_url="https://github.com/$XCB_GITHUB/releases/download/$tag"
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
+  sha256_cmd=$(command -v sha256sum || command -v shasum || true)
+  if [ -z "$sha256_cmd" ]; then
+    echo "error: neither sha256sum nor shasum found" >&2
+    exit 1
+  fi
+  if [ "$sha256_cmd" != "${sha256_cmd%shasum}" ]; then
+    sha256_cmd="$sha256_cmd -a 256"
+  fi
   curl -fsSL -o "$work/$asset" "$base_url/$asset"
   curl -fsSL -o "$work/$checksum" "$base_url/$checksum"
   expected=$(tr -d '[:space:]' < "$work/$checksum")
-  actual=$(sha256sum "$work/$asset" | cut -d' ' -f1)
+  actual=$($sha256_cmd "$work/$asset" | cut -d' ' -f1)
   if [ "$expected" != "$actual" ]; then
     echo "error: checksum mismatch for $asset" >&2
     exit 1

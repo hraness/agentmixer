@@ -22,17 +22,23 @@ history is a release request. The tag version must equal `package.json`'s
    smoke check: the tarball installs into an isolated consumer and the public
    entry executes — including an account-lease custody round trip — under both
    Bun and Node.
-3. **Publish immutable GitHub Release.** The only job holding
+3. **Native binary build.** On Ubuntu and macOS, checks out the verified tag
+   commit, builds `xcb` with the pinned Rust toolchain through
+   `scripts/build-native.sh`, and preserves
+   `xcb-<version>-<os>-<arch>.tar.gz` plus its adjacent `.sha256` checksum as
+   run-bound workflow artifacts.
+4. **Publish immutable GitHub Release.** The only job holding
    `contents: write`. Creates the immutable Latest GitHub Release carrying the
-   exact tarball and `SHA256SUMS`, then proves it back.
-4. **Pre-npm admission.** Proves the immutable GitHub Release bytes match the
+   exact tarball, `SHA256SUMS`, and every native archive/checksum pair, then
+   proves it back.
+5. **Pre-npm admission.** Proves the immutable GitHub Release bytes match the
    packed artifact and admits the npm retry state: absent, or an exact same-run
    retry only.
-5. **Publish npm.** The only job holding `id-token: write`. Downloads the exact
+6. **Publish npm.** The only job holding `id-token: write`. Downloads the exact
    bytes and the reviewed dependency-free npm writer, rechecks the checksum,
    and publishes through npm OIDC trusted publishing with provenance. No npm
    token exists anywhere in the pipeline.
-6. **Admission.** Verifies the exact registry version, repository, tag,
+7. **Admission.** Verifies the exact registry version, repository, tag,
    ancestry, bytes, and Sigstore provenance — the provenance certificate must
    bind this repository, this workflow, this tag, and this run.
 
@@ -59,13 +65,17 @@ runtime and no release authority.
 
 ## Native binary release
 
-`.github/workflows/release-native.yml` runs after a successful `release.yml` run
-on a `v<version>` tag. It builds `xcb` for Ubuntu and macOS, packages it as
-`xcb-<version>-<os>-<arch>.tar.gz` with an adjacent `.sha256` checksum, and
-uploads both to the same immutable GitHub Release. The release job uses the
-shared `scripts/build-native.sh` from the tagged source. Native artifacts are
-not published to npm; they are a separate release surface alongside the
-`@hraness/xcb` compatibility package.
+The `native_artifact` job inside `.github/workflows/release.yml` builds `xcb`
+for Ubuntu and macOS from the verified tag commit through
+`scripts/build-native.sh`. The publish job attaches
+`xcb-<version>-<os>-<arch>.tar.gz` and its adjacent `.sha256` checksum to the
+release draft alongside the package tarball and `SHA256SUMS`; all assets become
+immutable together when the release is published. This folding is required, not
+cosmetic: a published GitHub Release is immutable, so assets cannot be added
+afterward — the former `release-native.yml` `workflow_run` follower could
+neither see the tag ref nor extend the finalized release, and has been removed.
+Native artifacts are not published to npm; they are a separate release surface
+alongside the `@hraness/xcb` compatibility package.
 
 ## Site publication datum
 

@@ -34,7 +34,7 @@ if [ ! -f "$binary" ]; then
   exit 1
 fi
 
-sha256_cmd=$(command -v sha256sum || command -v shasum)
+sha256_cmd=$(command -v sha256sum || command -v shasum || true)
 if [ -z "$sha256_cmd" ]; then
   echo "error: neither sha256sum nor shasum found" >&2
   exit 1

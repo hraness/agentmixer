@@ -56,7 +56,7 @@ async function setup() {
   const root = await realpath(original), executablePath = join(root, "synthetic-cli");
   await writeFile(executablePath, cliSource, { mode: 0o700 });
   const executableSha256 = createHash("sha256").update(await readFile(executablePath)).digest("hex");
-  const runtime = { executablePath, executableSha256 };
+  const runtime = { executablePath, executableSha256, cliVersion: "2.1.268" };
   const inspected = await inspectClaudeSdkRuntime(runtime);
   const qualification: RuntimeQualification = { status: "qualified", profile: CONTACT_TOOL_PROFILE,
     runtimeVersion: inspected.runtimeVersion, runtimeDigest: inspected.runtimeDigest,
@@ -229,5 +229,5 @@ test("a FIFO runtime path is rejected without waiting for a writer", async () =>
   const value = await setup();
   const executablePath = join(value.root, "synthetic-fifo");
   execFileSync("/usr/bin/mkfifo", ["-m", "600", executablePath]);
-  await expect(inspectClaudeSdkRuntime({ executablePath, executableSha256: "0".repeat(64) })).rejects.toThrow("CLAUDE_RUNTIME_INVALID");
+  await expect(inspectClaudeSdkRuntime({ executablePath, executableSha256: "0".repeat(64), cliVersion: "2.1.268" })).rejects.toThrow("CLAUDE_RUNTIME_INVALID");
 }, 2_000);

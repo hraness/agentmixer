@@ -2,7 +2,7 @@ import { join } from "node:path";
 
 import type { AgentTaskAdapter } from "../task-runtime.ts";
 import { createClaudeTaskAdapter, claudeTaskRuntimeIdentity, type ClaudeTaskEvents } from "../claude-task-adapter.ts";
-import { CLAUDE_CODE_VERSION } from "../claude-sdk.ts";
+import { CLAUDE_CODE_MIN_VERSION } from "../claude-sdk.ts";
 import { createCodexManagedTaskAdapter } from "../codex-managed-task-adapter.ts";
 import { CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import type { CapabilityProfile } from "../capabilities.ts";
@@ -43,9 +43,10 @@ export async function admitCliProvider(stateRoot: string, provider: CliProviderN
     return Object.freeze({ inspection, record: null, detail: provider === "codex" ? "codex binary not found" : "claude binary not found" });
   }
   if (!inspection.versionMatches) {
-    const required = provider === "codex" ? CODEX_NATIVE_VERSION : CLAUDE_CODE_VERSION;
-    const hint = provider === "claude" ? ` — install with \`bun add -g @anthropic-ai/claude-code@${required}\`` : "";
-    return Object.freeze({ inspection, record: null, detail: `${provider} ${inspection.version} found; pinned ${required} required${hint}` });
+    const required = provider === "codex" ? CODEX_NATIVE_VERSION : CLAUDE_CODE_MIN_VERSION;
+    const comparator = provider === "codex" ? `pinned ${required}` : `>= ${required}`;
+    const hint = provider === "claude" ? ` — install with \`bun add -g @anthropic-ai/claude-code@2\`` : "";
+    return Object.freeze({ inspection, record: null, detail: `${provider} ${inspection.version} found; ${comparator} required${hint}` });
   }
   if (provider === "codex") {
     let evidence;
@@ -62,7 +63,7 @@ export async function admitCliProvider(stateRoot: string, provider: CliProviderN
     }));
     return Object.freeze({ inspection, record, detail: `admitted ${provider} ${inspection.version}` });
   }
-  const identity = claudeTaskRuntimeIdentity(inspection.sha256, "subscription");
+  const identity = claudeTaskRuntimeIdentity({ executableSha256: inspection.sha256, cliVersion: inspection.version, authentication: "subscription" });
   const record = await writeCliQualification(await privateDirectory(stateRoot), buildQualificationRecord({
     provider,
     route: Object.freeze({ id: CLI_CLAUDE_ROUTE, provider: "claude", authentication: "subscription" }),
@@ -102,8 +103,8 @@ export async function openCliProvider(stateRoot: string, provider: CliProviderNa
   if (provider === "claude") {
     const { config } = await providerAuthDirs(stateRoot, "claude");
     const route = Object.freeze({ id: CLI_CLAUDE_ROUTE, provider: "claude" as const, authentication: "subscription" as const });
-    const runtime = Object.freeze({ executablePath: inspection.executablePath, executableSha256: inspection.sha256 });
-    const identity = claudeTaskRuntimeIdentity(inspection.sha256, "subscription");
+    const runtime = Object.freeze({ executablePath: inspection.executablePath, executableSha256: inspection.sha256, cliVersion: inspection.version });
+    const identity = claudeTaskRuntimeIdentity({ executableSha256: inspection.sha256, cliVersion: inspection.version, authentication: "subscription" });
     const qualification = toTaskQualification(record, { route, profile, runtimeVersion: identity.version, runtimeDigest: identity.digest });
     // On darwin the provider process is wrapped in seatbelt: writable access
     // is confined to the per-run scratch and the managed auth directory, and

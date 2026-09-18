@@ -99,3 +99,29 @@ fn catalog_keeps_selection_token_and_resolved_model_separate() {
     );
     assert!(haiku.effort.is_none());
 }
+
+#[test]
+fn version_admission_is_a_major_bounded_floor() {
+    use xcb_runtime::claude::{MAX_MAJOR, MIN_VERSION, version_admitted};
+    assert_eq!(MIN_VERSION, "2.1.268");
+    assert_eq!(MAX_MAJOR, 2);
+    for admitted in ["2.1.268", "2.1.269", "2.1.300", "2.2.0", "2.99.0"] {
+        assert!(version_admitted(admitted), "{admitted} should be admitted");
+    }
+    for rejected in [
+        "2.1.267",
+        "2.0.9",
+        "1.9.9",
+        "3.0.0",
+        "10.1.268",
+        "2.1",
+        "2.1.268.1",
+        "2.1.x",
+        "v2.1.268",
+        "2.1.268-beta",
+        "",
+        "9999999999.1.1",
+    ] {
+        assert!(!version_admitted(rejected), "{rejected} should be rejected");
+    }
+}

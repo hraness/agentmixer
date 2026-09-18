@@ -212,9 +212,10 @@ custody without an OS-confinement claim. The sandbox is enforcement on top of
 the broker boundary, not a substitute for it.
 
 `doctor` inspects the provider binary (explicit `XCB_CLAUDE` /
-`XCB_CODEX` pin, then PATH and known install locations), requires the
-exact pinned version, records its SHA-256, and writes a time-boxed local
-admission record binding that executable, this runtime build, and the
+`XCB_CODEX` pin, then PATH and known install locations), requires an admitted
+version — Claude Code `>= 2.1.268` within major 2, Codex's exact native build —
+records the binary's SHA-256, and writes a time-boxed local admission record
+binding that executable, its exact version, this runtime build, and the
 capability profile digest. Any drift — a replaced binary, a new release, an
 edited profile — revokes admission until `doctor` runs again. The adapter
 re-proves the effective boundary on every run: `doctor`'s record is a gate,
@@ -437,8 +438,10 @@ execution. `createProviderLaunchPlan()` is descriptive configuration, not a sand
 
 The installed versions are Claude Agent SDK **0.3.268**, bundled native Claude Code
 **2.1.268**, Anthropic SDK **0.125.0**, MCP SDK **1.30.0**, and Zod **4.6.2**.
-`inspectClaudeSdkRuntime()` checks the installed SDK version, native binary owner,
-mode, link count and SHA-256, and returns the composite qualification identity.
+`inspectClaudeSdkRuntime()` checks the installed SDK version, the admitted CLI
+version the host inspected (`>= 2.1.268` within major 2), native binary owner,
+mode, link count and SHA-256, and returns the composite qualification identity
+bound to that exact version and digest.
 Every run verifies and copies executable bytes from a checked file descriptor into
 its private run directory before resolving credentials. The subprocess runs that
 snapshot, so replacing the configured source path cannot replace the admitted

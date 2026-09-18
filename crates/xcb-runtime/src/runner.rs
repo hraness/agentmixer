@@ -130,7 +130,7 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
             "native execution requires the pinned Claude adapter; other providers remain unqualified",
         ));
@@ -183,7 +183,7 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
             "native execution requires the pinned Claude adapter; other providers remain unqualified",
         ));
@@ -399,7 +399,10 @@ pub fn validate_init(value: &Value, cwd: &Path, model: &ModelChoice, tools: bool
         .get("mcp_servers")
         .and_then(Value::as_array)
         .ok_or(Error::Protocol("MCP inventory"))?;
-    if value.get("claude_code_version").and_then(Value::as_str) != Some(claude::VERSION)
+    if value
+        .get("claude_code_version")
+        .and_then(Value::as_str)
+        .is_none_or(|version| !claude::version_admitted(version))
         || value.get("cwd").and_then(Value::as_str) != cwd.to_str()
         || value.get("model").and_then(Value::as_str) != Some(model.id.as_str())
         || value.get("apiKeySource").and_then(Value::as_str) != Some("none")

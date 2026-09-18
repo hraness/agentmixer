@@ -8,7 +8,7 @@ import { query, createSdkMcpServer, tool, type SDKSystemMessage } from "@anthrop
 
 import { assertCapabilityProfile, type CapabilityBroker, type CapabilityObject, type CapabilityDescriptor } from "./capabilities.ts";
 import { literalClaudePrompt, restrictedClaudeOptions } from "./claude-options.ts";
-import { CLAUDE_CODE_VERSION, CLAUDE_SDK_VERSION, inspectClaudeSdkRuntime, type ClaudeApiKeyResolver } from "./claude-sdk.ts";
+import { CLAUDE_SDK_VERSION, claudeCodeVersionAdmitted, inspectClaudeSdkRuntime, type ClaudeApiKeyResolver } from "./claude-sdk.ts";
 import { spawnBoundedProvider, type BoundedProviderProcess, type BoundedProviderProcessFactory } from "./provider-process.ts";
 import {
   assertAgentTaskAccountLease,
@@ -46,7 +46,7 @@ export type ClaudeTaskEvents = {
 
 export type ClaudeTaskAdapterOptions = Readonly<{
   route: AgentTaskRoute;
-  runtime: Readonly<{ executablePath: string; executableSha256: string }>;
+  runtime: Readonly<{ executablePath: string; executableSha256: string; cliVersion: string }>;
   /** Existing physical mode-0700 directory owned by this user, outside all workspaces. */
   stateRoot: string;
   /** Persistent physical mode-0700 directory holding the managed Claude
@@ -73,10 +73,11 @@ const publicName = (name: string) => name.replaceAll(".", "_");
 const fullName = (name: string) => `mcp__${SERVER}__${publicName(name)}`;
 
 /** The adapter's stable runtime identity for one authentication mode and exact
- * inspected binary. Hosts bind qualification records to this digest. */
-export function claudeTaskRuntimeIdentity(executableSha256: string, authentication: ClaudeTaskAuthentication): Readonly<{ version: string; digest: string }> {
-  const version = `claude-sdk/${CLAUDE_SDK_VERSION};claude-code/${CLAUDE_CODE_VERSION};task`;
-  return Object.freeze({ version, digest: hash(JSON.stringify({ runtimeVersion: version, executableSha256, authentication })) });
+ * inspected binary (digest + admitted version). Hosts bind qualification
+ * records to this digest. */
+export function claudeTaskRuntimeIdentity(input: Readonly<{ executableSha256: string; cliVersion: string; authentication: ClaudeTaskAuthentication }>): Readonly<{ version: string; digest: string }> {
+  const version = `claude-sdk/${CLAUDE_SDK_VERSION};claude-code/${input.cliVersion};task`;
+  return Object.freeze({ version, digest: hash(JSON.stringify({ runtimeVersion: version, executableSha256: input.executableSha256, authentication: input.authentication })) });
 }
 
 /** Translate the closed JSON-schema subset capability descriptors use into the
@@ -128,7 +129,8 @@ function baseSchema(raw: CapabilityObject): z.ZodTypeAny {
 function assertTaskInitialization(value: SDKSystemMessage, request: AgentTaskExecutionRequest, broker: CapabilityBroker, cwd: string, authentication: ClaudeTaskAuthentication): void {
   const expected = broker.profile.tools.map((descriptor) => fullName(descriptor.name)).sort();
   const expectedKeySource = authentication === "api" ? "ANTHROPIC_API_KEY" : "none";
-  if (value.claude_code_version !== CLAUDE_CODE_VERSION || value.cwd !== cwd || value.model !== request.model.id
+  if (typeof value.claude_code_version !== "string" || !claudeCodeVersionAdmitted(value.claude_code_version)
+    || value.cwd !== cwd || value.model !== request.model.id
     || value.apiKeySource !== expectedKeySource || value.permissionMode !== "dontAsk"
     || !Array.isArray(value.tools) || JSON.stringify([...value.tools].sort()) !== JSON.stringify(expected)
     || !Array.isArray(value.skills) || value.skills.length !== 0 || !Array.isArray(value.plugins) || value.plugins.length !== 0
@@ -199,9 +201,10 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
   const systemPrompt = boundedText(options.systemPrompt, 64 * 1024);
   const stateRoot = options.stateRoot, authDirectory = options.authDirectory;
   const executablePath = options.runtime.executablePath;
-  if (typeof executablePath !== "string" || !isAbsolute(executablePath)) throw Error("CLAUDE_RUNTIME_INVALID");
-  const runtime = Object.freeze({ executablePath, executableSha256: options.runtime.executableSha256 });
-  const identity = claudeTaskRuntimeIdentity(runtime.executableSha256, authentication);
+  if (typeof executablePath !== "string" || !isAbsolute(executablePath)
+    || typeof options.runtime.cliVersion !== "string" || !claudeCodeVersionAdmitted(options.runtime.cliVersion)) throw Error("CLAUDE_RUNTIME_INVALID");
+  const runtime = Object.freeze({ executablePath, executableSha256: options.runtime.executableSha256, cliVersion: options.runtime.cliVersion });
+  const identity = claudeTaskRuntimeIdentity({ executableSha256: runtime.executableSha256, cliVersion: runtime.cliVersion, authentication });
   const runtimeVersion = identity.version;
   const runtimeDigest = identity.digest;
   const qualification: TaskRuntimeQualification = Object.freeze(freezeCopy(options.qualification));

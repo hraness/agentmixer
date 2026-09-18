@@ -115,7 +115,8 @@ const navigation = [
 ] as const;
 
 function BrandMark() {
-  return <span aria-hidden="true" style={{ fontFamily: "monospace" }}>†</span>;
+  // eslint-disable-next-line @next/next/no-img-element -- the canonical mark is a fixed-size authored SVG
+  return <img alt="" aria-hidden="true" height={20} src="/marks/xcb.svg" width={20} />;
 }
 
 export default function Home() {

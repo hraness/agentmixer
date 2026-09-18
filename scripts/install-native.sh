@@ -23,16 +23,13 @@ esac
 install_from_release() {
   tag="v$XCB_VERSION"
   asset="xcb-${XCB_VERSION}-${os}-${arch}.tar.gz"
+  checksum="$asset.sha256"
   base_url="https://github.com/$XCB_GITHUB/releases/download/$tag"
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   curl -fsSL -o "$work/$asset" "$base_url/$asset"
-  curl -fsSL -o "$work/SHA256SUMS" "$base_url/SHA256SUMS"
-  expected=$(grep "^[^ ]*  $asset$" "$work/SHA256SUMS" | cut -d' ' -f1)
-  if [ -z "$expected" ]; then
-    echo "error: $asset not found in SHA256SUMS" >&2
-    exit 1
-  fi
+  curl -fsSL -o "$work/$checksum" "$base_url/$checksum"
+  expected=$(tr -d '[:space:]' < "$work/$checksum")
   actual=$(sha256sum "$work/$asset" | cut -d' ' -f1)
   if [ "$expected" != "$actual" ]; then
     echo "error: checksum mismatch for $asset" >&2

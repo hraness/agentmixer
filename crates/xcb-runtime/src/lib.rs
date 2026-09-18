@@ -11,6 +11,7 @@ pub mod kernel;
 pub mod panes;
 pub mod private;
 pub mod process;
+pub mod qualification;
 pub mod runner;
 pub mod sandbox;
 pub mod store;

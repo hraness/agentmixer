@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBwrapOsSandbox, createSandboxedProviderProcessFactory, createSeatbeltOsSandbox, planBwrapPolicy, planSeatbeltPolicy, verifyOsSandboxExecutable, type OsSandboxSpec } from "../src/os-sandbox.ts";
@@ -202,7 +202,7 @@ describe("os-sandbox bwrap planning", () => {
         egressForward: { runtime, script, port: 48123 } }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: ["--serve"], env: { MODE: "x" }, cwd: "/" }).args];
       const tail = args.slice(args.indexOf("--") + 1);
-      expect(tail).toEqual([runtime, script, socket, "48123", "-", "--", f.executable, "--serve"]);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", "-", "--", f.executable, "--serve"]);
       const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
       expect(pairs("--ro-bind")).toEqual(expect.arrayContaining([runtime, script]));
       const policy = JSON.parse(plan.policy);
@@ -211,6 +211,42 @@ describe("os-sandbox bwrap planning", () => {
       expect(policy.binds.find((b: { target: string }) => b.target === script).mode).toBe("ro");
       // No proxy keys in the plan env — the forwarder injects them itself.
       expect(JSON.stringify(args)).not.toContain("HTTPS_PROXY");
+    } finally { await f.cleanup(); }
+  });
+  test("delivers env through a private file instead of setenv argv", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock"), runtime = join(f.root, "bunrt"), script = join(f.root, "forwarder.js");
+      const envFile = join(f.scratch, "forwarder.env");
+      await mkdir(f.scratch, { recursive: true });
+      const plan = planBwrapPolicy(f.spec({ platform: "linux", network: "provider-tcp443-dns", egressSocket: socket,
+        egressForward: { runtime, script, port: 48123, envFile } }), join(f.root, "bwrap"));
+      const args = [...plan.wrap({ args: ["--serve"], env: { SECRET_TOKEN: "s3cr3t", PATH: "/usr/bin:/bin" }, cwd: "/" }).args];
+      const tail = args.slice(args.indexOf("--") + 1);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", envFile, "--", f.executable, "--serve"]);
+      // No --setenv at all: neither secrets nor mundane values ride argv.
+      expect(args).not.toContain("--setenv");
+      expect(JSON.stringify(args)).not.toContain("s3cr3t");
+      const written = await readFile(envFile, "utf8");
+      expect(written).toBe("PATH=/usr/bin:/bin\nSECRET_TOKEN=s3cr3t\n");
+      expect((await stat(envFile)).mode & 0o777).toBe(0o600);
+      const policy = JSON.parse(plan.policy);
+      expect(policy.egress.forwarder.envFile).toBe(envFile);
+    } finally { await f.cleanup(); }
+  });
+  test("rejects an env file outside writable roots and reserved proxy keys", async () => {
+    const f = await fixture();
+    try {
+      const socket = join(f.root, "egress.sock"), runtime = join(f.root, "bunrt"), script = join(f.root, "forwarder.js");
+      const base = { platform: "linux" as const, network: "provider-tcp443-dns" as const, egressSocket: socket };
+      expect(() => planBwrapPolicy(f.spec({ ...base,
+        egressForward: { runtime, script, port: 48123, envFile: join(f.root, "forwarder.env") } }), join(f.root, "bwrap"))).toThrow("OS_SANDBOX_LAYOUT_INVALID");
+      const envFile = join(f.scratch, "forwarder.env");
+      const plan = planBwrapPolicy(f.spec({ ...base,
+        egressForward: { runtime, script, port: 48123, envFile } }), join(f.root, "bwrap"));
+      expect(() => plan.wrap({ args: [], env: { HTTPS_PROXY: "http://evil" }, cwd: "/" })).toThrow("OS_SANDBOX_WRAP_INVALID");
+      const oversized = "x".repeat(64 * 1024);
+      expect(() => plan.wrap({ args: [], env: { A: oversized, B: oversized }, cwd: "/" })).toThrow("OS_SANDBOX_WRAP_INVALID");
     } finally { await f.cleanup(); }
   });
   test("rejects a forwarder without a bridge socket or on a denied network", async () => {

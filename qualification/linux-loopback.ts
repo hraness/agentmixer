@@ -134,7 +134,7 @@ try {
     "--ro-bind", "/sys/class/net", "/sys/class/net",
     ...mounts, "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", scratch,
     "--chdir", scratch, "--",
-    runtime, forwarderPath, socketPath, "48123", loUpPath, "--",
+    runtime, forwarderPath, socketPath, "48123", loUpPath, "-", "--",
     client, "-skvx", "http://127.0.0.1:48123", "--max-time", "10", "https://probe.invalid/",
   ];
 

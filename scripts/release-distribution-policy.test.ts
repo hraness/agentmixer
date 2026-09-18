@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
 import {
+  assertNativeAssetBytes,
   assertReleaseAssetBytes,
+  nativeAssetFilePairs,
   parseGitHubRelease,
   parseNpmRelease,
   releaseArchiveName,
@@ -25,6 +27,32 @@ const npmUser = {
     oidcConfigId: "oidc:12345678-1234-1234-1234-123456789abc",
   },
 };
+const nativeArchiveBytes = new TextEncoder().encode("native xcb archive bytes");
+const nativeArchiveDigest = createHash("sha256").update(nativeArchiveBytes).digest("hex");
+const nativeChecksumBytes = new TextEncoder().encode(`${nativeArchiveDigest}\n`);
+const nativeChecksumDigest = createHash("sha256").update(nativeChecksumBytes).digest("hex");
+
+function nativePair(base: string): [object, object] {
+  const url = `https://github.com/hraness/xcb/releases/download/v${version}`;
+  return [
+    {
+      browser_download_url: `${url}/${base}.tar.gz`,
+      digest: `sha256:${nativeArchiveDigest}`,
+      id: 10,
+      name: `${base}.tar.gz`,
+      size: nativeArchiveBytes.byteLength,
+      state: "uploaded",
+    },
+    {
+      browser_download_url: `${url}/${base}.tar.gz.sha256`,
+      digest: `sha256:${nativeChecksumDigest}`,
+      id: 11,
+      name: `${base}.tar.gz.sha256`,
+      size: nativeChecksumBytes.byteLength,
+      state: "uploaded",
+    },
+  ];
+}
 
 function release(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
@@ -184,12 +212,122 @@ describe("public release distribution policy", () => {
 
   test("requires two exact immutable GitHub artifacts and their bytes", () => {
     const parsed = parseGitHubRelease(release(), version);
+    expect(parsed.natives).toHaveLength(0);
     expect(() => assertReleaseAssetBytes(
       parsed,
       tarball,
       checksum,
       (bytes) => createHash("sha256").update(bytes).digest("hex"),
     )).not.toThrow();
-    expect(() => parseGitHubRelease(release({ assets: [] }), version)).toThrow("exactly two");
+    expect(() => parseGitHubRelease(release({ assets: [] }), version)).toThrow("two exact release artifacts");
+  });
+
+  test("admits native archive/checksum pairs bound to the exact release version", () => {
+    const parsed = parseGitHubRelease(release({
+      assets: [...release().assets, ...nativePair("xcb-0.8.1-linux-x86_64"), ...nativePair("xcb-0.8.1-darwin-aarch64")],
+    }), version);
+    expect(parsed.natives).toHaveLength(2);
+    expect(parsed.natives[0]?.archive.name).toBe("xcb-0.8.1-linux-x86_64.tar.gz");
+    expect(parsed.natives[1]?.archive.name).toBe("xcb-0.8.1-darwin-aarch64.tar.gz");
+    const pair = parsed.natives.find((candidate) => candidate.archive.name === "xcb-0.8.1-linux-x86_64.tar.gz");
+    expect(pair?.checksum.name).toBe("xcb-0.8.1-linux-x86_64.tar.gz.sha256");
+    expect(() => assertNativeAssetBytes(
+      pair!,
+      nativeArchiveBytes,
+      nativeChecksumBytes,
+      (bytes) => createHash("sha256").update(bytes).digest("hex"),
+    )).not.toThrow();
+  });
+
+  test("rejects malformed, unpaired, foreign, and unbounded native assets", () => {
+    const compatAssets = release().assets;
+    const pair = nativePair("xcb-0.8.1-linux-x86_64");
+    const foreignVersion = nativePair("xcb-0.8.2-linux-x86_64");
+    for (const assets of [
+      [pair[0]], // archive without adjacent checksum
+      [pair[1]], // checksum without archive
+      [pair[0], pair[1], pair[0]], // duplicate archive name
+      foreignVersion, // native version must equal the release version
+      nativePair("xcb-v0.8.1-linux-x86_64"),
+      nativePair("xcb-0.8.1-Linux-x86_64"),
+      nativePair("xcb-0.8.1-linux-x86_64.tgz"),
+      nativePair("agentmixer-v0.8.1-linux-x86_64"),
+      nativePair("xcb-0.8.1-linux"),
+      [{ ...pair[0], name: "SHA256SUMS" }, pair[1]],
+      [{ ...pair[0], browser_download_url: "https://example.invalid/x" }, pair[1]],
+    ]) {
+      expect(() => parseGitHubRelease(release({
+        assets: [...compatAssets, ...assets],
+      }), version)).toThrow();
+    }
+    expect(() => parseGitHubRelease(release({
+      assets: [...compatAssets, pair[0], nativePair("xcb-0.8.1-darwin-aarch64")[0]],
+    }), version)).toThrow("adjacent archive or checksum");
+    expect(() => parseGitHubRelease(release({
+      assets: [...compatAssets, ...foreignVersion],
+    }), version)).toThrow("xcb-0.8.1-<os>-<arch>");
+    // Odd asset counts and counts beyond the native bound fail before parsing.
+    expect(() => parseGitHubRelease(release({
+      assets: [...compatAssets, pair[0], pair[1], nativePair("xcb-0.8.1-darwin-aarch64")[0]],
+    }), version)).toThrow("complete native pairs");
+    const unbounded = Array.from({ length: 17 }, (_, index) =>
+      nativePair(`xcb-0.8.1-os${index}-x86_64`)).flat();
+    expect(() => parseGitHubRelease(release({
+      assets: [...compatAssets, ...unbounded],
+    }), version)).toThrow("complete native pairs");
+  });
+
+  test("native file pairing validates the exact asset name set", () => {
+    expect(nativeAssetFilePairs([
+      "xcb-0.8.1-linux-x86_64.tar.gz",
+      "xcb-0.8.1-linux-x86_64.tar.gz.sha256",
+      "xcb-0.8.1-darwin-aarch64.tar.gz.sha256",
+      "xcb-0.8.1-darwin-aarch64.tar.gz",
+    ], version)).toEqual([
+      { archive: "xcb-0.8.1-linux-x86_64.tar.gz", checksum: "xcb-0.8.1-linux-x86_64.tar.gz.sha256" },
+      { archive: "xcb-0.8.1-darwin-aarch64.tar.gz", checksum: "xcb-0.8.1-darwin-aarch64.tar.gz.sha256" },
+    ]);
+    expect(nativeAssetFilePairs([], version)).toEqual([]);
+    for (const names of [
+      ["xcb-0.8.1-linux-x86_64.tar.gz"],
+      ["xcb-0.8.1-linux-x86_64.tar.gz.sha256"],
+      ["xcb-0.8.2-linux-x86_64.tar.gz", "xcb-0.8.2-linux-x86_64.tar.gz.sha256"],
+      ["xcb-0.8.1-linux-x86_64.tar.gz", "xcb-0.8.1-linux-x86_64.tar.gz"],
+      ["xcb-0.8.1-linux-x86_64.tar.gz", "other.sha256"],
+    ]) {
+      expect(() => nativeAssetFilePairs(names, version)).toThrow();
+    }
+  });
+
+  test("native byte assertion binds digest, size, and checksum text", () => {
+    const pair = parseGitHubRelease(release({
+      assets: [...release().assets, ...nativePair("xcb-0.8.1-linux-x86_64")],
+    }), version).natives[0]!;
+    const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+    expect(() => assertNativeAssetBytes(
+      pair, nativeArchiveBytes, nativeChecksumBytes, sha256,
+    )).not.toThrow();
+    expect(() => assertNativeAssetBytes(
+      pair, nativeArchiveBytes, tarball, sha256,
+    )).toThrow("size or digest");
+    const wrongText = new TextEncoder().encode(`${"0".repeat(64)}\n`);
+    const wrongTextPair = {
+      archive: pair.archive,
+      checksum: {
+        ...pair.checksum,
+        digest: `sha256:${sha256(wrongText)}`,
+        size: wrongText.byteLength,
+      },
+    };
+    expect(() => assertNativeAssetBytes(
+      wrongTextPair, nativeArchiveBytes, wrongText, sha256,
+    )).toThrow("does not describe");
+    const wrongDigestPair = {
+      archive: { ...pair.archive, digest: `sha256:${"0".repeat(64)}` },
+      checksum: pair.checksum,
+    };
+    expect(() => assertNativeAssetBytes(
+      wrongDigestPair, nativeArchiveBytes, nativeChecksumBytes, sha256,
+    )).toThrow("size or digest");
   });
 });

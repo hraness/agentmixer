@@ -209,11 +209,46 @@ jobs:
           bun run ./scripts/release-artifact-checksum.ts check artifacts/*.tgz artifacts/SHA256SUMS
           bun run ./scripts/package-smoke.ts artifacts/*.tgz
 
+  native_artifact:
+    name: Native binary (${{ matrix.os }})
+    needs: verify
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.verified_sha }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Build and package the native binary
+        env:
+          XCB_VERSION: ${{ needs.verify.outputs.verified_tag }}
+        run: ./scripts/build-native.sh
+      - name: Preserve the exact native release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: xcb-native-${{ matrix.os }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
   publish_github:
     name: Publish immutable GitHub Release
     needs:
       - verify
       - exact_artifact
+      - native_artifact
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -240,6 +275,16 @@ jobs:
           artifact-ids: ${{ needs.verify.outputs.github_writer_artifact_id }}
           merge-multiple: true
           path: github-release-writer
+      - name: Download the exact Ubuntu native assets by run-bound name
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: xcb-native-ubuntu-24.04-${{ github.run_attempt }}
+          path: native-artifacts
+      - name: Download the exact macOS native assets by run-bound name
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: xcb-native-macos-15-${{ github.run_attempt }}
+          path: native-artifacts
       - name: Bind the immutable workflow artifacts
         env:
           GITHUB_WRITER_ARTIFACT_DIGEST: ${{ needs.verify.outputs.github_writer_artifact_digest }}
@@ -257,7 +302,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           bun run ./github-release-writer/scripts/release-artifact-checksum.ts check artifacts/*.tgz artifacts/SHA256SUMS
-          bun run ./github-release-writer/scripts/publish-github-release.ts "$VERIFIED_TAG" artifacts/*.tgz artifacts/SHA256SUMS
+          bun run ./github-release-writer/scripts/publish-github-release.ts "$VERIFIED_TAG" artifacts/*.tgz artifacts/SHA256SUMS github-release-writer/package.json native-artifacts
 
   pre_npm:
     name: Admit immutable GitHub bytes and npm retry state

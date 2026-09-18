@@ -14,6 +14,7 @@ pub struct ContextPolicy {
     pub trigger_tokens: u64,
     pub floor_tokens: u64,
     pub min_interval_ms: u64,
+    pub min_savings_tokens: u64,
 }
 impl Default for ContextPolicy {
     fn default() -> Self {
@@ -22,6 +23,7 @@ impl Default for ContextPolicy {
             trigger_tokens: 250_000,
             floor_tokens: 40_000,
             min_interval_ms: 300_000,
+            min_savings_tokens: 4_096,
         }
     }
 }
@@ -82,6 +84,7 @@ impl Config {
             || context.floor_tokens < 1024
             || context.floor_tokens >= context.trigger_tokens
             || context.trigger_tokens > 1_000_000
+            || context.min_savings_tokens > context.trigger_tokens
             || !(1000..=3_600_000).contains(&context.min_interval_ms)
             || !(1..=16).contains(&continuation.max_consecutive)
             || !(1000..=3_600_000).contains(&continuation.max_elapsed_ms)

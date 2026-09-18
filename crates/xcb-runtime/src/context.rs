@@ -69,7 +69,17 @@ pub fn project(
                     est_tokens: message.text.len().div_ceil(4) as u64,
                     elidable_bytes: (message.role == Role::Tool)
                         .then_some(message.text.len() as u64),
-                    label: format!("item-{index}"),
+                    elidable_parts: u32::from(message.role == Role::Tool),
+                    label: if message.role == Role::Tool {
+                        "tool".to_string()
+                    } else {
+                        format!("item-{index}")
+                    },
+                    summary: None,
+                    uuid: None,
+                    parent_uuid: None,
+                    tool_use_ids: Vec::new(),
+                    payload_sha256: None,
                 })
                 .collect(),
             usage: UsageSample {
@@ -82,9 +92,13 @@ pub fn project(
             floor_tokens: policy.floor_tokens,
             keep_recent_tool_outputs: 8,
             min_interval_secs: policy.min_interval_ms / 1000,
+            min_savings_tokens: policy.min_savings_tokens,
             quota_pressure: QuotaPressure::Normal,
+            adaptive: false,
         };
-        if let Some(plan) = ElideStrategy.evaluate(&transcript, &policy) {
+        if let Some(plan) = ElideStrategy.evaluate(&transcript, &policy).filter(|plan| {
+            policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after)
+        }) {
             let mut seen = BTreeSet::new();
             let protected = copy.len().saturating_sub(8);
             for edit in plan.edits {

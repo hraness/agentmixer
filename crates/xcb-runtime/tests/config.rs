@@ -6,6 +6,10 @@ fn useful_local_extensions_default_on_and_publishing_defaults_off() {
     config.validate().unwrap();
     assert!(config.extensions.auto_continue.enabled);
     assert!(config.extensions.gobstopper.enabled);
+    assert_eq!(config.extensions.gobstopper.min_savings_tokens, 4_096);
+    let mut invalid = config.clone();
+    invalid.extensions.gobstopper.min_savings_tokens = 250_001;
+    assert!(invalid.validate().is_err());
     assert!(config.extensions.usage);
     assert!(!config.extensions.aicharts_upload);
     assert!(!config.extensions.aicharts_export);

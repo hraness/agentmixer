@@ -7,7 +7,7 @@ import { SqliteAccountLeases } from "./accounts.ts";
 import { createPublicWeb } from "./public-web.ts";
 import { boundedText } from "./validation.ts";
 
-import { ensureCliState, migrateLegacyState } from "./cli/state.ts";
+import { assertWorkspaceStateSeparation, ensureCliState, migrateLegacyState } from "./cli/state.ts";
 import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, type CliProviderName } from "./cli/binaries.ts";
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
 import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
@@ -216,7 +216,9 @@ async function commandSessions(stateRoot: string, rest: readonly string[]): Prom
 }
 
 async function commandRun(prompt: string, workspace: string, stateRoot: string, provider: CliProviderName, model: string | undefined): Promise<number> {
-  const { profile } = await cliProfileFor(workspace);
+  const prepared = await cliProfileFor(workspace);
+  assertWorkspaceStateSeparation(prepared.workspace.root, stateRoot);
+  const { profile } = prepared;
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, provider, profile, events);
   if (opened.status !== "ready") return fail(`provider not admitted — run \`xcb doctor\` and \`xcb auth ${provider}\` first.`);

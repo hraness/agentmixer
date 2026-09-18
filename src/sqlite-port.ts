@@ -26,11 +26,17 @@ type NativeDatabase = {
   close(): void;
 };
 
-export function wrapSqliteDatabase(database: NativeDatabase): SqliteDatabase {
+export function wrapSqliteDatabase(database: NativeDatabase, journal: "WAL" | "DELETE" = "WAL"): SqliteDatabase {
   // Match bun:sqlite defaults so file layout and constraint behavior are identical whichever
   // runtime opened the database: WAL journal (bun default; node:sqlite leaves the file's own
   // mode) and foreign_keys off (SQLite/bun default; node:sqlite enables it by default).
-  database.exec("PRAGMA journal_mode=WAL");
+  if (journal !== "WAL" && journal !== "DELETE") throw new Error("SQLITE_JOURNAL_INVALID");
+  if (journal === "WAL") database.exec("PRAGMA journal_mode=WAL");
+  else {
+    database.exec("PRAGMA busy_timeout=0");
+    const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown } | undefined;
+    if (mode?.journal_mode !== "delete") throw new Error("SQLITE_JOURNAL_MISMATCH");
+  }
   database.exec("PRAGMA foreign_keys=OFF");
   let closed = false;
   // node:sqlite rejects boolean bindings where bun:sqlite coerces them to 0/1; normalize.
@@ -49,9 +55,10 @@ export function wrapSqliteDatabase(database: NativeDatabase): SqliteDatabase {
   };
 }
 
-export async function openAccountDatabase(path: string): Promise<SqliteDatabase> {
+export async function openAccountDatabase(path: string, journal: "WAL" | "DELETE" = "WAL"): Promise<SqliteDatabase> {
   const database: NativeDatabase = typeof Bun === "undefined"
     ? new (await import("node:sqlite")).DatabaseSync(path)
     : new (await import("bun:sqlite")).Database(path);
-  return wrapSqliteDatabase(database);
+  try { return wrapSqliteDatabase(database, journal); }
+  catch (error) { database.close(); throw error; }
 }

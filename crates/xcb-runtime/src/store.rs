@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
     time::Duration,
@@ -122,6 +123,23 @@ fn update_session(transaction: &Transaction<'_>, session: &Session, expected: u6
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
         let root = private::directory(root)?;
+        let lock_path = root.join(".initialize.lock");
+        let initialization = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC)
+                    .bits() as i32,
+            )
+            .open(&lock_path)?;
+        private::check_file(&initialization, 0)?;
+        private::lock(&initialization)?;
+        private::same_file(&lock_path, &initialization)?;
         for name in [
             "accounts",
             "panes",
@@ -143,19 +161,20 @@ impl Store {
             Err(error) => return Err(error.into()),
         }
         for suffix in ["xcb.sqlite-wal", "xcb.sqlite-shm", "xcb.sqlite-journal"] {
-            let path = root.join(suffix);
-            match fs::symlink_metadata(&path) {
-                Ok(_) => {
-                    private::open_file(&path, 1024 * 1024 * 1024)?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error.into()),
+            match private::open_file(&root.join(suffix), 1024 * 1024 * 1024) {
+                Ok(_) => (),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error),
             }
         }
         let mut connection = Connection::open(&path)?;
-        connection.busy_timeout(Duration::from_millis(250))?;
+        connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
+        let journal: String =
+            connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !journal.eq_ignore_ascii_case("wal") {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+        }
         connection.pragma_update(None, "synchronous", "FULL")?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version > 1 {
@@ -163,7 +182,12 @@ impl Store {
         }
         if version == 0 {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch("CREATE TABLE accounts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            let current: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if current > 1 {
+                return Err(Error::Unavailable("database was written by a newer xcb"));
+            }
+            if current == 0 {
+                tx.execute_batch("CREATE TABLE accounts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE sessions(id TEXT PRIMARY KEY, account TEXT NOT NULL REFERENCES accounts(id), payload TEXT NOT NULL, revision INTEGER NOT NULL, last_active INTEGER NOT NULL);
                 CREATE INDEX sessions_activity ON sessions(last_active DESC, id);
                 CREATE TABLE messages(id TEXT PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, payload TEXT NOT NULL, UNIQUE(session, sequence));
@@ -176,6 +200,7 @@ impl Store {
                 CREATE TABLE tool_effects(run TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, call TEXT NOT NULL, operation TEXT NOT NULL, input_digest TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(run,call));
                 CREATE TABLE velocity(session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, at_ms INTEGER NOT NULL, output_total INTEGER NOT NULL, PRIMARY KEY(session,at_ms));
                 PRAGMA user_version=1;")?;
+            }
             tx.commit()?;
         }
         Ok(Self {

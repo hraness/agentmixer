@@ -67,6 +67,15 @@ describe("xcb CLI", () => {
     expect(stderr).toContain("provider not admitted");
   });
 
+  test("run and chat refuse a workspace containing private state before provider admission", async () => {
+    const state = await stateDir();
+    for (const args of [["run", "-p", "hi", "--cwd", state], ["chat", state]]) {
+      const result = await cli(args, undefined, state);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("overlaps private xcb state");
+    }
+  });
+
   test("run rejects an unknown provider", async () => {
     const { code, stderr } = await cli(["run", "--provider", "gemini", "-p", "hi"]);
     expect(code).toBe(2);

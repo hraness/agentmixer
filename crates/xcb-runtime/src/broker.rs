@@ -1,11 +1,11 @@
-use crate::{Error, Result, digest};
+use crate::{Error, Result, coordination, digest};
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::File,
     io::{Read, Write},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 use xcb_core::MAX_TEXT_BYTES;
@@ -24,6 +24,7 @@ pub struct Entry {
 pub struct Workspace {
     root: PathBuf,
     directory: File,
+    coordination_root: PathBuf,
 }
 
 fn io(error: rustix::io::Errno) -> Error {
@@ -48,7 +49,7 @@ fn regular(file: &File) -> Result<()> {
     }
     Ok(())
 }
-fn read_at(parent: &File, name: &std::ffi::OsStr) -> Result<ReadResult> {
+fn file_at(parent: &File, name: &std::ffi::OsStr) -> Result<File> {
     let file = File::from(
         rustix::fs::openat(
             parent,
@@ -59,6 +60,10 @@ fn read_at(parent: &File, name: &std::ffi::OsStr) -> Result<ReadResult> {
         .map_err(io)?,
     );
     regular(&file)?;
+    Ok(file)
+}
+fn read_at(parent: &File, name: &std::ffi::OsStr) -> Result<ReadResult> {
+    let file = file_at(parent, name)?;
     let mut bytes = Vec::new();
     file.take(MAX_TEXT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
@@ -73,19 +78,37 @@ fn read_at(parent: &File, name: &std::ffi::OsStr) -> Result<ReadResult> {
 
 impl Workspace {
     pub fn open(root: &Path) -> Result<Self> {
-        if !root.is_absolute() || root.canonicalize()? != root {
+        Self::open_with_coordination(root, &coordination::default_root()?)
+    }
+    pub fn open_with_coordination(root: &Path, coordination_root: &Path) -> Result<Self> {
+        if !root.is_absolute() || root.canonicalize()? != root || !coordination_root.is_absolute() {
             return Err(Error::PrivateState);
         }
+        let root = root.canonicalize()?;
+        if coordination_root.starts_with(&root) || root.starts_with(coordination_root) {
+            return Err(Error::Conflict(
+                "write coordination must be outside the workspace",
+            ));
+        }
         let fd = rustix::fs::open(
-            root,
+            &root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
         .map_err(io)?;
         Ok(Self {
-            root: root.to_owned(),
+            root,
             directory: File::from(fd),
+            coordination_root: coordination_root.to_owned(),
         })
+    }
+    fn check_root(&self) -> Result<()> {
+        let opened = self.directory.metadata()?;
+        let named = std::fs::symlink_metadata(&self.root)?;
+        if !named.is_dir() || opened.dev() != named.dev() || opened.ino() != named.ino() {
+            return Err(Error::Conflict("workspace directory changed"));
+        }
+        Ok(())
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -119,6 +142,9 @@ impl Workspace {
             return Err(xcb_core::Error::Limit("workspace write").into());
         }
         let (parent, name) = self.parent(path)?;
+        self.check_root()?;
+        let _lock = coordination::WriteLock::acquire(&self.root, &self.coordination_root)?;
+        self.check_root()?;
         let check = || -> Result<()> {
             match read_at(&parent, name) {
                 Ok(current) if expected == Some(current.revision.as_str()) => Ok(()),
@@ -134,6 +160,11 @@ impl Workspace {
             }
         };
         check()?;
+        let mode = if expected.is_some() {
+            file_at(&parent, name)?.metadata()?.mode() & 0o777
+        } else {
+            0o600
+        };
         let temp = format!(".xcb-{}", uuid::Uuid::new_v4().simple());
         let mut file = File::from(
             rustix::fs::openat(
@@ -146,9 +177,17 @@ impl Workspace {
         );
         let result = (|| {
             file.write_all(text.as_bytes())?;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
             file.sync_all()?;
             check()?;
-            rustix::fs::renameat(&parent, temp.as_str(), &parent, name).map_err(io)?;
+            self.check_root()?;
+            if expected.is_none() {
+                rustix::fs::linkat(&parent, temp.as_str(), &parent, name, AtFlags::empty())
+                    .map_err(io)?;
+                rustix::fs::unlinkat(&parent, temp.as_str(), AtFlags::empty()).map_err(io)?;
+            } else {
+                rustix::fs::renameat(&parent, temp.as_str(), &parent, name).map_err(io)?;
+            }
             parent.sync_all()?;
             Ok(digest(text))
         })();

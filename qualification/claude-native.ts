@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { assertClaudeInitialization, inspectClaudeSdkRuntime } from "../src/claude-sdk.ts";
+import { CLAUDE_SDK_CODE_VERSION, assertClaudeInitialization, inspectClaudeSdkRuntime } from "../src/claude-sdk.ts";
 import { literalClaudePrompt, restrictedClaudeOptions } from "../src/claude-options.ts";
 import { spawnBoundedProvider } from "../src/provider-process.ts";
 import { createToolBroker, type BrokerToolName } from "../src/broker.ts";
@@ -20,14 +20,14 @@ if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error("
 if (process.argv.slice(2).some(argument => argument !== "--os-sandbox")) throw new Error("INVALID_QUALIFICATION_ARGUMENT");
 const osSandbox = process.argv.includes("--os-sandbox");
 const executable = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"));
-const inspected = await inspectClaudeSdkRuntime({ executablePath: executable, executableSha256: createHash("sha256").update(await readFile(executable)).digest("hex") });
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-native-scope-")));
+const inspected = await inspectClaudeSdkRuntime({ executablePath: executable, executableSha256: createHash("sha256").update(await readFile(executable)).digest("hex"), cliVersion: CLAUDE_SDK_CODE_VERSION });
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-native-scope-")));
 const canary = "SYNTHETIC_OTHER_CONTACT_CANARY_483159";
 const instructionCanary = "SYNTHETIC_INHERITED_INSTRUCTION_831405";
 const dotenvCanary = "SYNTHETIC_DOTENV_932184";
 const results: unknown[] = [];
 const toolsUsed = ["files.read", "files.write", "messages.propose_text"] as const;
-const full = (name: string) => `mcp__agentmixer__${name.replaceAll(".", "_")}`;
+const full = (name: string) => `mcp__xcb__${name.replaceAll(".", "_")}`;
 type Attempt = { name: string; input: Record<string, unknown> };
 
 function streamMessage(model: string, attempts: Attempt[]): Response {
@@ -96,7 +96,7 @@ async function scenario(name: string, attempted: (input: { sibling: string; mark
     assert(JSON.stringify(advertisedTools) === JSON.stringify(classifier ? [] : toolsUsed.map(full).sort()), "FIXTURE_API_TOOL_MANIFEST_MISMATCH");
     const literal = literalClaudePrompt(request.prompt);
     if (apiCalls === 1) syntheticMessageShapes = (body.messages ?? []).map((message: { role: string; content: unknown }) => ({ role: message.role,
-      content: typeof message.content === "string" ? { includesLiteral: message.content.includes(literal) } : (message.content as { type?: string; text?: string }[]).map(block => ({ type: block.type, prefix: block.text?.startsWith("Agentmixer task,") ? block.text.slice(0, 180) : undefined, includesLiteral: block.text?.includes(literal) })) }));
+      content: typeof message.content === "string" ? { includesLiteral: message.content.includes(literal) } : (message.content as { type?: string; text?: string }[]).map(block => ({ type: block.type, prefix: block.text?.startsWith("Xcb task,") ? block.text.slice(0, 180) : undefined, includesLiteral: block.text?.includes(literal) })) }));
     literalTaskObserved ||= (body.messages ?? []).some((message: { role: string; content: string | { type: string; text?: string }[] }) => message.role === "user"
       && (typeof message.content === "string" ? message.content === literal : message.content.some(block => block.type === "text" && block.text === literal)));
     for (const message of body.messages ?? []) for (const block of Array.isArray(message.content) ? message.content : []) {
@@ -136,7 +136,7 @@ async function scenario(name: string, attempted: (input: { sibling: string; mark
   const env = { HOME: home, CLAUDE_CONFIG_DIR: config, TMPDIR: temp, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8",
     ANTHROPIC_API_KEY: ["sk", "ant", "api03", "synthetic", "local", "fixture", "credential"].join("-"),
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}`, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.1.0", NO_COLOR: "1" };
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "xcb/0.1.0", NO_COLOR: "1" };
   const request = { runId: name, provider: "claude" as const, accountId: "synthetic-account", workspaceId: "synthetic-contact",
     model: "claude-sonnet-4-6", purpose: classifier ? "classify" as const : "respond" as const, prompt: taskText?.({ sibling, marker }) ?? "Synthetic qualification fixture. Return JSON.", signal: controller.signal };
   let observedTools: string[] = [];
@@ -145,7 +145,7 @@ async function scenario(name: string, attempted: (input: { sibling: string; mark
   try {
     const options = restrictedClaudeOptions({ cwd, env, abortController: controller, model: request.model, maxTurns: classifier ? 1 : 4, maxBudgetUsd: 0.01,
       pathToClaudeCodeExecutable: executable, brokerToolNames: names,
-      mcpServers: mcpTools.length ? { agentmixer: createSdkMcpServer({ name: "agentmixer", version: "1.0.0", tools: mcpTools }) } : {},
+      mcpServers: mcpTools.length ? { xcb: createSdkMcpServer({ name: "xcb", version: "1.0.0", tools: mcpTools }) } : {},
       spawnClaudeCodeProcess(input) {
         assert(!child && input.command === executable && input.cwd === cwd, "FIXTURE_SPAWN_MISMATCH");
         const profile = osSandbox ? syntheticMacSandbox({ executable, scratch: [cwd, home, config, temp, ...claudeTmp],

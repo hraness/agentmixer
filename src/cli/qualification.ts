@@ -9,7 +9,7 @@ import { boundedText, identifier, safeInteger } from "../validation.ts";
 import { privateDirectory } from "./state.ts";
 
 const MAX_QUALIFICATION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const RECORD_VERSION = "agentmixer.cli-qualification.v1";
+const RECORD_VERSION = "xcb.cli-qualification.v1";
 
 const fail = (code: string): never => { throw new Error(code); };
 const digest = (value: unknown): string =>

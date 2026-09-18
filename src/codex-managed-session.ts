@@ -335,7 +335,7 @@ export async function runCodexManagedSession(options: {
     process.stdout.on("data", onData); process.stdout.on("end", onEnd); process.stdout.on("error", onError); process.stdin?.on("error", onError);
     workflow = (async () => {
       await process!.ready; active();
-      await rpc("initialize", { clientInfo: { name: "agentmixer", version: "0.1.0" }, capabilities: { experimentalApi: true } });
+      await rpc("initialize", { clientInfo: { name: "xcb", version: "0.4.0" }, capabilities: { experimentalApi: true } });
       initialized = true; await write({ method: "initialized" });
       assertCodexManagedAccountResponse(await rpc("account/read", { refreshToken: false })); chatgptAccountObserved = true;
       assertCodexManagedConfigResponse(await rpc("config/read", { cwd: process!.cwd, includeLayers: false }), { cwd: process!.cwd });

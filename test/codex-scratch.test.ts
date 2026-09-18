@@ -7,7 +7,7 @@ import { inspectCodexScratch } from "../src/codex-scratch.ts";
 
 const configuration = "provider = 'synthetic-native'\n";
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-scratch-"))); await chmod(root, 0o700);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-scratch-"))); await chmod(root, 0o700);
   const scratch = join(root, "child"); await mkdir(scratch, { mode: 0o700 });
   for (const name of ["home", "state", "tmp", "work"]) await mkdir(join(scratch, name), { mode: 0o700 });
   const config = join(scratch, "state", "config.toml"), outside = join(root, "outside.toml");

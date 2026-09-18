@@ -7,7 +7,7 @@ import { CliSessionStore } from "../src/cli/sessions.ts";
 import { privateDirectory } from "../src/cli/state.ts";
 
 async function fixture() {
-  const base = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+  const base = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
   await chmod(base, 0o700);
   return { base, open: () => CliSessionStore.open(join(base, "sessions")) };
 }
@@ -96,7 +96,7 @@ describe("cli session store", () => {
   test("state root requires a physical private directory", async () => {
     const { base } = await fixture();
     await chmod(join(base), 0o755);
-    await expect(privateDirectory(base)).rejects.toThrow("AGENTMIXER_DIRECTORY_NOT_PRIVATE");
+    await expect(privateDirectory(base)).rejects.toThrow("XCB_DIRECTORY_NOT_PRIVATE");
     await chmod(base, 0o700);
     await expect(privateDirectory(base)).resolves.toBe(base);
   });

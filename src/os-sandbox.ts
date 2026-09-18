@@ -56,6 +56,26 @@ export type OsSandboxSpec = Readonly<{
    * (admitted library closure, fixed config). Never directories unless the
    * backend documents subpath semantics. */
   readOnlyPaths?: readonly string[];
+  /** Extra absolute paths admitted read-write inside the sandbox beyond
+   * scratch/accountHome — e.g. the consumer workspace for providers whose own
+   * filesystem tools write directly rather than through a host broker. Paths
+   * must not contain or enclose the executable (unless a `protectedPaths`
+   * entry re-covers it), each other, scratch, accountHome, policyPath, the
+   * egress socket, or forwarder artifacts. */
+  readWritePaths?: readonly string[];
+  /** Read-only re-covers mounted *after* the writable binds, so a path nested
+   * inside a writable root stays immutable (e.g. a provider's install tree
+   * inside its writable state root). On seatbelt these emit deny-write
+   * rules; on bwrap they are later ro binds that shadow the rw parent. Every
+   * entry must sit inside a writable root. */
+  protectedPaths?: readonly string[];
+  /** Masked subtrees nested inside a writable root: contents stay reachable
+   * on the host but are invisible inside the sandbox (e.g. credential stores
+   * that happen to sit under a workspace bound read-write). On seatbelt
+   * these emit deny read+write rules; on bwrap they are tmpfs mounts that
+   * shadow the bound subtree. Every entry must sit inside a writable root
+   * and must never cover the executable. */
+  hiddenPaths?: readonly string[];
   network: OsSandboxNetworkPolicy;
   /** Canonical absolute path of a host-side egress-bridge unix socket,
    * bind-mounted read-write. Required iff `network` is
@@ -65,15 +85,21 @@ export type OsSandboxSpec = Readonly<{
   /** Optional in-namespace CONNECT forwarder for stock binaries that do not
    * consume the bridge socket natively: an admitted JS runtime plus the
    * admitted forwarder script are bound read-only and become the namespace
-   * entry point — `runtime script <socket> <port> - -- <executable> <args>`.
+   * entry point — `runtime script <socket> <port> <lo|- > <env|- > <svc|- > -- <executable> <args>`.
    * The forwarder binds `127.0.0.1:<port>` and launches the child with
    * standard proxy variables, so the plan env needs no proxy keys. Requires
    * `egressSocket`; refused by seatbelt.
    * `envFile` is an optional absolute path inside the writable scratch or
    * account root: when set, `wrap()` writes the invocation env there
    * (mode 0600) and the forwarder injects it into the child, keeping every
-   * value — secret or not — out of the wrapper's command line. */
-  egressForward?: Readonly<{ runtime: string; script: string; port: number; envFile?: string }>;
+   * value — secret or not — out of the wrapper's command line.
+   * `service` is an optional second listener: the forwarder binds
+   * `127.0.0.1:<service.port>` inside the namespace and pipes each accepted
+   * connection to `service.socket`, a host-side unix socket bound into the
+   * namespace — the in-namespace consumption path for host services (the
+   * tool relay) that are not CONNECT egress. */
+  egressForward?: Readonly<{ runtime: string; script: string; port: number; envFile?: string;
+    service?: Readonly<{ socket: string; port: number }> }>;
   /** Absolute path of the durable policy artifact the caller persists
    * (`sandbox.sb`, `sandbox.json`). Identity flows into custody journals. */
   policyPath: string;
@@ -128,12 +154,24 @@ function arg(value: string, code: string): string {
   return value;
 }
 function specOf(value: unknown): OsSandboxSpec {
-  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "network", "egressSocket", "egressForward", "policyPath"]);
+  const raw = object(value, ["platform", "executable", "scratch", "accountHome", "readOnlyPaths", "readWritePaths", "protectedPaths", "hiddenPaths", "network", "egressSocket", "egressForward", "policyPath"]);
   const platform = raw.platform;
   assert(platform === "darwin" || platform === "linux", "OS_SANDBOX_PLATFORM_INVALID");
   const readOnly = raw.readOnlyPaths === undefined ? [] : (() => {
     assert(Array.isArray(raw.readOnlyPaths) && raw.readOnlyPaths.length <= 256, "OS_SANDBOX_SPEC_INVALID");
     return (raw.readOnlyPaths as unknown[]).map(entry => path(entry));
+  })();
+  const readWrite = raw.readWritePaths === undefined ? [] : (() => {
+    assert(Array.isArray(raw.readWritePaths) && raw.readWritePaths.length <= 8, "OS_SANDBOX_SPEC_INVALID");
+    return (raw.readWritePaths as unknown[]).map(entry => path(entry));
+  })();
+  const protectedPaths = raw.protectedPaths === undefined ? [] : (() => {
+    assert(Array.isArray(raw.protectedPaths) && raw.protectedPaths.length <= 8, "OS_SANDBOX_SPEC_INVALID");
+    return (raw.protectedPaths as unknown[]).map(entry => path(entry));
+  })();
+  const hiddenPaths = raw.hiddenPaths === undefined ? [] : (() => {
+    assert(Array.isArray(raw.hiddenPaths) && raw.hiddenPaths.length <= 16, "OS_SANDBOX_SPEC_INVALID");
+    return (raw.hiddenPaths as unknown[]).map(entry => path(entry));
   })();
   const network = raw.network;
   assert(network === "denied" || network === "loopback" || network === "provider-tcp443-dns", "OS_SANDBOX_NETWORK_INVALID");
@@ -141,31 +179,78 @@ function specOf(value: unknown): OsSandboxSpec {
   const egressSocket = raw.egressSocket === undefined ? undefined : path(raw.egressSocket);
   assert(egressSocket === undefined || network === "provider-tcp443-dns", "OS_SANDBOX_EGRESS_UNEXPECTED");
   const egressForward = raw.egressForward === undefined ? undefined : (() => {
-    const forward = object(raw.egressForward, ["runtime", "script", "port", "envFile"]);
+    const forward = object(raw.egressForward, ["runtime", "script", "port", "envFile", "service"]);
     const port = forward.port;
     assert(Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535, "OS_SANDBOX_EGRESS_PORT_INVALID");
+    const service = forward.service === undefined ? undefined : (() => {
+      const svc = object(forward.service, ["socket", "port"]);
+      assert(Number.isInteger(svc.port) && (svc.port as number) >= 1 && (svc.port as number) <= 65535
+        && svc.port !== port, "OS_SANDBOX_EGRESS_PORT_INVALID");
+      return Object.freeze({ socket: path(svc.socket), port: svc.port as number });
+    })();
     return Object.freeze({ runtime: path(forward.runtime), script: path(forward.script), port: port as number,
-      ...(forward.envFile === undefined ? {} : { envFile: path(forward.envFile) }) });
+      ...(forward.envFile === undefined ? {} : { envFile: path(forward.envFile) }),
+      ...(service === undefined ? {} : { service }) });
   })();
   // A forwarder is meaningless without the bridge socket it translates to;
   // conversely the socket alone is the native-consumption contract.
   assert(egressForward === undefined || egressSocket !== undefined, "OS_SANDBOX_EGRESS_UNEXPECTED");
+  const serviceSocket = egressForward?.service?.socket;
   const spec = Object.freeze({ platform, executable, scratch,
     ...(raw.accountHome === undefined ? {} : { accountHome: path(raw.accountHome) }),
-    readOnlyPaths: Object.freeze(readOnly), network,
+    readOnlyPaths: Object.freeze(readOnly),
+    readWritePaths: Object.freeze(readWrite),
+    protectedPaths: Object.freeze(protectedPaths),
+    hiddenPaths: Object.freeze(hiddenPaths), network,
     ...(egressSocket === undefined ? {} : { egressSocket }),
     ...(egressForward === undefined ? {} : { egressForward }), policyPath });
   // The writable roots must not contain or enclose the executable or each
-  // other: a rw bind over the exe would let the child replace it.
+  // other: a rw bind over the exe would let the child replace it. An extra
+  // read-write path may hold the executable only when a protected path
+  // re-covers it (ro bind over the rw parent / seatbelt deny-write).
   const inside = (inner: string, outer: string) => inner === outer || inner.startsWith(outer + "/");
-  assert(!inside(executable, scratch) && (spec.accountHome === undefined || !inside(executable, spec.accountHome)), "OS_SANDBOX_LAYOUT_INVALID");
+  const writable = [scratch, ...(spec.accountHome === undefined ? [] : [spec.accountHome]), ...spec.readWritePaths];
+  assert(!inside(executable, scratch) && (spec.accountHome === undefined || !inside(executable, spec.accountHome))
+    && (!spec.readWritePaths.some(root => inside(executable, root))
+      || spec.protectedPaths.some(root => inside(executable, root))), "OS_SANDBOX_LAYOUT_INVALID");
   assert(spec.accountHome === undefined || (!inside(scratch, spec.accountHome) && !inside(spec.accountHome, scratch)), "OS_SANDBOX_LAYOUT_INVALID");
   assert(!inside(policyPath, scratch) && (spec.accountHome === undefined || !inside(policyPath, spec.accountHome)), "OS_SANDBOX_LAYOUT_INVALID");
+  // Extra writable roots bind their target to itself, so nesting among them
+  // or against scratch is harmless — the durable policy, the egress socket
+  // and forwarder artifacts are the only real containment concerns: a child
+  // that could rewrite its own policy artifact, swap the bridge socket, or
+  // replace the namespace entry point would break admission integrity.
+  for (const root of spec.readWritePaths) {
+    assert(!inside(policyPath, root), "OS_SANDBOX_LAYOUT_INVALID");
+    assert(egressSocket === undefined || !inside(egressSocket, root), "OS_SANDBOX_LAYOUT_INVALID");
+    assert(egressForward === undefined
+      || (!inside(egressForward.runtime, root) && !inside(egressForward.script, root)), "OS_SANDBOX_LAYOUT_INVALID");
+  }
+  // Protected and hidden paths re-cover a subtree of an existing writable
+  // root (ro shadow / seatbelt deny-write / masked contents). An entry
+  // outside every writable root would be a meaningless duplicate of
+  // readOnlyPaths — or, for hidden paths, a mount on nothing.
+  for (const root of spec.protectedPaths) {
+    assert(writable.some(parent => inside(root, parent)), "OS_SANDBOX_LAYOUT_INVALID");
+    assert(egressSocket === undefined || !inside(egressSocket, root), "OS_SANDBOX_LAYOUT_INVALID");
+  }
+  for (const root of spec.hiddenPaths) {
+    assert(writable.some(parent => inside(root, parent)), "OS_SANDBOX_LAYOUT_INVALID");
+    assert(!inside(executable, root), "OS_SANDBOX_LAYOUT_INVALID");
+    assert(egressSocket === undefined || !inside(egressSocket, root), "OS_SANDBOX_LAYOUT_INVALID");
+  }
   // The bridge socket takes its own rw bind; nesting it inside a writable root
   // would make the extra bind meaningless, and a socket inside the writable
-  // roots could be replaced by the child before the bridge notices.
+  // roots could be replaced by the child before the bridge notices. The
+  // service socket is the same shape: inside a writable root a child could
+  // substitute its own host-service impersonation.
   assert(egressSocket === undefined || (!inside(egressSocket, scratch)
     && (spec.accountHome === undefined || !inside(egressSocket, spec.accountHome))), "OS_SANDBOX_LAYOUT_INVALID");
+  assert(serviceSocket === undefined || (!inside(serviceSocket, scratch)
+    && (spec.accountHome === undefined || !inside(serviceSocket, spec.accountHome))
+    && !spec.readWritePaths.some(root => inside(serviceSocket, root))
+    && !spec.hiddenPaths.some(root => inside(serviceSocket, root))
+    && !spec.protectedPaths.some(root => inside(serviceSocket, root))), "OS_SANDBOX_LAYOUT_INVALID");
   // Forwarder artifacts get the same non-containment rule as the executable:
   // a rw bind must never cover the entry point the namespace actually runs.
   assert(egressForward === undefined
@@ -283,25 +368,35 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
     ...(spec.readOnlyPaths ?? []).map(target => ({ mode: "ro" as const, target })),
     { mode: "rw" as const, target: spec.scratch },
     ...(spec.accountHome === undefined ? [] : [{ mode: "rw" as const, target: spec.accountHome }]),
+    ...(spec.readWritePaths ?? []).map(target => ({ mode: "rw" as const, target })),
     ...(spec.egressSocket === undefined ? [] : [{ mode: "rw" as const, target: spec.egressSocket }]),
     ...(spec.egressForward === undefined ? [] : [
       { mode: "ro" as const, target: spec.egressForward.runtime },
       { mode: "ro" as const, target: spec.egressForward.script }]),
+    ...(spec.egressForward?.service === undefined ? [] : [{ mode: "rw" as const, target: spec.egressForward.service.socket }]),
+    // Protected paths are ro binds emitted last: a later bind over a
+    // subdirectory of a rw parent shadows it back to read-only.
+    ...(spec.protectedPaths ?? []).map(target => ({ mode: "ro" as const, target })),
   ]);
   // The canonical policy binds every mount decision before any argv is
   // wrapped: namespace flags, bind set, and the in-sandbox executable.
-  const policy = JSON.stringify({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap",
+  const policy = JSON.stringify({ schema: "xcb.os-sandbox-bwrap.v1", backend: "bwrap",
     namespaces: ["user", "mount", "pid", "ipc", "uts", "cgroup", "net"], newSession: true, dieWithParent: true,
     executable: spec.executable, binds,
+    ...((spec.hiddenPaths ?? []).length === 0 ? {} : { masked: spec.hiddenPaths }),
     ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443",
       ...(spec.egressForward === undefined ? {} : { forwarder: { runtime: spec.egressForward.runtime,
         script: spec.egressForward.script, port: spec.egressForward.port,
         ...(spec.egressForward.envFile === undefined ? {} : { envFile: spec.egressForward.envFile }),
+        ...(spec.egressForward.service === undefined ? {} : { service: spec.egressForward.service }),
         protocol: "http-connect-loopback" } }) } }) }) + "\n";
   const prefix = [
     "--unshare-all", "--new-session", "--die-with-parent",
     "--proc", "/proc", "--dev", "/dev",
     ...binds.flatMap(entry => entry.mode === "ro" ? ["--ro-bind", entry.target, entry.target] : ["--bind", entry.target, entry.target]),
+    // Masked subtrees get a tmpfs shadow after every bind: the bound parent
+    // stays reachable, the covered subtree reads as an empty directory.
+    ...(spec.hiddenPaths ?? []).flatMap(target => ["--tmpfs", target]),
     "--clearenv",
   ];
   return Object.freeze({ backend: "bwrap", policy, policySha256: hash(policy), executable: wrapper,
@@ -318,11 +413,14 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
         : [];
       // With a forwarder admitted, the namespace entry point is the runtime
       // running the script; the provider executable becomes the supervised
-      // child after `--`. `-` keeps the diagnostic lo-up hook unused.
+      // child after `--`. `-` keeps the diagnostic lo-up hook unused; the
+      // optional service positional carries `<socket>:<port>` or `-`.
+      const service = spec.egressForward?.service;
       const entrypoint = spec.egressForward === undefined
         ? [spec.executable]
         : [spec.egressForward.runtime, spec.egressForward.script, spec.egressSocket!,
-          String(spec.egressForward.port), "-", envFile ?? "-", "--", spec.executable];
+          String(spec.egressForward.port), "-", envFile ?? "-",
+          service === undefined ? "-" : `${service.socket}:${service.port}`, "--", spec.executable];
       return { args: Object.freeze([...prefix, ...setenv, "--chdir", wrapped.cwd, "--", ...entrypoint, ...wrapped.args]),
         // bwrap itself needs nothing beyond a minimal PATH; the policy env
         // is delivered through --setenv or the private env file.

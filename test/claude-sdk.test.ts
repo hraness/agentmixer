@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { spawnBoundedProvider } from "../src/provider-process.ts";
-import { AgentMixer, CONTACT_TOOL_PROFILE, SqliteAccountLeases, createClaudeSdkAdapter, createToolBroker,
+import { Xcb, CONTACT_TOOL_PROFILE, SqliteAccountLeases, createClaudeSdkAdapter, createToolBroker,
   inspectClaudeSdkRuntime, type RuntimeQualification, type ClaudeApiKeyResolver } from "../src/index.ts";
 
 const directories: string[] = [];
@@ -21,14 +21,14 @@ import { createInterface } from 'node:readline';
 const args=process.argv.slice(2), get=(name)=>args.indexOf(name)===-1?undefined:args[args.indexOf(name)+1];
 const output=(value)=>process.stdout.write(JSON.stringify(value)+'\\n');
 let request, calls=[], nextId=1, pending=new Map();
-const sendMcp=(message)=>new Promise(resolve=>{const id='fixture-'+nextId++; pending.set(id,resolve); output({type:'control_request',request_id:id,request:{subtype:'mcp_message',server_name:'agentmixer',message}})});
+const sendMcp=(message)=>new Promise(resolve=>{const id='fixture-'+nextId++; pending.set(id,resolve); output({type:'control_request',request_id:id,request:{subtype:'mcp_message',server_name:'xcb',message}})});
 const init=()=>({type:'system',subtype:'init',session_id:'synthetic-session',uuid:'synthetic-init',claude_code_version:'2.1.268',cwd:process.cwd(),
   model:request.badModel?'wrong-model':get('--model'),apiKeySource:'ANTHROPIC_API_KEY',permissionMode:'dontAsk',
   tools:request.extraTool?['Bash']:(get('--allowedTools')||'').split(',').filter(Boolean),
-  skills:[],plugins:[],mcp_servers:get('--allowedTools')?[{name:'agentmixer',status:'connected'}]:[],slash_commands:[],output_style:'default'});
+  skills:[],plugins:[],mcp_servers:get('--allowedTools')?[{name:'xcb',status:'connected'}]:[],slash_commands:[],output_style:'default'});
 async function run(frame){
  const plain=typeof frame.message.content==='string'?frame.message.content:frame.message.content[0].text;
- if(!plain.startsWith('Agentmixer task, supplied as plain text:'))throw new Error('MISSING_LITERAL_GUARD');
+ if(!plain.startsWith('xcb task, supplied as plain text:'))throw new Error('MISSING_LITERAL_GUARD');
  request=JSON.parse(plain.slice(plain.indexOf('\\n\\n')+2));
  output(init());
  if(request.hang){process.on('SIGTERM',()=>{});return;}
@@ -37,7 +37,7 @@ async function run(frame){
   calls.push(result);
  }
  const result={calls,toolsEmpty:get('--tools')==='',settingsSourcesEmpty:args.includes('--setting-sources='),strictMcp:args.includes('--strict-mcp-config'),persisted:!args.includes('--no-session-persistence'),
-  ambient:process.env.AGENTMIXER_SYNTHETIC_SECRET??null,authMatches:process.env.ANTHROPIC_API_KEY==='${fakeKey}',cwd:process.cwd(),home:process.env.HOME,
+  ambient:process.env.XCB_SYNTHETIC_SECRET??null,authMatches:process.env.ANTHROPIC_API_KEY==='${fakeKey}',cwd:process.cwd(),home:process.env.HOME,
   settings:JSON.parse(get('--settings')||'{}')};
  output({type:'result',subtype:'success',session_id:'synthetic-session',uuid:'synthetic-result',is_error:false,result:JSON.stringify(result),num_turns:1,total_cost_usd:0,duration_ms:1,duration_api_ms:0,usage:{},modelUsage:{},permission_denials:[],stop_reason:'end_turn'});
 }
@@ -52,11 +52,11 @@ for await(const line of createInterface({input:process.stdin})){
 `;
 
 async function setup() {
-  const original = await mkdtemp(join(tmpdir(), "agentmixer-claude-")); directories.push(original);
+  const original = await mkdtemp(join(tmpdir(), "xcb-claude-")); directories.push(original);
   const root = await realpath(original), executablePath = join(root, "synthetic-cli");
   await writeFile(executablePath, cliSource, { mode: 0o700 });
   const executableSha256 = createHash("sha256").update(await readFile(executablePath)).digest("hex");
-  const runtime = { executablePath, executableSha256 };
+  const runtime = { executablePath, executableSha256, cliVersion: "2.1.268" };
   const inspected = await inspectClaudeSdkRuntime(runtime);
   const qualification: RuntimeQualification = { status: "qualified", profile: CONTACT_TOOL_PROFILE,
     runtimeVersion: inspected.runtimeVersion, runtimeDigest: inspected.runtimeDigest,
@@ -83,8 +83,8 @@ const makeRequest = (payload: unknown, signal = new AbortController().signal) =>
 
 test("real SDK classifier has zero tools, fresh state, no inherited config or credentials, and confirmed process exit", async () => {
   const setupValue = await setup();
-  const before = process.env.AGENTMIXER_SYNTHETIC_SECRET;
-  process.env.AGENTMIXER_SYNTHETIC_SECRET = "should-not-cross";
+  const before = process.env.XCB_SYNTHETIC_SECRET;
+  process.env.XCB_SYNTHETIC_SECRET = "should-not-cross";
   try {
     const adapter = createClaudeSdkAdapter({ ...setupValue, stateRoot: setupValue.root, credentials, now: () => 1 });
     const { broker } = makeBroker(undefined, true);
@@ -97,7 +97,7 @@ test("real SDK classifier has zero tools, fresh state, no inherited config or cr
     expect(result.processStopped).toBe(true);
     await expect(stat(String(output.cwd))).rejects.toThrow();
   } finally {
-    if (before === undefined) delete process.env.AGENTMIXER_SYNTHETIC_SECRET; else process.env.AGENTMIXER_SYNTHETIC_SECRET = before;
+    if (before === undefined) delete process.env.XCB_SYNTHETIC_SECRET; else process.env.XCB_SYNTHETIC_SECRET = before;
   }
 }, 10_000);
 
@@ -144,7 +144,7 @@ test("a resolved factory stop without stopped evidence retains the account and p
         cwd = input.cwd; const owned = spawnBoundedProvider(input);
         return { ...owned, isStopped: () => false };
       } });
-    const router = new AgentMixer({ adapters: [adapter], leases, now: () => 1 });
+    const router = new Xcb({ adapters: [adapter], leases, now: () => 1 });
     await expect(router.run({ ...makeRequest({}), purpose: "classify" }, makeBroker(undefined, true).broker))
       .rejects.toThrow("CLAUDE_PROCESS_EXIT_UNPROVEN");
     expect(leases.inspect("claude", "account-one")).not.toBeNull(); expect((await stat(cwd)).isDirectory()).toBe(true);
@@ -157,7 +157,7 @@ test("an unexpected factory throw supplies no no-launch custody evidence", async
     const leases = new SqliteAccountLeases(db);
     const adapter = createClaudeSdkAdapter({ ...value, stateRoot: value.root, credentials, now: () => 1,
       processFactory(input) { cwd = input.cwd; throw Error("SYNTHETIC_FACTORY_FAILURE"); } });
-    await expect(new AgentMixer({ adapters: [adapter], leases, now: () => 1 })
+    await expect(new Xcb({ adapters: [adapter], leases, now: () => 1 })
       .run(makeRequest({}), makeBroker().broker)).rejects.toThrow("CLAUDE_PROCESS_EXIT_UNPROVEN");
     expect(leases.inspect("claude", "account-one")).not.toBeNull(); expect((await stat(cwd)).isDirectory()).toBe(true);
   } finally { db.close(); }
@@ -168,7 +168,7 @@ test.each([{ extraTool: true }, { badModel: true }])("unexpected native tool inv
   try {
     const leases = new SqliteAccountLeases(db);
     const adapter = createClaudeSdkAdapter({ ...value, stateRoot: value.root, credentials, now: () => 1 });
-    const router = new AgentMixer({ adapters: [adapter], leases, now: () => 1 });
+    const router = new Xcb({ adapters: [adapter], leases, now: () => 1 });
     await expect(router.run(makeRequest(payload), broker)).rejects.toThrow("CLAUDE_RUN_FAILED");
     expect(calls).toEqual([]); expect(leases.inspect("claude", "account-one")).toBeNull();
   } finally { db.close(); }
@@ -193,7 +193,7 @@ test("revocation kills and joins a stalled SDK child before releasing account cu
   const db = new Database(":memory:");
   try {
     const leases = new SqliteAccountLeases(db), adapter = createClaudeSdkAdapter({ ...value, stateRoot: value.root, credentials, now: () => 1 });
-    const pending = new AgentMixer({ adapters: [adapter], leases, now: () => 1 }).run(makeRequest({ hang: true }, controller.signal), broker);
+    const pending = new Xcb({ adapters: [adapter], leases, now: () => 1 }).run(makeRequest({ hang: true }, controller.signal), broker);
     const timer = setTimeout(() => controller.abort(), 250);
     try { await expect(pending).rejects.toThrow("CLAUDE_RUN_FAILED"); } finally { clearTimeout(timer); }
     expect(leases.inspect("claude", "account-one")).toBeNull();
@@ -204,7 +204,7 @@ test("non-executable runtime files fail preflight without stranding a lease", as
   const value = await setup(); await chmod(value.runtime.executablePath, 0o600); const db = new Database(":memory:");
   try {
     const leases = new SqliteAccountLeases(db), adapter = createClaudeSdkAdapter({ ...value, stateRoot: value.root, credentials, now: () => 1 });
-    await expect(new AgentMixer({ adapters: [adapter], leases, now: () => 1 }).run(makeRequest({}), makeBroker().broker)).rejects.toThrow("CLAUDE_RUNTIME_PREFLIGHT_FAILED");
+    await expect(new Xcb({ adapters: [adapter], leases, now: () => 1 }).run(makeRequest({}), makeBroker().broker)).rejects.toThrow("CLAUDE_RUNTIME_PREFLIGHT_FAILED");
     expect(leases.inspect("claude", "account-one")).toBeNull();
   } finally { db.close(); }
 }, 10_000);
@@ -229,5 +229,5 @@ test("a FIFO runtime path is rejected without waiting for a writer", async () =>
   const value = await setup();
   const executablePath = join(value.root, "synthetic-fifo");
   execFileSync("/usr/bin/mkfifo", ["-m", "600", executablePath]);
-  await expect(inspectClaudeSdkRuntime({ executablePath, executableSha256: "0".repeat(64) })).rejects.toThrow("CLAUDE_RUNTIME_INVALID");
+  await expect(inspectClaudeSdkRuntime({ executablePath, executableSha256: "0".repeat(64), cliVersion: "2.1.268" })).rejects.toThrow("CLAUDE_RUNTIME_INVALID");
 }, 2_000);

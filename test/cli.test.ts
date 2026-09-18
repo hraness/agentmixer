@@ -7,7 +7,7 @@ const ROOT = resolve(import.meta.dir, "..");
 const CLI = join(ROOT, "src", "cli.ts");
 
 async function stateDir(): Promise<string> {
-  return await realpath(await mkdtemp(join(tmpdir(), "agentmixer-cli-test-")));
+  return await realpath(await mkdtemp(join(tmpdir(), "xcb-cli-test-")));
 }
 
 /** Run the CLI source under Bun in an isolated state root with provider
@@ -17,8 +17,8 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
   const child = Bun.spawn([process.execPath, CLI, ...args], {
     cwd: ROOT,
     env: {
-      ...process.env, AGENTMIXER_STATE: root, NO_COLOR: "1",
-      AGENTMIXER_CLAUDE: join(root, "no-such-claude"), AGENTMIXER_CODEX: join(root, "no-such-codex"),
+      ...process.env, XCB_STATE: root, NO_COLOR: "1",
+      XCB_CLAUDE: join(root, "no-such-claude"), XCB_CODEX: join(root, "no-such-codex"), XCB_DEVIN: join(root, "no-such-devin"),
       PATH: join(root, "empty-path"), HOME: root,
     },
     stdin: input === undefined ? "ignore" : "pipe",
@@ -29,7 +29,7 @@ async function cli(args: readonly string[], input?: string, state?: string): Pro
   return { code, stdout, stderr };
 }
 
-describe("agentmixer CLI", () => {
+describe("xcb CLI", () => {
   test("--version prints the package version", async () => {
     const { code, stdout } = await cli(["--version"]);
     expect(code).toBe(0);
@@ -39,7 +39,7 @@ describe("agentmixer CLI", () => {
   test("--help prints the command surface", async () => {
     const { code, stdout } = await cli(["--help"]);
     expect(code).toBe(0);
-    for (const command of ["auth claude", "auth status", "auth logout", "doctor", "sessions", "resume", "run [-p", "--cwd"]) expect(stdout).toContain(command);
+    for (const command of ["auth claude", "auth devin", "auth status", "auth logout", "doctor", "sessions", "resume", "run [-p", "--cwd", "devin"]) expect(stdout).toContain(command);
   });
 
   test("doctor reports missing providers and exits nonzero", async () => {
@@ -61,10 +61,42 @@ describe("agentmixer CLI", () => {
     expect(stderr).toContain("codex binary not found");
   });
 
+  test("auth devin refuses when the pinned binary is absent", async () => {
+    const { code, stderr } = await cli(["auth", "devin"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("devin binary not found");
+  });
+
+  test("doctor reports devin among the missing providers", async () => {
+    const { stdout } = await cli(["doctor"]);
+    expect(stdout).toContain("devin: not found");
+  });
+
+  test("run --provider devin refuses before provider admission", async () => {
+    const { code, stderr } = await cli(["run", "--provider", "devin", "-p", "hi"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("provider not admitted");
+  });
+
+  test("chat --provider devin refuses before provider admission", async () => {
+    const { code, stderr } = await cli(["--provider", "devin"], "hello\n");
+    expect(code).toBe(2);
+    expect(stderr).toContain("devin binary not found");
+  });
+
   test("run refuses before provider admission", async () => {
     const { code, stderr } = await cli(["run", "-p", "hello"]);
     expect(code).toBe(2);
     expect(stderr).toContain("provider not admitted");
+  });
+
+  test("run and chat refuse a workspace containing private state before provider admission", async () => {
+    const state = await stateDir();
+    for (const args of [["run", "-p", "hi", "--cwd", state], ["chat", state]]) {
+      const result = await cli(args, undefined, state);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("overlaps private xcb state");
+    }
   });
 
   test("run rejects an unknown provider", async () => {

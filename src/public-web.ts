@@ -48,7 +48,7 @@ export const nodePublicWebIO: PublicWebIO = {
         lookup: (_hostname, options, callback) => options.all
           ? callback(null, [{ address: address.address, family: address.family }])
           : callback(null, address.address, address.family),
-        headers: { Accept: "text/*, application/json, application/xml", "Accept-Encoding": "identity", "User-Agent": "Agentmixer/0.1 public-web" },
+        headers: { Accept: "text/*, application/json, application/xml", "Accept-Encoding": "identity", "User-Agent": "xcb/0.4 public-web" },
       }, incoming => {
         // A truncated response may close without emitting end. Reject promptly;
         // returning the received prefix would turn incomplete data into success.

@@ -72,7 +72,7 @@ export interface BrowserSessionSystem {
 }
 export type BrowserSessionPhase = "preparing" | "launch-pending" | "running" | "recovery-required" | "closed";
 export type BrowserSessionReceipt = Readonly<{
-  schema: "agentmixer.browser-session.v1"; binding: BrowserSessionBinding;
+  schema: "xcb.browser-session.v1"; binding: BrowserSessionBinding;
   productionQualified: false;
   browserVersion: string; browserSha256: string;
   launchAttempted: boolean; pid: number | null; pgid: number | null;
@@ -294,7 +294,7 @@ export async function recoverBrowserSession(input: Readonly<{
   const root = sessionRoot(stateRoot, provider, accountId);
   const lockPath = join(root, "lock.json");
   const marker = await readJsonMarker(lockPath, ["schema", "binding", "journalPath"]);
-  if (marker === null || marker.schema !== "agentmixer.browser-session-lock.v1") throw new Error("BROWSER_SESSION_RECOVERY_UNNEEDED");
+  if (marker === null || marker.schema !== "xcb.browser-session-lock.v1") throw new Error("BROWSER_SESSION_RECOVERY_UNNEEDED");
   const lock = marker;
   const held = bindingOf(lock.binding);
   assert(await input.proveStopped(held), "BROWSER_SESSION_PROCESS_STOP_UNPROVEN");
@@ -356,7 +356,7 @@ export function createBrowserSession(options: BrowserSessionOptions, trustedSyst
   let resolveExit!: () => void, resolveClosed!: () => void;
   const exited = new Promise<void>(done => { resolveExit = done; }), nativeClosed = new Promise<void>(done => { resolveClosed = done; });
   const nativeStreamClosures: Promise<void>[] = [];
-  const receipt = (): BrowserSessionReceipt => Object.freeze({ schema: "agentmixer.browser-session.v1", binding: owned,
+  const receipt = (): BrowserSessionReceipt => Object.freeze({ schema: "xcb.browser-session.v1", binding: owned,
     productionQualified: false, browserVersion: runtime.version, browserSha256: runtime.sha256,
     ...state, gracefulExit: state.rootExited && !state.forcedExit, failures: Object.freeze([...failures]) });
   function recordFailure(code: string) { if (failures.size < 24) failures.add(code); }
@@ -384,7 +384,7 @@ export function createBrowserSession(options: BrowserSessionOptions, trustedSyst
     // A foreign or drifting marker refuses the launch rather than inheriting
     // another account's cookies.
     await fixedFile(join(sessionDir, "binding.json"),
-      JSON.stringify({ schema: "agentmixer.browser-session-binding.v1", provider: owned.provider, accountId: owned.accountId }) + "\n", created);
+      JSON.stringify({ schema: "xcb.browser-session-binding.v1", provider: owned.provider, accountId: owned.accountId }) + "\n", created);
     // A pre-existing lock means a previous launch never proved its close.
     // Recover explicitly; never inherit an ambiguous profile.
     const existingLock = await lstat(join(sessionDir, "lock.json")).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
@@ -395,7 +395,7 @@ export function createBrowserSession(options: BrowserSessionOptions, trustedSyst
     journalFd = openSync(state.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     fsyncSync(journalFd); await syncDirectory(root);
     lockPath = join(sessionDir, "lock.json");
-    lockContents = JSON.stringify({ schema: "agentmixer.browser-session-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
+    lockContents = JSON.stringify({ schema: "xcb.browser-session-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
     const lock = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); lockOwned = true;
     try { await lock.writeFile(lockContents); await lock.sync(); } finally { await lock.close(); }
     await syncDirectory(sessionDir);

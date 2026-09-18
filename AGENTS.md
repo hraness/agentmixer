@@ -17,10 +17,12 @@
   in-namespace forwarder that gives stock binaries standard `HTTPS_PROXY`
   egress through the socket.
   `src/index.ts` is the package's complete public surface.
-- `src/cli/` is the standalone `agentmixer` terminal surface (`cli.ts` entry,
-  chat/run/resume/sessions/doctor/auth commands) built on the same task
-  runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the seatbelted
-  subscription route it drives.
+- `src/cli/` is the standalone `xcb` terminal surface (`cli.ts` entry,
+  chat/run/resume/sessions/doctor/auth/migrate commands) built on the same
+  task runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the
+  seatbelted subscription route it drives. `cli/state.ts` resolves `~/.xcb`
+  (env `XCB_STATE`) and owns the explicit `migrate` copy from legacy
+  `~/.agentmixer`; SQLite `agentmixer_*` tables rename lazily at open.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
@@ -32,8 +34,9 @@
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
 - `site/` is the informational xcb product page (Next.js, canonical origin
-  xcb.dev); it has no product-runtime connection. The AgentMixer package and
-  its verified publication datum remain a separate compatibility surface.
+  xcb.dev); it has no product-runtime connection. The `@hraness/xcb`
+  TypeScript package and its verified publication datum remain a separate
+  compatibility surface.
 - `.github/workflows/` holds the read-only CI matrix and the tag-gated
   immutable release pipeline.
 - `README.md`, `MANAGED-CODEX.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
@@ -61,8 +64,9 @@
   Require independent process-exit evidence before recovery.
 - Releases use the `v<version>` tag channel and the single-package release
   contract in `docs/publishing.md`. The former scoped `agentmixer-v*` /
-  `agentrouter-v*` namespaces and the `hraness/textbutler` repository identity
-  are rejected by the release checks on purpose; do not reintroduce them.
+  `agentrouter-v*` / `xcb-v*` namespaces and the `hraness/textbutler`
+  repository identity are rejected by the release checks on purpose; do not
+  reintroduce them.
 - Keep the public repository independently buildable. Do not reference
   sibling checkouts, private packages, or monorepo paths.
 
@@ -80,3 +84,26 @@
 - When a CI or policy gate scans complete Git history, check out the exact governed SHA and fetch only the fully qualified governed refs before scanning. Preserve the complete-history gate and reject unexpected refs instead of importing unrelated concurrent heads.
 - At closeout, record applicable branch, PR, check, merge, release, deployment, and production evidence. Archive only conclusively finished tasks, never from silence alone, and reclaim only freshly revalidated clean merged worktrees through the guarded exact-path flow.
 <!-- oompa-local-efficiency:end -->
+
+# Workspace write coordination
+
+- Native and compatibility workspace writers share a private SQLite lock database
+  per canonical UTF-8 workspace path. The default root is
+  `~/.local/share/xcb-coordination`; `XCB_COORDINATION_ROOT` is a trusted host
+  override that must agree across cooperating processes, independently of their
+  application state roots. Tests use explicit isolated coordination roots.
+- The lock database name is the workspace path's lowercase SHA-256 plus
+  `.sqlite`. Keep DELETE journal mode and hold `BEGIN IMMEDIATE` through revision
+  checking, publication, and directory sync. Never remove an active coordination
+  database or treat this filesystem lock as account/process-exit evidence.
+- Keep the in-process serialization around coordination database setup and use.
+  Closing an unrelated descriptor for the same SQLite file can release POSIX
+  record locks held by that process. New-file publication must remain
+  no-clobber; cooperating replacements preserve ordinary permission bits.
+- Native broker integration tests exercise actual Bun and Node lock owners and
+  process-exit release. Run them with the repository's Bun and Node toolchains
+  available on PATH. These guarantees cover cooperating broker writers, not
+  arbitrary editors or processes that bypass the coordination protocol.
+- Compatibility lease recovery requires an independently established host stop
+  witness bound to the exact lease; an absent argv marker or elapsed TTL is not
+  sufficient. Legacy leases without such a witness remain held.

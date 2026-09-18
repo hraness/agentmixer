@@ -164,14 +164,14 @@ describe("npm provenance verification policy", () => {
   test("rejects the former scoped release tag in a coordinate", () => {
     expect(() => parseVerifiedNpmProvenance(audit(), {
       ...coordinate,
-      verifiedTag: `agentmixer-v${version}`,
+      verifiedTag: `xcb-v${version}`,
     })).toThrow("coordinate is invalid");
   });
 
   test("rejects missing, invalid, or ambiguous npm verification results", () => {
     expect(() => parseVerifiedNpmProvenance({
       ...(audit() as Record<string, unknown>),
-      missing: [{ name: "@hraness/agentmixer" }],
+      missing: [{ name: "@hraness/xcb" }],
     }, coordinate)).toThrow("exactly one provenance-bearing release package");
     expect(() => parseVerifiedNpmProvenance({
       ...(audit() as Record<string, unknown>),
@@ -185,7 +185,7 @@ describe("npm provenance verification policy", () => {
       ...(audit() as Record<string, unknown>),
       verified: [
         ...((audit() as Record<string, unknown>).verified as unknown[]),
-        { name: "@hraness/agentmixer" },
+        { name: "@hraness/xcb" },
       ],
     }, coordinate)).toThrow("exactly one provenance-bearing release package");
   });

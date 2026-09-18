@@ -13,10 +13,10 @@ the kernel keeps sessions, credentials, and execution under explicit custody.
 
 xcb is the new name and direction for AgentMixer. The native Rust kernel and
 Ratatui interface are in development. The published
-`@hraness/agentmixer@0.3.0` package below is the retained TypeScript compatibility
-release, not a release of the new native interface. Existing AgentMixer account
-state, transcripts, imports, and release coordinates are not silently renamed
-or overwritten.
+`@hraness/xcb` package below is the retained TypeScript compatibility
+release, not a release of the new native interface. Existing AgentMixer
+account state, transcripts, imports, and release coordinates are not silently
+renamed or overwritten; see [migration](#migrating-from-agentmixer).
 
 The native design is deliberately local. There is no required daemon, cloud
 account, synchronization service, or task-shape router. Pick a provider and model,
@@ -48,14 +48,16 @@ provider features that have not been admitted.
 
 ### Install the native binary
 
-The `xcb` CLI builds with Rust 1.97.1 and works on macOS and Linux. A release
-tarball for your OS and architecture is attached to every `v<version>` GitHub
-Release as `xcb-<version>-<os>-<arch>.tar.gz` plus a `.sha256` checksum.
+The `xcb` CLI builds with Rust 1.97.1 and works on macOS and Linux. The release
+pipeline attaches `xcb-<version>-<os>-<arch>.tar.gz` plus an adjacent `.sha256`
+checksum to `v<version>` GitHub Releases. No release carrying native artifacts
+has been published yet; until one is, install from source.
 
-Install the latest release to `~/.local/bin`:
+Once a native release exists, install it to `~/.local/bin` (the leading `v` is
+optional):
 
 ```sh
-XCB_VERSION=0.1.0 ./scripts/install-native.sh
+XCB_VERSION=<version> ./scripts/install-native.sh
 ```
 
 Build and install from source instead:
@@ -107,13 +109,13 @@ Bun 1.3.14 or newer, or Node 22.13 or newer, is required. Add the canonical,
 versioned GitHub archive to a Bun project:
 
 ```sh
-bun add --exact --ignore-scripts https://github.com/hraness/xcb/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz
+bun add --exact --ignore-scripts https://github.com/hraness/xcb/releases/download/v0.4.0/hraness-xcb-0.4.0.tgz
 ```
 
-The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/agentmixer):
+The same release is mirrored to [npm](https://www.npmjs.com/package/@hraness/xcb):
 
 ```sh
-npm install --save-exact --ignore-scripts @hraness/agentmixer@0.3.0
+npm install --save-exact --ignore-scripts @hraness/xcb@0.4.0
 ```
 
 ## Standalone package
@@ -138,28 +140,28 @@ dependency completeness, installs it into an isolated consumer, and executes
 the public entry — including an account-lease custody round trip — under both
 runtimes. Releases are published through the repository's
 `v<version>` tag channel: an immutable GitHub Release tarball is the
-canonical artifact and `@hraness/agentmixer` on npm is an exact-byte mirror
+canonical artifact and `@hraness/xcb` on npm is an exact-byte mirror
 published with OIDC provenance. See `docs/publishing.md` for the release
 contract.
 
 ## Command-line interface
 
-The package ships an `agentmixer` executable — a standalone terminal interface
+The package ships an `xcb` executable — a standalone terminal interface
 that drives the same task runtime the library exposes. Installing the package
-puts `agentmixer` on the PATH:
+puts `xcb` on the PATH:
 
 ```sh
-npm install -g --ignore-scripts @hraness/agentmixer
-agentmixer doctor            # inspect provider binaries, admit this runtime
-agentmixer auth claude       # sign in with a Claude subscription
-agentmixer auth status       # show stored sign-in state
-agentmixer auth logout       # remove the stored credential
-agentmixer                   # open the chat in the current directory
-agentmixer run -p "task"     # one headless turn (--cwd picks the workspace)
-agentmixer sessions          # list local sessions
-agentmixer sessions rm <id>  # remove a session and its transcript
-agentmixer sessions prune    # drop sessions idle over 30 days (or N days)
-agentmixer resume [id]       # continue a session (default: most recent)
+npm install -g --ignore-scripts @hraness/xcb
+xcb doctor            # inspect provider binaries, admit this runtime
+xcb auth claude       # sign in with a Claude subscription
+xcb auth status       # show stored sign-in state
+xcb auth logout       # remove the stored credential
+xcb                   # open the chat in the current directory
+xcb run -p "task"     # one headless turn (--cwd picks the workspace)
+xcb sessions          # list local sessions
+xcb sessions rm <id>  # remove a session and its transcript
+xcb sessions prune    # drop sessions idle over 30 days (or N days)
+xcb resume [id]       # continue a session (default: most recent)
 ```
 
 Assistant text streams into the chat as the provider completes each content
@@ -167,7 +169,7 @@ block, and provider-declared errors (for example a plan's session limit) print
 their own message next to the typed outcome code. Piped output stays clean:
 streaming, spinners and ANSI styling only engage on a TTY.
 
-`agentmixer` is the kernel layer: one local CLI that keeps provider account
+`xcb` is the kernel layer: one local CLI that keeps provider account
 custody, process lifecycle, brokered workspace tools, and unified responses on
 this machine. Cloud sync and orchestration belong to higher-level products
 built on this package; sessions are local-only.
@@ -179,12 +181,12 @@ operation. Writes are atomic and require the file's current revision, so a
 stale or speculative edit fails instead of clobbering. `/help` lists the
 in-session commands; Ctrl-C cancels a running turn and Ctrl-D exits.
 
-State lives under `~/.agentmixer` (mode `0700`, override with
-`AGENTMIXER_STATE`): a SQLite session registry, bounded JSONL transcripts,
+State lives under `~/.xcb` (mode `0700`, override with
+`XCB_STATE`): a SQLite session registry, bounded JSONL transcripts,
 per-provider config directories, the local admission records `doctor` writes,
 and the subscription credential `auth` stores.
 
-`agentmixer auth claude` runs `claude setup-token` to mint a long-lived
+`xcb auth claude` runs `claude setup-token` to mint a long-lived
 (one-year) subscription OAuth token, captured and stored mode-0600 in the
 private state root — not the shared login keychain, so it cannot overwrite or
 be overwritten by a normal `claude` sign-in. The token reaches the provider
@@ -211,20 +213,49 @@ run rather than fall back unsandboxed. Other platforms keep bounded-process
 custody without an OS-confinement claim. The sandbox is enforcement on top of
 the broker boundary, not a substitute for it.
 
-`doctor` inspects the provider binary (explicit `AGENTMIXER_CLAUDE` /
-`AGENTMIXER_CODEX` pin, then PATH and known install locations), requires the
-exact pinned version, records its SHA-256, and writes a time-boxed local
-admission record binding that executable, this runtime build, and the
-capability profile digest. Any drift — a replaced binary, a new release, an
-edited profile — revokes admission until `doctor` runs again. The adapter
-re-proves the effective boundary on every run: `doctor`'s record is a gate,
-not a sandbox attestation.
+`doctor` inspects the provider binary (explicit `XCB_CLAUDE` /
+`XCB_CODEX` / `XCB_DEVIN` pin, then PATH and known install
+locations), requires an admitted version — Claude Code `>= 2.1.268` within
+major 2, Devin CLI `>= 3000.10.27` within major 3000, Codex's exact native
+build — records the binary's SHA-256, and writes a time-boxed local
+admission record binding that executable, its exact version, this runtime
+build, and the capability profile digest. Any drift — a replaced binary, a
+new release, an edited profile — revokes admission until `doctor` runs
+again. The adapter re-proves the effective boundary on every run:
+`doctor`'s record is a gate, not a sandbox attestation.
 
-Claude is the working provider today. Codex discovery is implemented, but
+Claude and Devin are the working providers today. Claude requires
+`>= 2.1.268` within major 2; Devin requires `devin` CLI 3000.10.27 or newer within major
+3000 and drives the provider's `devin acp` stdio protocol under the same
+managed-home custody and OS confinement — its file tools stay on the
+host-brokered relay, so the seatbelt/bwrap boundary grants the consumer
+workspace read-only and loopback only. Codex discovery is implemented, but
 managed sign-in and task admission stay gated: they require the trusted
 protocol manifest and pinned parent runtime described in
 [MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot
 self-produce. `--provider codex` fails closed until that evidence exists.
+
+## Migrating from AgentMixer
+
+Release 0.4.0 renamed the compatibility package's public identifiers from
+AgentMixer to xcb: `@hraness/agentmixer` → `@hraness/xcb`, the `agentmixer`
+executable → `xcb`, `~/.agentmixer` → `~/.xcb`, `AGENTMIXER_*` environment
+variables → `XCB_*`, `agentmixer.*` schema ids → `xcb.*`, `agentmixer_*`
+SQLite tables → `xcb_*`, and the `AgentMixer` runtime class → `Xcb`.
+
+Existing state is never renamed or overwritten silently:
+
+- Run `xcb migrate` once to copy `~/.agentmixer` (or `$AGENTMIXER_STATE`) into
+  the canonical root. The target must be empty; the legacy directory is left
+  untouched so an older install still works — remove it yourself when ready.
+- Alternatively, point `XCB_STATE` at the existing directory; the
+  `agentmixer_*` SQLite tables rename to `xcb_*` lazily on first open either
+  way.
+- `AGENTMIXER_CLAUDE` / `AGENTMIXER_CODEX` binary pins are still honored when
+  the `XCB_*` variable is unset; rename them when convenient.
+- Update dependents: package imports use `@hraness/xcb`, the runtime class is
+  `Xcb`, and shell invocations use `xcb`. The last AgentMixer release line is
+  `@hraness/agentmixer@0.3.0` under tag `v0.3.0`.
 
 ## Application-owned capability profiles
 
@@ -233,12 +264,12 @@ bind them to one host-selected workspace and run with `createCapabilityBroker()`
 The host supplies every descriptor, input parser and handler. Model arguments
 cannot replace the bound workspace, credentials or handler implementation. This
 separate interface leaves Textbutler's existing contact broker and
-`AgentMixer.run()` path unchanged.
+`Xcb.run()` path unchanged.
 
 For example, this host stores bounded notes in memory:
 
 ```ts
-import { createCapabilityProfile, createCapabilityBroker } from "@hraness/agentmixer";
+import { createCapabilityProfile, createCapabilityBroker } from "@hraness/xcb";
 
 const notes = new Map<string, unknown>();
 const hostState = { active: true };
@@ -287,7 +318,7 @@ and authorization checks. Revocation cannot undo an effect already performed.
 `revoke()` stops admission immediately; `close()` also waits for admitted handlers
 to settle. Neither proves that an external provider process has stopped.
 
-Use `AgentMixer.runTask(request, broker)` with explicitly supplied `taskAdapters`
+Use `Xcb.runTask(request, broker)` with explicitly supplied `taskAdapters`
 for application profiles. The request selects the exact route, authentication
 kind, account, profile, model, reasoning effort, service tier and run limits.
 The adapter needs current qualification for that exact route, runtime and profile.
@@ -375,9 +406,9 @@ stderr; a nonzero exit marks failure. The shim lives in `src/` only: it is a
 host integration tool, not part of the packed `dist` contract.
 
 ```toml
-[presets.agentmixer]
+[presets.xcb]
 strategy = "agentic"
-command = "bun /path/to/agentmixer/src/gobstopper-editor.ts"
+command = "bun /path/to/xcb/src/gobstopper-editor.ts"
 ```
 
 The editor tools only record the model's calls through the capability broker;
@@ -415,8 +446,10 @@ execution. `createProviderLaunchPlan()` is descriptive configuration, not a sand
 
 The installed versions are Claude Agent SDK **0.3.268**, bundled native Claude Code
 **2.1.268**, Anthropic SDK **0.125.0**, MCP SDK **1.30.0**, and Zod **4.6.2**.
-`inspectClaudeSdkRuntime()` checks the installed SDK version, native binary owner,
-mode, link count and SHA-256, and returns the composite qualification identity.
+`inspectClaudeSdkRuntime()` checks the installed SDK version, the admitted CLI
+version the host inspected (`>= 2.1.268` within major 2), native binary owner,
+mode, link count and SHA-256, and returns the composite qualification identity
+bound to that exact version and digest.
 Every run verifies and copies executable bytes from a checked file descriptor into
 its private run directory before resolving credentials. The subprocess runs that
 snapshot, so replacing the configured source path cannot replace the admitted
@@ -689,7 +722,7 @@ networking still refuses to plan.
 Two consumption paths exist. A cooperative in-sandbox runtime uses the public
 consumer (`src/egress-client.ts`): `connectEgress` /
 `connectEgressTls` / `createEgressHttpsAgent` / `fetchViaEgress` speak the
-`AGENTMIXER_EGRESS_SOCKET` contract directly, bound CONNECT size and response
+`XCB_EGRESS_SOCKET` contract directly, bound CONNECT size and response
 bytes, pin TLS SNI to the target host, and refuse anything but HTTPS on 443.
 A stock binary that does not know the contract gets an `egressForward` spec
 entry instead: an admitted JS runtime and the shipped forwarder script become
@@ -751,7 +784,7 @@ managed launcher or new production qualification is bundled or implicitly enable
 
 The application owns its daemon, contact enrollment, message classification policy,
 conversation history, memory format, prefix formatting and Ghostget/Linq access.
-AgentMixer owns the execution seam. The model cannot choose a workspace or contact
+Xcb owns the execution seam. The model cannot choose a workspace or contact
 in broker input. `WorkspaceFiles` and `PublicWeb` are trusted host ports. Textbutler supplies its confined file implementation and uses `createPublicWeb()` by default. Custom replacements must preserve file confinement and public-network policy across DNS and every redirect. URL syntax validation alone is insufficient. The supplied web client admits public unicast addresses, rejects mixed public/private DNS answers, pins the selected address while preserving TLS hostname verification, and validates each redirect anew. It fetches bounded UTF-8 text only; it does not carry account cookies or authorization headers.
 
 Messaging ports only stage proposed actions and return an intent ID. They must never
@@ -790,7 +823,7 @@ third-party product integrations to supported API authentication unless approved
 capability profiles. It requires a host `CodexResponsesUpstream`; selecting a
 subscription route does not provide subscription authentication. It maps the
 exact `CapabilityBroker` inventory into one Codex session, passes only host-supplied instructions and task settings, and
-retains the process receipt until `AgentMixer.runTask()` has joined the adapter
+retains the process receipt until `Xcb.runTask()` has joined the adapter
 stop and broker close. Constructing the adapter does not discover credentials,
 select an account, or qualify the installed native runtime; those remain explicit
 host and qualification inputs.
@@ -890,7 +923,7 @@ or a Darwin parent carrying one, is refused as a sandbox-admission mismatch.
 A Linux provider-egress profile additionally requires a `sandbox.egress`
 admission and a trusted-host `startEgressBridge` seam: the owner starts the
 unix-socket CONNECT bridge inside the run directory, binds the socket into
-the bwrap plan, hands the child its path as `AGENTMIXER_EGRESS_SOCKET`, and
+the bwrap plan, hands the child its path as `XCB_EGRESS_SOCKET`, and
 joins the bridge — listener closed, sockets joined, socket removed — before
 the account lock may release. A missing admission, a missing seam, a failed
 start, or an unproven join refuses or holds custody exactly like any other
@@ -934,7 +967,7 @@ all task capability denials and supplies a non-null reasoning effort. It accepts
 no caller configuration map. Non-null effort and tier also use explicit turn
 overrides; null values leave native defaults in place.
 
-The adapter defaults to unqualified. `AgentMixer.runTask()` refuses it before
+The adapter defaults to unqualified. `Xcb.runTask()` refuses it before
 account acquisition or process launch unless the trusted host supplies current
 qualification for the exact route, runtime and capability profile. Direct
 adapter calls also require qualification and a runtime-admitted request. Synthetic fixtures are not

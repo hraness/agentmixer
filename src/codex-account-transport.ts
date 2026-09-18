@@ -254,7 +254,7 @@ export function createCodexAccountStdioTransport(options: CodexAccountTransportO
   const initialized = Promise.resolve().then(async () => {
     const end = now() + initializeTimeoutMs;
     await until(process.ready, end, stopped.signal);
-    const result = object(await rpc("initialize", { clientInfo: { name: "agentmixer-account", version: "0.1.0" },
+    const result = object(await rpc("initialize", { clientInfo: { name: "xcb-account", version: "0.4.0" },
       capabilities: { experimentalApi: false, requestAttestation: false } }, end), ["userAgent", "codexHome", "platformFamily", "platformOs"]);
     text(result.userAgent, 1024); text(result.codexHome, 4096); text(result.platformFamily, 128); text(result.platformOs, 128);
     await until(write({ method: "initialized" }), end, stopped.signal);

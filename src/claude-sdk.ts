@@ -11,8 +11,30 @@ import { type BrokerToolName, type ToolBroker } from "./broker.ts";
 import { assertQualified, AgentStoppedError, type AgentAdapter, type AgentRunRequest, type RuntimeQualification } from "./runtime.ts";
 
 export const CLAUDE_SDK_VERSION = "0.3.268";
-export const CLAUDE_CODE_VERSION = "2.1.268";
-const SERVER = "agentmixer";
+/** The CLI release the bundled SDK package declares as its build pair — the
+ * manifest check uses this; installed-binary admission uses the floor below. */
+export const CLAUDE_SDK_CODE_VERSION = "2.1.268";
+/** Oldest admitted installed Claude Code release within major 2. Admission
+ * still binds the exact inspected version and executable SHA-256 into the
+ * qualification record, and the init assertion re-proves the effective
+ * boundary on every run; the floor only decides which binaries doctor may
+ * admit, so routine CLI patch/minor releases stop revoking the product. */
+export const CLAUDE_CODE_MIN_VERSION = "2.1.268";
+export const CLAUDE_CODE_MAX_MAJOR = 2;
+
+function claudeCodeVersionTuple(version: string): readonly [number, number, number] | null {
+  const parts = version.split(".");
+  if (parts.length !== 3 || parts.some((part) => !/^[0-9]{1,9}$/u.test(part))) return null;
+  const tuple = parts.map((part) => Number.parseInt(part, 10)) as [number, number, number];
+  return tuple.some((part) => !Number.isSafeInteger(part)) ? null : Object.freeze(tuple);
+}
+
+export function claudeCodeVersionAdmitted(version: string): boolean {
+  const got = claudeCodeVersionTuple(version), min = claudeCodeVersionTuple(CLAUDE_CODE_MIN_VERSION);
+  if (got === null || min === null || got[0] !== CLAUDE_CODE_MAX_MAJOR) return false;
+  return got[1] > min[1] || (got[1] === min[1] && got[2] >= min[2]);
+}
+const SERVER = "xcb";
 const MAX_OUTPUT_BYTES = 512 * 1024;
 
 /** Host-only credential use: never pass a subscription token, personal config home, or credential file. */
@@ -20,7 +42,7 @@ export interface ClaudeApiKeyResolver {
   withApiKey<T>(accountId: string, signal: AbortSignal, use: (apiKey: string) => Promise<T>): Promise<T>;
 }
 export interface ClaudeSdkAdapterOptions {
-  runtime: Readonly<{ executablePath: string; executableSha256: string }>;
+  runtime: Readonly<{ executablePath: string; executableSha256: string; cliVersion: string }>;
   /** Existing physical mode-0700 directory owned by this user, outside all contact folders. */
   stateRoot: string;
   credentials: ClaudeApiKeyResolver;
@@ -41,17 +63,18 @@ const hash = (data: Uint8Array | string) => createHash("sha256").update(data).di
 export async function inspectClaudeSdkRuntime(runtime: ClaudeSdkAdapterOptions["runtime"]): Promise<Readonly<{
   executablePath: string; executableSha256: string; sdkSha256: string; runtimeDigest: string; runtimeVersion: string;
 }>> {
-  if (!isAbsolute(runtime.executablePath) || !/^[a-f0-9]{64}$/u.test(runtime.executableSha256)) throw new Error("CLAUDE_RUNTIME_INVALID");
+  if (!isAbsolute(runtime.executablePath) || !/^[a-f0-9]{64}$/u.test(runtime.executableSha256)
+    || typeof runtime.cliVersion !== "string" || !claudeCodeVersionAdmitted(runtime.cliVersion)) throw new Error("CLAUDE_RUNTIME_INVALID");
   const executablePath = await realpath(runtime.executablePath);
   const executableSha256 = hash(await readPinnedExecutable(executablePath));
   if (executableSha256 !== runtime.executableSha256) throw new Error("CLAUDE_RUNTIME_DIGEST_MISMATCH");
   const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"));
   const manifest = JSON.parse(await readFile(join(dirname(sdkPath), "package.json"), "utf8")) as Record<string, unknown>;
-  if (manifest.name !== "@anthropic-ai/claude-agent-sdk" || manifest.version !== CLAUDE_SDK_VERSION || manifest.claudeCodeVersion !== CLAUDE_CODE_VERSION) {
+  if (manifest.name !== "@anthropic-ai/claude-agent-sdk" || manifest.version !== CLAUDE_SDK_VERSION || manifest.claudeCodeVersion !== CLAUDE_SDK_CODE_VERSION) {
     throw new Error("CLAUDE_SDK_VERSION_MISMATCH");
   }
   const sdkSha256 = hash(await readFile(sdkPath));
-  const runtimeVersion = `claude-sdk/${CLAUDE_SDK_VERSION};claude-code/${CLAUDE_CODE_VERSION}`;
+  const runtimeVersion = `claude-sdk/${CLAUDE_SDK_VERSION};claude-code/${runtime.cliVersion}`;
   return Object.freeze({ executablePath, executableSha256, sdkSha256, runtimeVersion,
     runtimeDigest: hash(JSON.stringify({ runtimeVersion, executableSha256, sdkSha256 })) });
 }
@@ -106,7 +129,8 @@ const descriptions: Record<BrokerToolName, string> = {
 
 export function assertClaudeInitialization(value: SDKSystemMessage, request: AgentRunRequest, broker: ToolBroker, cwd: string): void {
   const expected = broker.tools.map(fullName).sort();
-  if (value.claude_code_version !== CLAUDE_CODE_VERSION || value.cwd !== cwd || value.model !== request.model
+  if (typeof value.claude_code_version !== "string" || !claudeCodeVersionAdmitted(value.claude_code_version)
+    || value.cwd !== cwd || value.model !== request.model
     || value.apiKeySource !== "ANTHROPIC_API_KEY" || value.permissionMode !== "dontAsk"
     || !Array.isArray(value.tools) || JSON.stringify([...value.tools].sort()) !== JSON.stringify(expected)
     || !Array.isArray(value.skills) || value.skills.length !== 0 || !Array.isArray(value.plugins) || value.plugins.length !== 0
@@ -177,7 +201,7 @@ export function createClaudeSdkAdapter(options: ClaudeSdkAdapterOptions): AgentA
           controller.signal.throwIfAborted();
           const env: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: config, TMPDIR: temp, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8",
             ANTHROPIC_API_KEY: apiKey, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.1.0", NO_COLOR: "1" };
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "xcb/0.1.0", NO_COLOR: "1" };
           let child: BoundedProviderProcess | undefined;
           let admitted = false;
           const schema = schemas();

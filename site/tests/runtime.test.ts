@@ -105,7 +105,7 @@ describe("built xcb site", () => {
       ]);
       const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
       expect(homeResponse.status).toBe(200);
-      expect(home).toContain(publishedRelease === null ? "First AgentMixer release in preparation" : `Current verified compatibility release · v${publishedRelease.version}`);
+      expect(home).toContain(publishedRelease === null ? "First xcb package release in preparation" : `Current verified compatibility release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://xcb.dev"');
       expect(home).toContain('aria-label="Ask AI about this"');
       expect(docsResponse.status).toBe(200);

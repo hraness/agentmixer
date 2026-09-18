@@ -40,7 +40,7 @@ test("managed session binds native account/config/thread, tool lifecycle, final 
 });
 
 test("distinct tasks reuse unchanged persistent bytes and select their own thread and turn settings", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agentmixer-baseline-fixture-")), file = join(directory, "config.toml");
+  const directory = await mkdtemp(join(tmpdir(), "xcb-baseline-fixture-")), file = join(directory, "config.toml");
   const baseline = codexManagedAccountConfiguration();
   await writeFile(file, baseline, { flag: "wx", mode: 0o600 });
   const before = await stat(file, { bigint: true });

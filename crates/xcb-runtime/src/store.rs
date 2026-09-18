@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fs,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
     time::Duration,
@@ -37,6 +38,32 @@ impl Account {
     }
 }
 
+/// Identity of the xcb process instance that owns a run. Persisted on the run
+/// row so sibling terminals can tell "working in another terminal" apart from
+/// a genuinely unsettled run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunOwner {
+    pub instance: String,
+    pub pid: u32,
+}
+impl RunOwner {
+    /// True while the recorded owning process still exists. A signal-permission
+    /// failure also proves presence; only an absent or invalid pid does not.
+    pub fn alive(&self) -> bool {
+        let Some(pid) = i32::try_from(self.pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        else {
+            return false;
+        };
+        matches!(
+            rustix::process::test_kill_process(pid),
+            Ok(()) | Err(rustix::io::Errno::PERM)
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunRecord {
@@ -49,12 +76,21 @@ pub struct RunRecord {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RunOwner>,
 }
 
 impl RunRecord {
     pub fn validate(&self) -> Result<()> {
         if let Some(model) = &self.model {
             model.validate()?;
+        }
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.instance.is_empty() || owner.instance.len() > 160)
+        {
+            return Err(xcb_core::Error::Invalid("run owner").into());
         }
         Ok(())
     }
@@ -73,6 +109,10 @@ pub struct UsageObservation {
 
 pub struct Store {
     root: PathBuf,
+    /// Unique identity of this open handle — one per terminal process — stamped
+    /// on every run this store prepares so other terminals can recognise
+    /// foreign-owned live runs.
+    instance: String,
     connection: Mutex<Connection>,
 }
 
@@ -122,6 +162,23 @@ fn update_session(transaction: &Transaction<'_>, session: &Session, expected: u6
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
         let root = private::directory(root)?;
+        let lock_path = root.join(".initialize.lock");
+        let initialization = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC)
+                    .bits() as i32,
+            )
+            .open(&lock_path)?;
+        private::check_file(&initialization, 0)?;
+        private::lock(&initialization)?;
+        private::same_file(&lock_path, &initialization)?;
         for name in [
             "accounts",
             "panes",
@@ -143,19 +200,23 @@ impl Store {
             Err(error) => return Err(error.into()),
         }
         for suffix in ["xcb.sqlite-wal", "xcb.sqlite-shm", "xcb.sqlite-journal"] {
-            let path = root.join(suffix);
-            match fs::symlink_metadata(&path) {
-                Ok(_) => {
-                    private::open_file(&path, 1024 * 1024 * 1024)?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error.into()),
-            }
+            // SQLite retires these sidecars when the last connection closes;
+            // a sibling store can legitimately unlink one after this process
+            // releases the initialization lock but before it exits.
+            private::open_file_maybe_vanished(&root.join(suffix), 1024 * 1024 * 1024)?;
         }
         let mut connection = Connection::open(&path)?;
-        connection.busy_timeout(Duration::from_millis(250))?;
+        // Writers serialize on the WAL writer lock; readers never block.
+        // Twenty parallel terminals × short transactions still fit well under
+        // this bound on a loaded host, and a dead process's locks are released
+        // by the kernel, so a generous ceiling cannot deadlock the store.
+        connection.busy_timeout(Duration::from_secs(30))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
+        let journal: String =
+            connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !journal.eq_ignore_ascii_case("wal") {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+        }
         connection.pragma_update(None, "synchronous", "FULL")?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version > 1 {
@@ -163,7 +224,12 @@ impl Store {
         }
         if version == 0 {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch("CREATE TABLE accounts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            let current: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if current > 1 {
+                return Err(Error::Unavailable("database was written by a newer xcb"));
+            }
+            if current == 0 {
+                tx.execute_batch("CREATE TABLE accounts(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE sessions(id TEXT PRIMARY KEY, account TEXT NOT NULL REFERENCES accounts(id), payload TEXT NOT NULL, revision INTEGER NOT NULL, last_active INTEGER NOT NULL);
                 CREATE INDEX sessions_activity ON sessions(last_active DESC, id);
                 CREATE TABLE messages(id TEXT PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, payload TEXT NOT NULL, UNIQUE(session, sequence));
@@ -176,10 +242,12 @@ impl Store {
                 CREATE TABLE tool_effects(run TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, call TEXT NOT NULL, operation TEXT NOT NULL, input_digest TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(run,call));
                 CREATE TABLE velocity(session TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, at_ms INTEGER NOT NULL, output_total INTEGER NOT NULL, PRIMARY KEY(session,at_ms));
                 PRAGMA user_version=1;")?;
+            }
             tx.commit()?;
         }
         Ok(Self {
             root,
+            instance: new_id("i").to_string(),
             connection: Mutex::new(connection),
         })
     }
@@ -190,6 +258,28 @@ impl Store {
     }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// The identity this handle stamps on runs it prepares.
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    fn owner(&self) -> RunOwner {
+        RunOwner {
+            instance: self.instance.clone(),
+            pid: std::process::id(),
+        }
+    }
+    /// True when `session` has an unsettled run owned by a different — still
+    /// living — process instance. Such a run is active work in another
+    /// terminal, not a run needing recovery.
+    pub fn remote_active(&self, session: &Id) -> Result<bool> {
+        Ok(self.unsettled_runs()?.iter().any(|run| {
+            run.session.as_ref() == Some(session)
+                && run
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.instance != self.instance && owner.alive())
+        }))
     }
 
     pub fn add_account(
@@ -484,6 +574,7 @@ impl Store {
             pid: None,
             created_at_ms: now,
             model: Some(session.model.clone()),
+            owner: Some(self.owner()),
         };
         tx.execute(
             "INSERT INTO runs VALUES(?1,?2,?3,?4,?5)",
@@ -538,6 +629,7 @@ impl Store {
             pid: None,
             created_at_ms: now,
             model,
+            owner: Some(self.owner()),
         };
         tx.execute(
             "INSERT INTO runs VALUES(?1,NULL,?2,'prepared',?3)",
@@ -1346,5 +1438,65 @@ mod tests {
         assert_eq!(settled.model, None);
         assert_eq!(settled.phase, "settled");
         assert!(store.unsettled_runs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn run_owner_distinguishes_a_live_foreign_run_from_an_unsettled_one() {
+        let dir = root();
+        let base = dir.path().canonicalize().unwrap();
+        let path = base.join("state");
+        // Two handles on one state root stand in for two terminals.
+        let owner = Store::open(&path).unwrap();
+        let account = owner
+            .add_account(Provider::Claude, "Personal", "Max", 1)
+            .unwrap();
+        let session = owner
+            .create_session(&account.id, choice(), &base.join("work"), 2)
+            .unwrap();
+        let run = owner.prepare_run(&session.id, session.revision, 3).unwrap();
+        let stamped = run.owner.as_ref().expect("new runs record their owner");
+        assert_eq!(stamped.instance, owner.instance());
+        assert_eq!(stamped.pid, std::process::id());
+        assert!(stamped.alive());
+
+        let viewer = Store::open(&path).unwrap();
+        assert_ne!(viewer.instance(), owner.instance());
+        // A live run owned elsewhere is remote work, not a recovery candidate.
+        assert!(viewer.remote_active(&session.id).unwrap());
+        // The owner itself never classifies its own run as remote.
+        assert!(!owner.remote_active(&session.id).unwrap());
+
+        // Once the owning process is gone the same row is genuinely unsettled.
+        let dead = {
+            let mut child = std::process::Command::new("true").spawn().unwrap();
+            let pid = child.id();
+            child.wait().unwrap();
+            pid
+        };
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+        payload["owner"]["instance"] = serde_json::Value::String("i_foreign".into());
+        payload["owner"]["pid"] = serde_json::Value::from(dead);
+        owner
+            .db()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET payload=?1 WHERE id=?2",
+                params![payload.to_string(), run.id.as_str()],
+            )
+            .unwrap();
+        assert!(!viewer.remote_active(&session.id).unwrap());
+
+        // A legacy row written before owners existed is likewise unsettled.
+        payload.as_object_mut().unwrap().remove("owner");
+        owner
+            .db()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET payload=?1 WHERE id=?2",
+                params![payload.to_string(), run.id.as_str()],
+            )
+            .unwrap();
+        assert!(!viewer.remote_active(&session.id).unwrap());
     }
 }

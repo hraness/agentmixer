@@ -8,7 +8,7 @@ import { createBwrapOsSandbox, createSandboxedProviderProcessFactory, createSeat
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-os-sandbox-test-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-os-sandbox-test-")));
   const scratch = join(root, "scratch"), accountHome = join(root, "account"), policyPath = join(root, "policy.sb");
   const executable = join(root, "runtime", "provider");
   return { root, scratch, accountHome, policyPath, executable,
@@ -151,7 +151,7 @@ describe("os-sandbox bwrap planning", () => {
       expect(pairs("--bind")).toContain(f.scratch);
       expect(pairs("--bind")).toContain(f.accountHome);
       const policy = JSON.parse(plan.policy);
-      expect(policy.schema).toBe("agentmixer.os-sandbox-bwrap.v1");
+      expect(policy.schema).toBe("xcb.os-sandbox-bwrap.v1");
       expect(policy.binds.find((b: { target: string }) => b.target === f.scratch).mode).toBe("rw");
       expect(policy.binds.find((b: { target: string }) => b.target === f.executable).mode).toBe("ro");
       expect(plan.policySha256).toBe(sha256(plan.policy));
@@ -202,7 +202,7 @@ describe("os-sandbox bwrap planning", () => {
         egressForward: { runtime, script, port: 48123 } }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: ["--serve"], env: { MODE: "x" }, cwd: "/" }).args];
       const tail = args.slice(args.indexOf("--") + 1);
-      expect(tail).toEqual([runtime, script, socket, "48123", "-", "-", "--", f.executable, "--serve"]);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", "-", "-", "--", f.executable, "--serve"]);
       const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
       expect(pairs("--ro-bind")).toEqual(expect.arrayContaining([runtime, script]));
       const policy = JSON.parse(plan.policy);
@@ -223,7 +223,7 @@ describe("os-sandbox bwrap planning", () => {
         egressForward: { runtime, script, port: 48123, envFile } }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: ["--serve"], env: { SECRET_TOKEN: "s3cr3t", PATH: "/usr/bin:/bin" }, cwd: "/" }).args];
       const tail = args.slice(args.indexOf("--") + 1);
-      expect(tail).toEqual([runtime, script, socket, "48123", "-", envFile, "--", f.executable, "--serve"]);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", envFile, "-", "--", f.executable, "--serve"]);
       // No --setenv at all: neither secrets nor mundane values ride argv.
       expect(args).not.toContain("--setenv");
       expect(JSON.stringify(args)).not.toContain("s3cr3t");

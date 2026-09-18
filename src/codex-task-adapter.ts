@@ -43,7 +43,7 @@ const requestDigest = (request: AgentTaskExecutionRequest) => proof({ ...binding
   limits: request.limits, admittedAtUnixMs: request.admittedAtUnixMs, executionDeadlineUnixMs: request.executionDeadlineUnixMs });
 
 /**
- * Native Codex task adapter. It receives a capability broker from AgentMixer,
+ * Native Codex task adapter. It receives a capability broker from xcb,
  * maps that exact profile into the relay, and retains the native stop receipt
  * until the task runtime has joined the process and broker cleanup.
  */

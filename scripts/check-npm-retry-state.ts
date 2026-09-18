@@ -82,7 +82,7 @@ async function metadata(url: string): Promise<Record<string, unknown> | null> {
     headers: {
       Accept: "application/json",
       "Cache-Control": "no-cache",
-      "User-Agent": "agentmixer-release-retry",
+      "User-Agent": "xcb-release-retry",
     },
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
@@ -122,7 +122,7 @@ if (release === null) {
   ) throw new Error("Existing npm version or latest has different immutable bytes.");
   const remote = await boundedArtifact(await fetch(release.version.tarball, {
     cache: "no-store",
-    headers: { "Cache-Control": "no-cache", "User-Agent": "agentmixer-release-retry" },
+    headers: { "Cache-Control": "no-cache", "User-Agent": "xcb-release-retry" },
     redirect: "follow",
     signal: AbortSignal.timeout(30_000),
   }), "Existing npm tarball");

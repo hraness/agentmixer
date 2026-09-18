@@ -97,6 +97,59 @@ fn provider_args(model: &ModelChoice, tools: bool) -> Vec<String> {
     args
 }
 
+/// The bwrap launch plan the Linux `prepare` actually builds, kept
+/// platform-neutral so the planner-acceptance regression test can construct
+/// it anywhere. The planner owns the executable and forwarder-runtime binds;
+/// `read_only` carries only the dynamic-loader/library closure — repeating a
+/// path the plan already mounts used to be a fatal "bind target duplicated".
+#[cfg(any(target_os = "linux", test))]
+fn linux_spec(
+    executable: PathBuf,
+    runtime: PathBuf,
+    scratch: PathBuf,
+    policy_path: PathBuf,
+    socket: PathBuf,
+    env_file: PathBuf,
+    read_only: Vec<PathBuf>,
+) -> sandbox::BwrapSpec {
+    sandbox::BwrapSpec {
+        executable,
+        scratch,
+        account_home: None,
+        policy_path,
+        read_only,
+        egress: sandbox::Egress::Tcp443Dns,
+        socket: Some(socket),
+        forwarder: Some(sandbox::Forwarder {
+            runtime,
+            lo_up: None,
+            env_file: Some(env_file),
+            port: 48123,
+        }),
+    }
+}
+
+/// Shared-library closure of one dynamic executable via `ldd` — the same
+/// contract as qualification/linux-loopback.ts `lddClosure()`: every absolute
+/// path in the output (ELF interpreter and DT_NEEDED resolutions alike).
+/// Paths stay unresolved here; the planner mounts each resolved file at this
+/// declared location. A static executable yields an empty closure.
+#[cfg(target_os = "linux")]
+fn shared_library_closure(executable: &Path) -> Result<Vec<PathBuf>> {
+    let output = std::process::Command::new("ldd").arg(executable).output()?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let paths: BTreeSet<PathBuf> = text
+        .split_whitespace()
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .map(Path::to_owned)
+        .collect();
+    Ok(paths.into_iter().collect())
+}
+
 #[cfg(target_os = "linux")]
 fn child_env(
     home: &Path,
@@ -130,9 +183,9 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     if !sandbox::available() {
@@ -183,9 +236,9 @@ async fn prepare(
     token: Option<&str>,
     tools: bool,
 ) -> Result<Launch> {
-    if pin.provider != Provider::Claude || pin.version != claude::VERSION {
+    if pin.provider != Provider::Claude || !claude::version_admitted(&pin.version) {
         return Err(Error::Unavailable(
-            "native execution requires the pinned Claude adapter; other providers remain unqualified",
+            "native execution requires an admitted Claude adapter; other providers remain unqualified",
         ));
     }
     let status = sandbox::linux_sandbox(root);
@@ -212,21 +265,20 @@ async fn prepare(
     let bridge =
         egress::EgressBridge::start(egress::EgressBridgeOptions::new(socket.clone())).await?;
     let xcb = std::env::current_exe()?.canonicalize()?;
-    let spec = sandbox::BwrapSpec {
-        executable: executable.clone(),
-        scratch: scratch.clone(),
-        account_home: None,
-        policy_path: directory.join("sandbox.json"),
-        read_only: [executable.clone(), xcb.clone()].into_iter().collect(),
-        egress: sandbox::Egress::Tcp443Dns,
-        socket: Some(socket),
-        forwarder: Some(sandbox::Forwarder {
-            runtime: xcb,
-            lo_up: None,
-            env_file: Some(env_file),
-            port: 48123,
-        }),
-    };
+    // The planner mounts the executable and the forwarder runtime itself;
+    // read_only carries only the shared-library closure the dynamic loader
+    // needs — provider snapshot and runtime alike.
+    let mut read_only = shared_library_closure(&executable)?;
+    read_only.extend(shared_library_closure(&xcb)?);
+    let spec = linux_spec(
+        executable,
+        xcb,
+        scratch,
+        directory.join("sandbox.json"),
+        socket,
+        env_file,
+        read_only,
+    );
     let wrapper_env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     let launch = sandbox::bwrap_launch(
         &bwrap,
@@ -399,7 +451,10 @@ pub fn validate_init(value: &Value, cwd: &Path, model: &ModelChoice, tools: bool
         .get("mcp_servers")
         .and_then(Value::as_array)
         .ok_or(Error::Protocol("MCP inventory"))?;
-    if value.get("claude_code_version").and_then(Value::as_str) != Some(claude::VERSION)
+    if value
+        .get("claude_code_version")
+        .and_then(Value::as_str)
+        .is_none_or(|version| !claude::version_admitted(version))
         || value.get("cwd").and_then(Value::as_str) != cwd.to_str()
         || value.get("model").and_then(Value::as_str) != Some(model.id.as_str())
         || value.get("apiKeySource").and_then(Value::as_str) != Some("none")
@@ -680,6 +735,11 @@ pub async fn run(
         let mut byte_count = 0usize;
         let mut completed_output = 0u64;
         let mut current_output = 0u64;
+        // Velocity is a display meter; the authoritative usage lands via
+        // record_usage at settle. Per-delta fsync'd transactions would
+        // serialize every parallel terminal on one writer, so stream samples
+        // are decimated and the true total is written once at the result.
+        let mut last_velocity_ms = started;
         for _ in 0..16_384 {
             if *cancel.borrow() {
                 return Ok((Terminal::Cancelled, vec![]));
@@ -710,15 +770,19 @@ pub async fn run(
                                 })
                                 .ok_or(Error::Protocol("stream token counter"))?;
                             current_output = total;
-                            store.record_velocity(
-                                &session.id,
-                                VelocitySample {
-                                    at_ms: now_ms(),
-                                    output_tokens: baseline
-                                        .saturating_add(completed_output)
-                                        .saturating_add(current_output),
-                                },
-                            )?;
+                            let now = now_ms();
+                            if now.saturating_sub(last_velocity_ms) >= 250 {
+                                last_velocity_ms = now;
+                                store.record_velocity(
+                                    &session.id,
+                                    VelocitySample {
+                                        at_ms: now,
+                                        output_tokens: baseline
+                                            .saturating_add(completed_output)
+                                            .saturating_add(current_output),
+                                    },
+                                )?;
+                            }
                         }
                     }
                     _ => (),
@@ -864,6 +928,17 @@ pub async fn run(
                     if !text.is_empty() {
                         final_text = text;
                     }
+                    if input.config.extensions.usage {
+                        store.record_velocity(
+                            &session.id,
+                            VelocitySample {
+                                at_ms: now_ms(),
+                                output_tokens: baseline
+                                    .saturating_add(completed_output)
+                                    .saturating_add(current_output),
+                            },
+                        )?;
+                    }
                     return Ok((terminal, models));
                 }
                 Event::Subagent {
@@ -1005,4 +1080,94 @@ pub async fn run(
         facts,
         state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn file(path: &Path, mode: u32) {
+        let mut created = std::fs::File::create(path).unwrap();
+        created.write_all(b"artifact").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Regression test for the Linux launch-plan seam: `prepare` builds its
+    /// spec through `linux_spec`, and the sandbox planner must accept the
+    /// plan it produces. The old spec double-mounted the executable and the
+    /// forwarder runtime, which the planner rejected with "bind target
+    /// duplicated" — every launch failed before bwrap even ran.
+    #[test]
+    fn linux_launch_plan_is_accepted_by_the_planner() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let directory = base.join("run");
+        let scratch = directory.join("scratch");
+        let cwd = scratch.join("work");
+        let socket_dir = directory.join("egress");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&socket_dir).unwrap();
+        let executable = base.join("provider");
+        file(&executable, 0o500);
+        let runtime = base.join("xcb");
+        file(&runtime, 0o500);
+        let socket = socket_dir.join("egress.sock");
+        file(&socket, 0o600);
+        let env_file = scratch.join("forwarder.env");
+        file(&env_file, 0o600);
+        let lib = base.join("libprovider.so");
+        file(&lib, 0o400);
+        let wrapper = base.join("bwrap");
+        file(&wrapper, 0o755);
+        let pin = sandbox::BwrapPin::admit(&wrapper).unwrap();
+
+        let spec = linux_spec(
+            executable.clone(),
+            runtime.clone(),
+            scratch.clone(),
+            directory.join("sandbox.json"),
+            socket.clone(),
+            env_file.clone(),
+            vec![lib.clone()],
+        );
+        let launch = sandbox::bwrap_launch(
+            &pin,
+            &spec,
+            &["--print".into()],
+            &BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+            &cwd,
+        )
+        .expect("the runner's launch plan must be accepted by the planner");
+
+        // Every artifact is mounted exactly once — no duplicated targets.
+        let policy: serde_json::Value = serde_json::from_str(&launch.policy).unwrap();
+        let binds = policy["binds"].as_array().unwrap();
+        for path in [&executable, &runtime, &lib, &scratch, &socket] {
+            let path = path.to_str().unwrap();
+            assert_eq!(
+                binds.iter().filter(|bind| bind["target"] == path).count(),
+                1,
+                "{path} should appear as exactly one bind pair"
+            );
+        }
+        // The env file rides the scratch bind and reaches the forwarder argv.
+        let tail = &launch.args[launch.args.iter().position(|a| a == "--").unwrap() + 1..];
+        assert_eq!(
+            tail,
+            [
+                runtime.to_str().unwrap(),
+                "egress-forward",
+                socket.to_str().unwrap(),
+                "48123",
+                "-",
+                env_file.to_str().unwrap(),
+                "--",
+                executable.to_str().unwrap(),
+                "--print",
+            ]
+        );
+        assert_eq!(policy["egress"]["protocol"], "connect-tcp443");
+    }
 }

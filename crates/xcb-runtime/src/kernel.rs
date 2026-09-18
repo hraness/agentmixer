@@ -8,11 +8,11 @@ use crate::{
     summary,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        mpsc::{Receiver, SyncSender, TryRecvError},
+        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
     },
     time::Duration,
 };
@@ -379,12 +379,86 @@ struct Active {
     pane: bool,
 }
 
+/// Updates queued for the terminal. `updates` is a guaranteed FIFO — notices,
+/// state snapshots, and stream resets must arrive — while `deltas` coalesces
+/// streamed text per session and stream kind so a burst can never drop part of
+/// a response. A bounded channel can slow delivery, never corrupt it: the next
+/// published `View` is always a full snapshot of the settled transcript.
+#[derive(Default)]
+struct Outbox {
+    updates: VecDeque<Update>,
+    deltas: BTreeMap<(Id, bool), String>,
+}
+
+/// Bound on queued guaranteed updates; the channel itself holds 256, so this
+/// only engages when the display has stopped draining entirely.
+const MAX_QUEUED_UPDATES: usize = 1024;
+
+fn queue(outbox: &Mutex<Outbox>, update: Update) {
+    let Ok(mut outbox) = outbox.lock() else {
+        return;
+    };
+    if outbox.updates.len() >= MAX_QUEUED_UPDATES {
+        // Prefer dropping the oldest buffered snapshot: every View is a full
+        // snapshot, so an older one carries no unique information.
+        if let Some(stale) = outbox
+            .updates
+            .iter()
+            .position(|update| matches!(update, Update::View(_)))
+        {
+            outbox.updates.remove(stale);
+        } else {
+            outbox.updates.pop_front();
+        }
+    }
+    outbox.updates.push_back(update);
+}
+
+fn flush(outbox: &Mutex<Outbox>, output: &SyncSender<Update>) {
+    let Ok(mut outbox) = outbox.lock() else {
+        return;
+    };
+    while let Some(update) = outbox.updates.pop_front() {
+        match output.try_send(update) {
+            Ok(()) => (),
+            Err(TrySendError::Full(update)) => {
+                outbox.updates.push_front(update);
+                return;
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                outbox.updates.clear();
+                outbox.deltas.clear();
+                return;
+            }
+        }
+    }
+    for ((session, thinking), text) in outbox.deltas.iter_mut() {
+        if text.is_empty() {
+            continue;
+        }
+        let delta = Update::Delta {
+            session: session.clone(),
+            thinking: *thinking,
+            text: std::mem::take(text),
+        };
+        match output.try_send(delta) {
+            Ok(()) => (),
+            Err(TrySendError::Full(Update::Delta { text: kept, .. }))
+            | Err(TrySendError::Disconnected(Update::Delta { text: kept, .. })) => {
+                *text = kept;
+            }
+            Err(_) => (),
+        }
+    }
+    outbox.deltas.retain(|_, text| !text.is_empty());
+}
+
 fn publish(
     store: &Store,
     current: Option<&Id>,
     config: &Config,
     active: &BTreeMap<Id, Active>,
-    output: &SyncSender<Update>,
+    outbox: &Mutex<Outbox>,
 ) -> Result<()> {
     let mut view = summary::snapshot(store, current, config, now_ms())?;
     if let Some(active) = current.and_then(|id| active.get(id)) {
@@ -394,9 +468,16 @@ fn publish(
             view.subagents = activity.subagents.values().cloned().collect();
         }
     } else if view.state == State::Working {
-        view.state = State::Uncertain;
+        // A session marked working without a task in this process may be owned
+        // by a live sibling terminal; only an unowned run needs recovery.
+        if let Some(id) = current {
+            view.remote_active = store.remote_active(id)?;
+        }
+        if !view.remote_active {
+            view.state = State::Uncertain;
+        }
     }
-    let _ = output.try_send(Update::View(Box::new(view)));
+    queue(outbox, Update::View(Box::new(view)));
     Ok(())
 }
 
@@ -406,7 +487,7 @@ fn start(
     text: String,
     attachments: Vec<xcb_core::session::Attachment>,
     pane: bool,
-    output: SyncSender<Update>,
+    outbox: Arc<Mutex<Outbox>>,
     finished: mpsc::Sender<(Id, Result<Outcome>)>,
 ) -> Active {
     let (cancel, cancelled) = watch::channel(false);
@@ -415,11 +496,14 @@ fn start(
     let session_id = id.clone();
     let observer: Observer = Arc::new(move |event| match event {
         Progress::Text { thinking, text } if !pane => {
-            let _ = output.try_send(Update::Delta {
-                session: session_id.clone(),
-                thinking,
-                text,
-            });
+            if let Ok(mut outbox) = outbox.lock() {
+                let buffered = outbox
+                    .deltas
+                    .entry((session_id.clone(), thinking))
+                    .or_default();
+                let remaining = xcb_core::MAX_TEXT_BYTES.saturating_sub(buffered.len());
+                buffered.push_str(&xcb_core::display_text(&text, remaining));
+            }
         }
         Progress::Tool(name) => {
             if let Ok(mut activity) = activity_copy.lock() {
@@ -444,9 +528,7 @@ fn start(
                 activity.subagents.insert(agent.id.clone(), agent);
             }
         }
-        Progress::Notice(message) => {
-            let _ = output.try_send(Update::Notice(message));
-        }
+        Progress::Notice(message) => queue(&outbox, Update::Notice(message)),
         _ => (),
     });
     let task = tokio::spawn(async move {
@@ -479,28 +561,33 @@ pub async fn serve(
 ) -> Result<()> {
     let mut config = Config::load(store.root())?.0;
     let mut active: BTreeMap<Id, Active> = BTreeMap::new();
+    let outbox = Arc::new(Mutex::new(Outbox::default()));
     let (completed, mut completions) = mpsc::channel::<(Id, Result<Outcome>)>(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(20));
     let mut pending_pane: Option<(Id, String)> = None;
     let mut quit = false;
-    publish(&store, current.as_ref(), &config, &active, &output)?;
+    publish(&store, current.as_ref(), &config, &active, &outbox)?;
     loop {
+        flush(&outbox, &output);
         tokio::select! {
             done = completions.recv() => if let Some((id, result)) = done {
                 let was_pane = active.remove(&id).is_some_and(|active| active.pane);
-                let _ = output.try_send(Update::ClearStream(id.clone()));
+                if let Ok(mut queued) = outbox.lock() {
+                    queued.deltas.retain(|(session, _), _| session != &id);
+                }
+                queue(&outbox, Update::ClearStream(id.clone()));
                 match result {
                     Ok(outcome) if was_pane && outcome.facts.terminal == Terminal::Completed => {
                         let text = outcome.text.trim().strip_prefix("```json").or_else(|| outcome.text.trim().strip_prefix("```" )).unwrap_or(outcome.text.trim()).trim().trim_end_matches("```").trim();
-                        match Pane::parse(text.as_bytes()) { Ok(pane) => { let _ = output.try_send(Update::PaneCandidate(pane)); } Err(error) => { let _ = output.try_send(Update::Notice(format!("Generated pane rejected: {error}. The current pane is unchanged."))); } }
+                        match Pane::parse(text.as_bytes()) { Ok(pane) => queue(&outbox, Update::PaneCandidate(pane)), Err(error) => queue(&outbox, Update::Notice(format!("Generated pane rejected: {error}. The current pane is unchanged."))) }
                     }
-                    Ok(outcome) if outcome.facts.terminal != Terminal::Completed => { let _ = output.try_send(Update::Notice(format!("Turn stopped: {}", outcome.state.label()))); }
-                    Err(error) => { let _ = output.try_send(Update::Notice(error.to_string())); }
+                    Ok(outcome) if outcome.facts.terminal != Terminal::Completed => queue(&outbox, Update::Notice(format!("Turn stopped: {}", outcome.state.label()))),
+                    Err(error) => queue(&outbox, Update::Notice(error.to_string())),
                     _ => (),
                 }
                 if let Some((queued_id, request)) = pending_pane.take()
-                    && !quit { let session = store.session(&queued_id)?.ok_or(Error::Unavailable("session not found"))?; let generated = generation_session(&store, &session, &config)?; let task = start(store.clone(), generated.id.clone(), pane_prompt(&request)?, vec![], true, output.clone(), completed.clone()); active.insert(generated.id, task); }
-                publish(&store, current.as_ref(), &config, &active, &output)?;
+                    && !quit { let session = store.session(&queued_id)?.ok_or(Error::Unavailable("session not found"))?; let generated = generation_session(&store, &session, &config)?; let task = start(store.clone(), generated.id.clone(), pane_prompt(&request)?, vec![], true, outbox.clone(), completed.clone()); active.insert(generated.id, task); }
+                publish(&store, current.as_ref(), &config, &active, &outbox)?;
             },
             _ = ticker.tick() => {
                 for _ in 0..16 {
@@ -508,14 +595,23 @@ pub async fn serve(
                     if matches!(intent, Intent::Quit) { quit = true; pending_pane = None; for task in active.values() { let _ = task.cancel.send(true); } break; }
                     let handled: Result<()> = (|| {
                         match intent {
-                            Intent::Refresh => { match Config::load(store.root()) { Ok((fresh, _)) => config = fresh, Err(error) => { let _ = output.try_send(Update::Notice(format!("Configuration reload rejected: {error}"))); } } }
+                            Intent::Refresh => { match Config::load(store.root()) { Ok((fresh, _)) => config = fresh, Err(error) => queue(&outbox, Update::Notice(format!("Configuration reload rejected: {error}"))) } }
                             Intent::Submit { text, attachments } => {
-                                if current.is_none() { current = Some(new_session(&store, &workspace, &config, None, None)?.id); }
-                                let id = current.clone().expect("selected session");
-                                if active.contains_key(&id) || active.len() >= 16 { return Err(Error::Conflict("a turn is still running; draft remains in prompt history")); }
-                                let session = store.session(&id)?.ok_or(Error::Unavailable("session not found"))?;
-                                ready(&store, &session)?;
-                                active.insert(id.clone(), start(store.clone(), id, text, attachments, false, output.clone(), completed.clone()));
+                                let prepared: Result<Id> = (|| {
+                                    if current.is_none() { current = Some(new_session(&store, &workspace, &config, None, None)?.id); }
+                                    let id = current.clone().expect("selected session");
+                                    if active.contains_key(&id) || active.len() >= 16 { return Err(Error::Conflict("a turn is still running; your draft was restored to the composer")); }
+                                    let session = store.session(&id)?.ok_or(Error::Unavailable("session not found"))?;
+                                    ready(&store, &session)?;
+                                    Ok(id)
+                                })();
+                                match prepared {
+                                    Ok(id) => { active.insert(id.clone(), start(store.clone(), id, text, attachments, false, outbox.clone(), completed.clone())); }
+                                    Err(error) => {
+                                        queue(&outbox, Update::Draft { text, attachments });
+                                        return Err(error);
+                                    }
+                                }
                             }
                             Intent::Cancel => { pending_pane = None; if let Some(task) = current.as_ref().and_then(|id| active.get(id)) { let _ = task.cancel.send(true); } }
                             Intent::Resume(id) => { if store.session(&id)?.is_none() { return Err(Error::Unavailable("session not found")); } current = Some(id); }
@@ -550,11 +646,11 @@ pub async fn serve(
                             Intent::GeneratePane(request) => {
                                 let session = current.as_ref().and_then(|id| store.session(id).ok().flatten()).ok_or(Error::Unavailable("select an account and session before generating a pane"))?;
                                 if active.values().any(|task| task.pane) || active.len() >= 16 { return Err(Error::Conflict("pane generation is already running")); }
-                                if active.contains_key(&session.id) { pending_pane = Some((session.id, request)); let _ = output.try_send(Update::Notice("Pane generation queued for the account's next idle boundary. Editing and hot reload remain available.".into())); }
-                                else { let generated = generation_session(&store, &session, &config)?; let task = start(store.clone(), generated.id.clone(), pane_prompt(&request)?, vec![], true, output.clone(), completed.clone()); active.insert(generated.id, task); }
+                                if active.contains_key(&session.id) { pending_pane = Some((session.id, request)); queue(&outbox, Update::Notice("Pane generation queued for the account's next idle boundary. Editing and hot reload remain available.".into())); }
+                                else { let generated = generation_session(&store, &session, &config)?; let task = start(store.clone(), generated.id.clone(), pane_prompt(&request)?, vec![], true, outbox.clone(), completed.clone()); active.insert(generated.id, task); }
                             }
-                            Intent::AttachPath(path) => { let image = attachments::from_path(store.root(), Path::new(&path))?; let _ = output.try_send(Update::Attachment(image)); }
-                            Intent::AttachRgba { width, height, bytes } => { let image = attachments::from_rgba(store.root(), width, height, bytes)?; let _ = output.try_send(Update::Attachment(image)); }
+                            Intent::AttachPath(path) => { let image = attachments::from_path(store.root(), Path::new(&path))?; queue(&outbox, Update::Attachment(image)); }
+                            Intent::AttachRgba { width, height, bytes } => { let image = attachments::from_rgba(store.root(), width, height, bytes)?; queue(&outbox, Update::Attachment(image)); }
                             Intent::Extension { name, enabled } => {
                                 let (mut fresh, revision) = Config::load(store.root())?;
                                 match name.as_str() { "auto-continue" => fresh.extensions.auto_continue.enabled = enabled, "gobstopper" => fresh.extensions.gobstopper.enabled = enabled, "usage" => fresh.extensions.usage = enabled, "hooks" => fresh.extensions.hooks = enabled, "aicharts-export" => fresh.extensions.aicharts_export = enabled, "aicharts" | "aicharts-upload" => return Err(Error::Unavailable("automatic posting awaits a supported enrolled aiCharts ingress; local exports remain available")), _ => return Err(Error::Unavailable("unknown built-in extension")) }
@@ -564,8 +660,8 @@ pub async fn serve(
                         }
                         Ok(())
                     })();
-                    if let Err(error) = handled { let _ = output.try_send(Update::Notice(error.to_string())); }
-                    publish(&store, current.as_ref(), &config, &active, &output)?;
+                    if let Err(error) = handled { queue(&outbox, Update::Notice(error.to_string())); }
+                    publish(&store, current.as_ref(), &config, &active, &outbox)?;
                 }
             }
         }
@@ -577,7 +673,8 @@ pub async fn serve(
         let _ = task.cancel.send(true);
         let _ = task.task.await;
     }
-    let _ = output.try_send(Update::Stopped);
+    queue(&outbox, Update::Stopped);
+    flush(&outbox, &output);
     Ok(())
 }
 
@@ -597,4 +694,70 @@ fn pane_prompt(request: &str) -> Result<String> {
     Ok(format!(
         "Generate one xcb pane as JSON only. No markdown fences, code, commands, paths, or hooks. Schema: version 1, id (ASCII letters/digits/-/_), title, root. Nodes: column or row with 1..12 children; widget with source and optional lines (1..80); text with value; spacer with lines. Sources: last_user, responses, thinking, subagents, accounts, models, usage, activity, extensions. Maximum depth 8 and 96 nodes. Use a new id, never replace an existing preset. Example: {preset}\nUser's desired pane: {request}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::sync_channel;
+
+    /// Saturating the bounded UI channel must never lose data: guaranteed
+    /// updates arrive in order and coalesced stream text reassembles whole.
+    #[test]
+    fn a_saturated_channel_still_converges_on_the_full_update() {
+        let (tx, rx) = sync_channel(4);
+        let outbox = Mutex::new(Outbox::default());
+        let session = new_id("s");
+        for index in 0..10 {
+            queue(&outbox, Update::Notice(format!("notice {index}")));
+        }
+        {
+            let mut queued = outbox.lock().unwrap();
+            let buffered = queued.deltas.entry((session.clone(), false)).or_default();
+            buffered.push_str("first ");
+            buffered.push_str("second");
+        }
+
+        let mut notices = Vec::new();
+        let mut streamed = String::new();
+        for _ in 0..128 {
+            flush(&outbox, &tx);
+            while let Ok(update) = rx.try_recv() {
+                match update {
+                    Update::Notice(text) => notices.push(text),
+                    Update::Delta { text, .. } => streamed.push_str(&text),
+                    _ => (),
+                }
+            }
+            {
+                let queued = outbox.lock().unwrap();
+                if queued.updates.is_empty() && queued.deltas.is_empty() {
+                    break;
+                }
+            }
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            notices,
+            (0..10)
+                .map(|index| format!("notice {index}"))
+                .collect::<Vec<_>>(),
+            "guaranteed updates arrive complete and in order"
+        );
+        assert_eq!(streamed, "first second");
+    }
+
+    /// Once the display is gone the queue must not grow without bound.
+    #[test]
+    fn a_disconnected_display_stops_queued_work() {
+        let (tx, rx) = sync_channel(1);
+        let outbox = Mutex::new(Outbox::default());
+        queue(&outbox, Update::Notice("one".into()));
+        flush(&outbox, &tx);
+        queue(&outbox, Update::Notice("two".into()));
+        drop(rx);
+        flush(&outbox, &tx);
+        let queued = outbox.lock().unwrap();
+        assert!(queued.updates.is_empty());
+    }
 }

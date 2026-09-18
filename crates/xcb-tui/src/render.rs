@@ -110,6 +110,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
             .style(Style::default().fg(heat)),
         header[1],
     );
+    app.scroll_top.set(0);
+    app.scroll_tail.set(0);
     render_node(frame, &app.view.pane.root, parts[1], app);
     let notice = app.view.pane_error.as_deref().unwrap_or(&app.notice);
     frame.render_widget(
@@ -160,7 +162,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
         .set_cursor_line_style(Style::default());
     app.composer
         .textarea
-        .set_placeholder_text(if app.view.state == State::Working {
+        .set_placeholder_text(if app.view.remote_active {
+            "Running in another terminal · your draft is kept here"
+        } else if app.view.state == State::Working {
             "Type a follow-up while the agent works"
         } else {
             "Message, /model, /accounts, /pane · Ctrl-V pastes images"
@@ -170,11 +174,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, ticks: u64) {
     if app.view.state.attention() && !app.view.reduced_motion && (ticks / 16).is_multiple_of(2) {
         color = Color::LightYellow;
     }
-    let status = format!(
-        " {} {} ",
-        status_symbol(app.view.state),
-        app.view.state.label()
-    );
+    // A live run owned by a sibling terminal is normal parallel work, not a
+    // session needing recovery.
+    let status = if app.view.remote_active {
+        format!(
+            " {} running in another terminal ",
+            status_symbol(State::Working)
+        )
+    } else {
+        format!(
+            " {} {} ",
+            status_symbol(app.view.state),
+            app.view.state.label()
+        )
+    };
     let footer = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(status.chars().count() as u16),
@@ -300,7 +313,7 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
                 "▸ Thinking · Ctrl-T expands"
             };
             lines.push(Line::from(Span::styled(
-                if app.scroll > 0 {
+                if app.paused.get() {
                     format!("{heading} · ↑ paused · End follows")
                 } else {
                     heading.into()
@@ -343,7 +356,7 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
                 "▸ Earlier responses · Ctrl-O expands"
             };
             lines.push(Line::from(Span::styled(
-                if app.scroll > 0 {
+                if app.paused.get() {
                     format!("{heading} · ↑ paused · End follows")
                 } else {
                     heading.into()
@@ -517,8 +530,17 @@ fn render_source(frame: &mut Frame<'_>, source: Source, area: Rect, app: &App) {
             .map(|line| line.width().max(1).div_ceil(width))
             .sum();
         let tail =
-            u16::try_from(content_height.saturating_sub(area.height as usize)).unwrap_or(u16::MAX);
-        tail.saturating_sub(app.scroll.min(tail))
+            u32::try_from(content_height.saturating_sub(area.height as usize)).unwrap_or(u32::MAX);
+        // While paused the viewport stays on the absolute line index in
+        // `scroll`; a growing tail cannot drift it. Otherwise it follows.
+        let top = if app.paused.get() {
+            tail.min(app.scroll.get())
+        } else {
+            tail
+        };
+        app.scroll_top.set(app.scroll_top.get().max(top));
+        app.scroll_tail.set(app.scroll_tail.get().max(tail));
+        u16::try_from(top).unwrap_or(u16::MAX)
     } else {
         0
     };
@@ -559,7 +581,8 @@ fn render_modal(frame: &mut Frame<'_>, modal: &mut Modal, area: Rect) {
                         "PageUp pause/older · PageDown newer · End follow newest",
                         "Ctrl-T thinking · Ctrl-O history · Ctrl-U tools",
                         "Ctrl-P models · Ctrl-R prompt history · Ctrl-G editor",
-                        "Ctrl-C/Esc cancel · Ctrl-D quit when draft is empty",
+                        "Ctrl-C cancels the running turn — even inside dialogs · Esc closes them",
+                        "Ctrl-D quits when the draft is empty",
                         "",
                         "/model · /accounts · /sessions · /new · /default",
                         "/pane [edit|generate …] · /attach <path>",

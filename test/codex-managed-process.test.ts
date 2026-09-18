@@ -29,10 +29,10 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
  * synthetic child only. Runtime lease authority comes solely from runAgentTask. */
 async function fixture(input: { parent?: Promise<CodexHostRuntime>; onInspect?: () => void; onSpawn?: (request: CodexManagedSpawn) => void;
   stop?: "hold" | "exit-only" | "root-and-close"; pgid?: number; spawnFails?: boolean; maxCleanupMs?: number; maxRunMs?: number; sandboxProfile?: SandboxProfile } = {}) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-managed-process-test-"))); await chmod(root, 0o700);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-managed-process-test-"))); await chmod(root, 0o700);
   const stateRoot = join(root, "state"), accountRoot = join(stateRoot, "accounts", "synthetic-account"), accountHome = join(accountRoot, "codex-home");
   for (const path of [stateRoot, join(stateRoot, "accounts"), accountRoot, accountHome, join(stateRoot, "runs")]) await mkdir(path, { mode: 0o700 });
-  await writeFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "agentmixer.codex-account-home.v1", accountId: "synthetic-account" }) + "\n", { mode: 0o600 });
+  await writeFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "xcb.codex-account-home.v1", accountId: "synthetic-account" }) + "\n", { mode: 0o600 });
   await writeFile(join(accountHome, "config.toml"), codexManagedAccountConfiguration(), { mode: 0o600 });
   await writeFile(join(accountHome, "synthetic-preserved-state"), "opaque synthetic persistent bytes", { mode: 0o600 });
   const executablePath = join(root, "synthetic-executable"); await writeFile(executablePath, executableBytes, { mode: 0o500 });
@@ -256,7 +256,7 @@ test("another launcher instance conflicts with the account lock without aborting
 });
 
 test("an existing account-helper lock prevents all account-home writes even when configuration is missing", async () => {
-  const f = await fixture(), lock = JSON.stringify({ schema: "agentmixer.codex-account-lock.v1", binding: { accountId: "synthetic-account", owner: "account-helper", leaseGeneration: 1, processGeneration: 1 }, journalPath: "/synthetic-existing-journal" }) + "\n";
+  const f = await fixture(), lock = JSON.stringify({ schema: "xcb.codex-account-lock.v1", binding: { accountId: "synthetic-account", owner: "account-helper", leaseGeneration: 1, processGeneration: 1 }, journalPath: "/synthetic-existing-journal" }) + "\n";
   await writeFile(join(f.accountRoot, "active.json"), lock, { mode: 0o600 }); await rm(join(f.accountHome, "config.toml"));
   await f.owned(async request => { joined(await unavailable(await f.launch(request))); });
   expect(await readdir(f.accountHome)).toEqual(["synthetic-preserved-state"]); expect(await readFile(join(f.accountRoot, "active.json"), "utf8")).toBe(lock); expect(f.spawns).toHaveLength(0);
@@ -406,7 +406,7 @@ test("a linux parent launches through the admitted bwrap artifact instead of sea
     for (let index = 0; index < spawn.args.length; index++) if (spawn.args[index] === "--ro-bind") binds.push(spawn.args[index + 1]!);
     expect(binds).toContain(library); expect(binds).toContain(spawn.args[inner + 1]!);
     const policy = JSON.parse(await readFile(join(dirname(handle.receipt().custodyPath), "sandbox.json"), "utf8"));
-    expect(policy).toMatchObject({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap" });
+    expect(policy).toMatchObject({ schema: "xcb.os-sandbox-bwrap.v1", backend: "bwrap" });
     expect(handle.receipt()).toMatchObject({ productionQualified: false, network: "denied", phase: "running" });
     joined(await handle.stopAndJoin());
   });
@@ -462,7 +462,7 @@ test("a linux provider launch rides the admitted egress bridge and joins it on c
     const spawn = f.spawns[0]!;
     const pairs = (flag: string) => spawn.args.flatMap((value, index) => value === flag ? [spawn.args[index + 1]!] : []);
     expect(pairs("--bind")).toContain(socketPath);
-    const setenvAt = spawn.args.findIndex((value, index) => value === "--setenv" && spawn.args[index + 1] === "AGENTMIXER_EGRESS_SOCKET");
+    const setenvAt = spawn.args.findIndex((value, index) => value === "--setenv" && spawn.args[index + 1] === "XCB_EGRESS_SOCKET");
     expect(spawn.args[setenvAt + 2]).toBe(socketPath);
     const policy = JSON.parse(await readFile(join(dirname(handle.receipt().custodyPath), "sandbox.json"), "utf8"));
     expect(policy.egress).toEqual({ socket: socketPath, protocol: "connect-tcp443" });

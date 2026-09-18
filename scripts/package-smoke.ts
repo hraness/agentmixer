@@ -5,14 +5,14 @@ import { basename, dirname, join, resolve } from "node:path";
 import { buildDist } from "./build-dist.ts";
 import { scanPackedPackage } from "./package-scan.ts";
 
-const PACKAGE_NAME = "@hraness/agentmixer";
+const PACKAGE_NAME = "@hraness/xcb";
 const PACKAGE_DIR = resolve(import.meta.dir, "..");
 const REPOSITORY_ROOT = resolve(import.meta.dir, "..");
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1_024 * 1_024;
 const BUILTIN_MODULES = new Set(["bun:sqlite", "bun:test"]);
 const MINIMUM_NODE_VERSION = "22.13.0";
 const REQUIRED_EXPORTS = [
-  "AgentMixer",
+  "Xcb",
   "SqliteAccountLeases",
   "createCodexManagedTaskAdapter",
   "createPublicWeb",
@@ -44,7 +44,7 @@ async function readBoundedCommandOutput(
       length += item.value.byteLength;
       if (length > MAXIMUM_COMMAND_OUTPUT_BYTES) {
         kill();
-        throw new Error("AgentMixer package command output exceeded its byte bound.");
+        throw new Error("XCB package command output exceeded its byte bound.");
       }
       chunks.push(item.value);
     }
@@ -68,7 +68,7 @@ async function run(command: readonly string[], cwd: string): Promise<string> {
       readBoundedCommandOutput(child.stdout, kill),
       readBoundedCommandOutput(child.stderr, kill),
     ]);
-    if (timedOut) throw new Error("AgentMixer package command exceeded its two-minute bound.");
+    if (timedOut) throw new Error("XCB package command exceeded its two-minute bound.");
     if (exitCode !== 0) {
       const diagnosticState = stderr.byteLength === 0
         ? "without diagnostic output"
@@ -132,7 +132,7 @@ function nodeVersionSupported(version: string): boolean {
 }
 
 export async function packageSmoke(tarballArgument?: string): Promise<void> {
-  const work = await mkdtemp(join(tmpdir(), "agentmixer-package-"));
+  const work = await mkdtemp(join(tmpdir(), "xcb-package-"));
   try {
     const archive = tarballArgument === undefined
       ? join(work, "package.tgz")
@@ -191,8 +191,8 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
       } catch { /* absent as required */ }
     }
     const bin = record(manifest.bin ?? {}, "packed bin");
-    if (Reflect.ownKeys(bin).length !== 1 || bin.agentmixer !== "dist/cli.js") {
-      problems.push(`packed bin must be exactly { agentmixer: "dist/cli.js" }`);
+    if (Reflect.ownKeys(bin).length !== 1 || bin.xcb !== "dist/cli.js") {
+      problems.push(`packed bin must be exactly { xcb: "dist/cli.js" }`);
     }
     const exportsField = record(manifest.exports, "packed exports")["."];
     const exportPaths = typeof exportsField === "string" ? [exportsField] : Object.values(record(exportsField, "packed export entry"));
@@ -222,7 +222,7 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
       problems.push("dist/cli.js is missing from the packed package");
     }
     if (problems.length > 0) {
-      throw new Error(`AgentMixer packed manifest failed:\n${[...new Set(problems)].sort().join("\n")}`);
+      throw new Error(`XCB packed manifest failed:\n${[...new Set(problems)].sort().join("\n")}`);
     }
 
     // Install the real packed artifact with its declared dependencies supplied
@@ -231,7 +231,7 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
     const modules = join(consumer, "node_modules");
     const scope = join(modules, "@hraness");
     await mkdir(scope, { recursive: true });
-    await run(["mv", packedRoot, join(scope, "agentmixer")], work);
+    await run(["mv", packedRoot, join(scope, "xcb")], work);
     for (const name of Object.keys(dependencies)) {
       const target = join(REPOSITORY_ROOT, "node_modules", name);
       const link = join(modules, name);
@@ -276,31 +276,31 @@ export async function packageSmoke(tarballArgument?: string): Promise<void> {
     );
     const nodeVersion = (await run(["node", "--version"], consumer)).trim();
     if (!nodeVersionSupported(nodeVersion)) {
-      throw new Error(`AgentMixer Node smoke requires node >= ${MINIMUM_NODE_VERSION}; found ${nodeVersion}`);
+      throw new Error(`XCB Node smoke requires node >= ${MINIMUM_NODE_VERSION}; found ${nodeVersion}`);
     }
     for (const executable of [process.execPath, "node"]) {
       const output = await run([executable, join(consumer, "smoke.mjs")], consumer);
       const observed = record(JSON.parse(output.trim()), "installed smoke output");
       if (observed.exports !== REQUIRED_EXPORTS.length || observed.model !== "smoke-model"
         || observed.sha256 !== 64 || observed.generation !== 1) {
-        throw new Error(`Installed AgentMixer smoke under ${executable} returned ${output.trim()}`);
+        throw new Error(`Installed XCB smoke under ${executable} returned ${output.trim()}`);
       }
       const expectedRuntime = executable === "node" ? "node" : "bun";
       if (observed.runtime !== expectedRuntime) {
-        throw new Error(`Installed AgentMixer smoke ran under ${String(observed.runtime)}, expected ${expectedRuntime}`);
+        throw new Error(`Installed XCB smoke ran under ${String(observed.runtime)}, expected ${expectedRuntime}`);
       }
       // The installed CLI must answer --version/--help without provider access.
-      const installedCli = join(modules, "@hraness/agentmixer/dist/cli.js");
+      const installedCli = join(modules, "@hraness/xcb/dist/cli.js");
       const version = (await run([executable, installedCli, "--version"], consumer)).trim();
       if (version !== manifest.version) {
-        throw new Error(`Installed agentmixer --version returned ${version}, expected ${String(manifest.version)}`);
+        throw new Error(`Installed xcb --version returned ${version}, expected ${String(manifest.version)}`);
       }
       const help = await run([executable, installedCli, "--help"], consumer);
-      if (!help.includes("agentmixer auth claude") || !help.includes("agentmixer doctor")) {
-        throw new Error("Installed agentmixer --help did not print the usage surface");
+      if (!help.includes("xcb auth claude") || !help.includes("xcb doctor")) {
+        throw new Error("Installed xcb --help did not print the usage surface");
       }
     }
-    console.log("AgentMixer standalone package boundary verified under Bun and Node.");
+    console.log("XCB standalone package boundary verified under Bun and Node.");
   } finally {
     await rm(work, { recursive: true, force: true });
   }

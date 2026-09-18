@@ -5,7 +5,8 @@
 
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
+import { connect as connectSocket, type Socket } from "node:net";
+import { unlink } from "node:fs/promises";
 
 export interface LoopbackServer {
   readonly port: number;
@@ -15,6 +16,10 @@ export interface LoopbackServer {
 
 export type LoopbackServerOptions = Readonly<{
   hostname: string;
+  /** When set, listen on this unix socket path instead of a TCP port —
+   * the host-side half of an in-namespace service forward. `port` reports
+   * 0; the caller owns the advertised reachability story. */
+  unixSocket?: string;
   idleTimeoutMs?: number;
   maxRequestBodyBytes?: number;
   fetch(request: Request): Response | Promise<Response>;
@@ -101,10 +106,14 @@ export function createLoopbackServer(options: LoopbackServerOptions): Promise<Lo
   return new Promise((resolve, reject) => {
     const onListenError = (error: Error) => reject(error);
     server.once("error", onListenError);
-    server.listen(0, options.hostname, () => {
+    const listen = () => {
+      if (options.unixSocket === undefined) server.listen(0, options.hostname, onListening);
+      else server.listen(options.unixSocket, onListening);
+    };
+    const onListening = () => {
       server.removeListener("error", onListenError);
       const address = server.address();
-      port = typeof address === "object" && address !== null ? address.port : 0;
+      port = typeof address === "object" && address !== null ? address.port ?? 0 : 0;
       resolve({
         get port() { return port; },
         get pendingRequests() { return pendingRequests; },
@@ -117,6 +126,16 @@ export function createLoopbackServer(options: LoopbackServerOptions): Promise<Lo
           return stopped;
         },
       });
+    };
+    // A unix socket path outlives a crashed listener as a stale file. Probe it:
+    // a live listener means the name is taken (fail closed); a refused
+    // connection means a dead owner and the file is reclaimed before bind.
+    if (options.unixSocket === undefined) { listen(); return; }
+    const socketPath = options.unixSocket;
+    const probe = connectSocket(socketPath);
+    probe.once("connect", () => { probe.destroy(); reject(new Error("LOOPBACK_SOCKET_IN_USE")); });
+    probe.once("error", () => {
+      void unlink(socketPath).catch(() => undefined).then(() => listen());
     });
   });
 }

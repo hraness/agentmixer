@@ -1,0 +1,26 @@
+{
+  "schema": "xcb.qualification.linux.v1",
+  "wrapper": {
+    "path": "/usr/bin/bwrap",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "namespaces": {
+    "unprivileged_userns_clone": "absent",
+    "max_user_namespaces": "0"
+  },
+  "probes": {
+    "linux-sandbox": {
+      "exit_code": 0,
+      "passed": true
+    },
+    "linux-egress": {
+      "exit_code": 0,
+      "passed": true
+    },
+    "linux-loopback": {
+      "exit_code": 0,
+      "passed": true
+    }
+  },
+  "observed_at_ms": 1789757321356
+}

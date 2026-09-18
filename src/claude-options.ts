@@ -24,5 +24,5 @@ export function restrictedClaudeOptions({ brokerToolNames, systemPrompt, ...host
 
 /** Keep task text out of the native CLI's slash/bang command parser. */
 export function literalClaudePrompt(prompt: string): string {
-  return `Agentmixer task, supplied as plain text:\n\n${prompt}`;
+  return `xcb task, supplied as plain text:\n\n${prompt}`;
 }

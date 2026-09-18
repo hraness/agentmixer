@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CODEX_NATIVE_SHA256, codexMacSandbox, createCodexProcessLauncher, inspectCodexExecutable, parseCodexCustodyJournal } from "../src/codex-process.ts";
 
 test("custody preserves the last complete identity after a partial append and rejects broken or drifting records", () => {
-  const snapshot = { schema: "agentmixer.codex-process.v2", nativeVersion: "0.153.4", executableSha256: CODEX_NATIVE_SHA256,
+  const snapshot = { schema: "xcb.codex-process.v2", nativeVersion: "0.153.4", executableSha256: CODEX_NATIVE_SHA256,
     runtimeSnapshotSha256: CODEX_NATIVE_SHA256, configSha256: "a".repeat(64), profileSha256: "b".repeat(64),
     parentRuntimeSha256: "c".repeat(64), scratchContentSha256: "d".repeat(64), scratchIdentitySha256: "e".repeat(64),
     custodyPath: "/owned/run/custody.jsonl", runId: "run-one", accountId: "account-one", workspaceId: "contact-one",
@@ -24,7 +24,7 @@ test("custody preserves the last complete identity after a partial append and re
     expect(() => parseCodexCustodyJournal(first + second({ [key]: undefined }))).toThrow("CODEX_CUSTODY_DIGEST_INVALID");
     expect(() => parseCodexCustodyJournal(first + second({ [key]: "invalid" }))).toThrow("CODEX_CUSTODY_DIGEST_INVALID");
   }
-  expect(() => parseCodexCustodyJournal(first.replace("agentmixer.codex-process.v2", "agentmixer.codex-process.v1"))).toThrow("CODEX_CUSTODY_IDENTITY_INVALID");
+  expect(() => parseCodexCustodyJournal(first.replace("xcb.codex-process.v2", "xcb.codex-process.v1"))).toThrow("CODEX_CUSTODY_IDENTITY_INVALID");
   expect(() => parseCodexCustodyJournal(first + second({ groupAbsent: true }))).toThrow("CODEX_CUSTODY_ORDER_INVALID");
   expect(() => parseCodexCustodyJournal(first + second().replace(digest, "c".repeat(64)))).toThrow("CODEX_CUSTODY_CHAIN_INVALID");
   expect(() => parseCodexCustodyJournal(first + second().replace('"sequence":1', '"sequence":2'))).toThrow("CODEX_CUSTODY_CHAIN_INVALID");
@@ -35,7 +35,7 @@ test("custody preserves the last complete identity after a partial append and re
 });
 
 test("native artifact admission rejects unreviewed bytes, links, writable files and oversized metadata before execution", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agentmixer-codex-file-"));
+  const root = await mkdtemp(join(tmpdir(), "xcb-codex-file-"));
   try {
     const binary = join(root, "binary"); await writeFile(binary, "synthetic executable", { mode: 0o500 });
     await expect(inspectCodexExecutable(binary)).rejects.toThrow("CODEX_EXECUTABLE_CHANGED_OR_UNREVIEWED");
@@ -72,7 +72,7 @@ test("profile input cannot add a policy rule, execute a mutable snapshot, or ope
 
 test("prelaunch requires private physical host state and honors cancellation without a native process", async () => {
   if (process.platform !== "darwin" || process.arch !== "arm64") return;
-  const root = await mkdtemp(join(tmpdir(), "agentmixer-codex-launch-"));
+  const root = await mkdtemp(join(tmpdir(), "xcb-codex-launch-"));
   try {
     const state = join(root, "state"); await mkdir(state, { mode: 0o755 });
     const input = { runId: "run-one", accountId: "account-one", workspaceId: "contact-one", configuration: "synthetic", relayPort: 43210, signal: new AbortController().signal };

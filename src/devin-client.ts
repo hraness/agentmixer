@@ -94,7 +94,7 @@ export class DevinAcpClient {
     const result = await this.#request("initialize", {
       protocolVersion: DEVIN_ACP_PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      clientInfo: { name: "agentmixer", version: "0.1.1" },
+      clientInfo: { name: "xcb", version: "0.4.0" },
     }, signal);
     const parsed = parseInitializeResult(result);
     this.#initialized = true;

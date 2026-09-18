@@ -78,7 +78,7 @@ export function createManagedOfflineProtocol(process: CodexProcessHandle, accoun
   signal.addEventListener("abort", onAbort, { once: true });
   const result = Promise.resolve().then(async () => {
     await bounded(process.ready); active();
-    const initialized = object(await rpc(1, "initialize", { clientInfo: { name: "agentmixer-offline-diagnostic", version: "0.1.0" }, capabilities: { experimentalApi: false, requestAttestation: false } }));
+    const initialized = object(await rpc(1, "initialize", { clientInfo: { name: "xcb-offline-diagnostic", version: "0.4.0" }, capabilities: { experimentalApi: false, requestAttestation: false } }));
     for (const [field, limit] of [["userAgent", 1024], ["codexHome", 4096], ["platformFamily", 128], ["platformOs", 128]] as const) {
       if (typeof initialized[field] !== "string" || !initialized[field] || Buffer.byteLength(initialized[field]) > limit) return invalid("OFFLINE_DIAGNOSTIC_INITIALIZE_INVALID");
     }

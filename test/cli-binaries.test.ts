@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { cliBinaryCandidates, inspectCliExecutable, repairCliExecutableMode, CLI_CLAUDE_ENV } from "../src/cli/binaries.ts";
 
 async function dir() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
   return root;
 }
 
@@ -19,12 +19,19 @@ describe("cli binary discovery", () => {
     expect(candidates.some((c) => c.includes(".local"))).toBe(true);
   });
 
+  test("pre-0.4.0 pin names apply only when the XCB_* variable is unset", () => {
+    const env = (name: string) => name === "AGENTMIXER_CLAUDE" ? "/legacy/claude" : undefined;
+    expect(cliBinaryCandidates("claude", env)[0]).toBe("/legacy/claude");
+    const both = (name: string) => name === CLI_CLAUDE_ENV ? "/new/claude" : name === "AGENTMIXER_CLAUDE" ? "/legacy/claude" : undefined;
+    expect(cliBinaryCandidates("claude", both)[0]).toBe("/new/claude");
+  });
+
   test("inspection rejects missing, non-executable and non-regular targets", async () => {
     const root = await dir();
     await writeFile(join(root, "plain"), "not executable", { mode: 0o644 });
-    await expect(inspectCliExecutable(join(root, "plain"))).rejects.toThrow("AGENTMIXER_EXECUTABLE_INVALID");
+    await expect(inspectCliExecutable(join(root, "plain"))).rejects.toThrow("XCB_EXECUTABLE_INVALID");
     await expect(inspectCliExecutable(join(root, "missing"))).rejects.toThrow();
-    await expect(inspectCliExecutable("relative/path")).rejects.toThrow("AGENTMIXER_EXECUTABLE_INVALID");
+    await expect(inspectCliExecutable("relative/path")).rejects.toThrow("XCB_EXECUTABLE_INVALID");
   });
 
   test("inspection rejects world-writable executables until repaired", async () => {
@@ -32,7 +39,7 @@ describe("cli binary discovery", () => {
     const target = join(root, "claude");
     await writeFile(target, "fake-binary", { mode: 0o600 });
     await chmod(target, 0o777);
-    await expect(inspectCliExecutable(target)).rejects.toThrow("AGENTMIXER_EXECUTABLE_INVALID");
+    await expect(inspectCliExecutable(target)).rejects.toThrow("XCB_EXECUTABLE_INVALID");
     expect(await repairCliExecutableMode(target)).toBe(true);
     const inspected = await inspectCliExecutable(target);
     expect(inspected.executablePath).toBe(target);

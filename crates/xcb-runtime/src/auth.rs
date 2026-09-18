@@ -127,6 +127,9 @@ pub async fn login(store: &Store, id: &Id, pin: &Pin) -> Result<()> {
     }
 }
 
+/// Explicit legacy import: reads a pre-0.4.0 AgentMixer `claude-oauth-token`
+/// file from `source` and stores it as a new Claude account. The legacy state
+/// root is never a live default; the source directory is left untouched.
 pub fn import_agentmixer_token(store: &Store, source: &Path, name: &str) -> Result<Id> {
     private::check_directory(source)?;
     let bytes = Zeroizing::new(private::read(&source.join("claude-oauth-token"), 2048)?);

@@ -6,6 +6,9 @@ const SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/u;
 const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
 const OIDC_CONFIG_ID = /^oidc:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const SCOPED_PACKAGE = /^@[a-z0-9][a-z0-9._-]{0,127}\/[a-z0-9][a-z0-9._-]{0,127}$/u;
+const NATIVE_ARCHIVE = /^xcb-((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-([a-z0-9]{1,32})-([a-z0-9_]{1,32})\.tar\.gz$/u;
+const NATIVE_CHECKSUM_SUFFIX = ".sha256";
+const MAXIMUM_NATIVE_ASSET_PAIRS = 16;
 
 /** One publishable package coordinate. tagPrefix namespaces its immutable
  * release tags ("v" for this repository's package); title prefixes the GitHub
@@ -19,13 +22,13 @@ export type ReleasePackage = Readonly<{
   workflowPath: string;
 }>;
 
-export const publicPackageName = "@hraness/agentmixer";
+export const publicPackageName = "@hraness/xcb";
 export const publicRepository = "hraness/xcb";
 export const rootReleasePackage: ReleasePackage = Object.freeze({
   name: publicPackageName,
   repository: publicRepository,
   tagPrefix: "v",
-  title: "AgentMixer",
+  title: "XCB",
   workflowPath: ".github/workflows/release.yml",
 });
 const releasePackages: ReadonlyMap<string, ReleasePackage> = new Map([
@@ -78,10 +81,49 @@ export type GitHubReleaseAsset = Readonly<{
   size: number;
 }>;
 
+export type GitHubNativeAssetPair = Readonly<{
+  archive: GitHubReleaseAsset;
+  checksum: GitHubReleaseAsset;
+}>;
+
 export type GitHubReleaseCoordinate = Readonly<{
   checksum: GitHubReleaseAsset;
+  natives: readonly GitHubNativeAssetPair[];
   tarball: GitHubReleaseAsset;
 }>;
+
+/** Pair one complete set of `xcb-<version>-<os>-<arch>.tar.gz` archive names
+ * with their adjacent `.sha256` checksum names for the exact release version.
+ * Every name must belong to a complete pair; anything else fails closed. */
+export function nativeAssetFilePairs(
+  names: readonly string[],
+  version: string,
+): readonly Readonly<{ archive: string; checksum: string }>[] {
+  if (!SEMVER.test(version)) throw new Error("Native release asset version is invalid.");
+  const pairs = new Map<string, { archive?: string; checksum?: string }>();
+  for (const name of names) {
+    const isChecksum = name.endsWith(NATIVE_CHECKSUM_SUFFIX);
+    const base = isChecksum ? name.slice(0, -NATIVE_CHECKSUM_SUFFIX.length) : name;
+    const match = NATIVE_ARCHIVE.exec(base);
+    if (match === null || match[1] !== version) {
+      throw new Error(`Native release asset ${name} is not one exact xcb-${version}-<os>-<arch>.tar.gz name.`);
+    }
+    const pair = pairs.get(base) ?? {};
+    const key = isChecksum ? "checksum" : "archive";
+    if (pair[key] !== undefined) throw new Error(`Duplicate native release asset ${name}.`);
+    pair[key] = name;
+    pairs.set(base, pair);
+    if (pairs.size > MAXIMUM_NATIVE_ASSET_PAIRS) {
+      throw new Error("Native release assets exceed their bounded pair count.");
+    }
+  }
+  return Object.freeze([...pairs.values()].map((pair) => {
+    if (pair.archive === undefined || pair.checksum === undefined) {
+      throw new Error("Native release asset is missing its adjacent archive or checksum.");
+    }
+    return Object.freeze({ archive: pair.archive, checksum: pair.checksum });
+  }));
+}
 
 export function releaseDistribution(releasePackage: ReleasePackage) {
   if (!SCOPED_PACKAGE.test(releasePackage.name)) throw new Error("Release package name is not one exact scoped coordinate.");
@@ -176,18 +218,39 @@ export function releaseDistribution(releasePackage: ReleasePackage) {
     ) {
       throw new Error(`GitHub Release ${tag} is not exact, published, and immutable.`);
     }
-    if (!Array.isArray(release.assets) || release.assets.length !== 2) {
-      throw new Error(`GitHub Release ${tag} must contain exactly two immutable artifacts.`);
+    if (
+      !Array.isArray(release.assets)
+      || release.assets.length < 2
+      || release.assets.length > 2 + 2 * MAXIMUM_NATIVE_ASSET_PAIRS
+      || release.assets.length % 2 !== 0
+    ) {
+      throw new Error(
+        `GitHub Release ${tag} must contain the two exact release artifacts and complete native pairs.`,
+      );
     }
     const byName = new Map(release.assets.map((asset) => {
       const item = record(asset, "GitHub Release asset");
       return [item.name, asset] as const;
     }));
-    if (byName.size !== 2) throw new Error(`GitHub Release ${tag} contains duplicate asset names.`);
+    if (byName.size !== release.assets.length) {
+      throw new Error(`GitHub Release ${tag} contains duplicate asset names.`);
+    }
     const archiveName = releaseArchiveName(version);
+    const nativeNames: string[] = [];
+    for (const name of byName.keys()) {
+      if (name === archiveName || name === "SHA256SUMS") continue;
+      if (typeof name !== "string") {
+        throw new Error(`GitHub Release ${tag} contains an asset without an exact name.`);
+      }
+      nativeNames.push(name);
+    }
+    const natives = nativeAssetFilePairs(nativeNames, version).map((pair) => Object.freeze({
+      archive: parseAsset(byName.get(pair.archive), pair.archive, tag),
+      checksum: parseAsset(byName.get(pair.checksum), pair.checksum, tag),
+    }));
     const tarball = parseAsset(byName.get(archiveName), archiveName, tag);
     const checksum = parseAsset(byName.get("SHA256SUMS"), "SHA256SUMS", tag);
-    return Object.freeze({ checksum, tarball });
+    return Object.freeze({ checksum, natives: Object.freeze(natives), tarball });
   }
 
   return Object.freeze({
@@ -246,5 +309,25 @@ export function assertReleaseAssetBytes(
   const expectedChecksum = `${tarballDigest}  ${coordinate.tarball.name}\n`;
   if (new TextDecoder("utf-8", { fatal: true }).decode(checksumBytes) !== expectedChecksum) {
     throw new Error("SHA256SUMS does not describe the exact GitHub Release tarball.");
+  }
+}
+
+export function assertNativeAssetBytes(
+  pair: GitHubNativeAssetPair,
+  archiveBytes: Uint8Array,
+  checksumBytes: Uint8Array,
+  sha256: (bytes: Uint8Array) => string,
+): void {
+  const archiveDigest = sha256(archiveBytes);
+  const checksumDigest = sha256(checksumBytes);
+  if (
+    pair.archive.size !== archiveBytes.byteLength
+    || pair.archive.digest !== `sha256:${archiveDigest}`
+    || pair.checksum.size !== checksumBytes.byteLength
+    || pair.checksum.digest !== `sha256:${checksumDigest}`
+  ) throw new Error(`GitHub Release asset ${pair.archive.name} size or digest does not match its immutable bytes.`);
+  const expectedChecksum = `${archiveDigest}\n`;
+  if (new TextDecoder("utf-8", { fatal: true }).decode(checksumBytes) !== expectedChecksum) {
+    throw new Error(`Native checksum ${pair.checksum.name} does not describe the exact archive bytes.`);
   }
 }

@@ -74,10 +74,17 @@ jobs:
           status=0
           for probe in linux-sandbox linux-egress linux-loopback; do
             if [ -f "qualification/$probe.ts" ]; then
-              timeout 300 bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/$probe.json" 2> "evidence/$probe.stderr" || status=1
+              code=0
+              timeout 300 bun "qualification/$probe.ts" --bwrap "$BWRAP" --bwrap-sha256 "$SHA" > "evidence/$probe.json" 2> "evidence/$probe.stderr" || code=$?
+              # The process exit code is each probe's authoritative verdict;
+              # build-receipt.ts reads it to set the receipt's exit_code/passed.
+              echo "$code" > "evidence/$probe.exitcode"
+              if [ "$code" -ne 0 ]; then status=1; fi
             fi
           done
-          bun qualification/build-receipt.ts "$BWRAP" "$SHA" evidence/linux-qualification.json
+          # build-receipt exits nonzero when any probe's recorded verdict is a
+          # failure, so a red probe can no longer ship a passing receipt.
+          bun qualification/build-receipt.ts "$BWRAP" "$SHA" evidence/linux-qualification.json || status=1
           if [ ! -f evidence/linux-qualification.json ]; then status=1; fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,17 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createCliWorkspace, createCliWorkspaceProfile } from "../src/cli/workspace.ts";
 import { createCapabilityBroker } from "../src/capabilities.ts";
+import { assertWorkspaceStateSeparation } from "../src/cli/state.ts";
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
-  return { root, workspace: createCliWorkspace(root) };
+  const base = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
+  const root = join(base, "work"), coordinationRoot = join(base, "coordination");
+  await mkdir(root);
+  return { root, coordinationRoot, workspace: createCliWorkspace(root, { coordinationRoot }) };
 }
 
 describe("cli workspace", () => {
+  test("private state cannot become part of a consumer workspace", () => {
+    for (const [workspace, state] of [["/", "/private/state"], ["/work", "/work/state"], ["/private/state/work", "/private/state"], ["/work", "/work"]]) {
+      expect(() => assertWorkspaceStateSeparation(workspace!, state!)).toThrow("overlaps private xcb state");
+    }
+    expect(() => assertWorkspaceStateSeparation("/work/project", "/work/project-state")).not.toThrow();
+  });
+
   test("rejects non-absolute or non-canonical roots", async () => {
     expect(() => createCliWorkspace("relative/path")).toThrow("WORKSPACE_ROOT_INVALID");
     expect(() => createCliWorkspace("/tmp/../tmp")).toThrow("WORKSPACE_ROOT_INVALID");
@@ -36,7 +47,7 @@ describe("cli workspace", () => {
   test("rejects escaping, absolute and symlinked paths", async () => {
     const { root, workspace } = await fixture();
     await writeFile(join(root, "inside.txt"), "x", { mode: 0o600 });
-    const outside = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
     await writeFile(join(outside, "secret.txt"), "secret", { mode: 0o600 });
     await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
 
@@ -68,6 +79,41 @@ describe("cli workspace", () => {
     expect(wrote.revision).not.toBe(read.revision);
     await expect(broker.invoke("workspace.write", { path: "ok.txt", text: "x", expectedRevision: read.revision })).rejects.toThrow();
     await broker.close();
+  });
+
+  test("twenty writers cannot create or replace one revision more than once", async () => {
+    const { root, workspace } = await fixture();
+    for (const existing of [false, true]) {
+      const path = join(root, existing ? "existing" : "new");
+      if (existing) { await writeFile(path, "original"); await chmod(path, 0o755); }
+      const expected = existing ? (await workspace.readRevision(path)).revision : null;
+      const results = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => workspace.writeRevision(path, `writer-${index}`, expected)));
+      expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+      expect((await stat(path)).mode & 0o777).toBe(existing ? 0o755 : 0o600);
+    }
+  });
+
+  test("coordination refuses workspace overlap and unsafe lock files", async () => {
+    const { root } = await fixture();
+    const workspace = createCliWorkspace(root, { coordinationRoot: join(root, "locks") });
+    await expect(workspace.writeRevision(join(root, "new"), "no effect", null)).rejects.toThrow("WORKSPACE_COORDINATION_LAYOUT_INVALID");
+    expect(await stat(join(root, "new")).catch(() => null)).toBeNull();
+    for (const kind of ["public", "symlink", "hardlink"]) {
+      const fixtureState = await fixture();
+      await mkdir(fixtureState.coordinationRoot, { mode: 0o700 });
+      const key = createHash("sha256").update(fixtureState.root).digest("hex");
+      const path = join(fixtureState.coordinationRoot, `${key}.sqlite`);
+      if (kind === "public") { await writeFile(path, ""); await chmod(path, 0o644); }
+      else {
+        const target = join(fixtureState.coordinationRoot, "target");
+        await writeFile(target, "", { mode: 0o600 });
+        if (kind === "symlink") await symlink(target, path);
+        else await link(target, path);
+      }
+      await expect(fixtureState.workspace.writeRevision(join(fixtureState.root, "new"), "no effect", null))
+        .rejects.toThrow("WORKSPACE_COORDINATION_NOT_PRIVATE");
+      expect(await stat(join(fixtureState.root, "new")).catch(() => null)).toBeNull();
+    }
   });
 
   test("web.fetch is absent without a host web port", async () => {

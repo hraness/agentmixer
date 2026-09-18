@@ -39,3 +39,30 @@ fn config_changes_are_revision_guarded_and_unknown_keys_refuse() {
     );
     assert!(serde_json::from_str::<Config>(r#"{"exec":"sh"}"#).is_err());
 }
+
+#[test]
+fn concurrent_config_writers_cannot_both_replace_the_same_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = private::directory(&directory.path().canonicalize().unwrap().join("state")).unwrap();
+    for round in 0..12 {
+        let path = root.join(format!("settings-{round}.json"));
+        private::create(&path, b"original").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(20));
+        let writers: Vec<_> = (0..20)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let expected = xcb_runtime::digest(b"original");
+                    barrier.wait();
+                    private::replace(&path, format!("writer-{index}").as_bytes(), &expected).is_ok()
+                })
+            })
+            .collect();
+        let succeeded = writers
+            .into_iter()
+            .map(|writer| usize::from(writer.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(succeeded, 1, "multiple commits to revision {round}");
+    }
+}

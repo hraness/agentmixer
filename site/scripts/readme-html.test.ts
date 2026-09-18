@@ -9,18 +9,18 @@ const repository = join(import.meta.dir, "..", "..");
 
 test("site installation coordinates stay on the admitted release while new source is prepared", () => {
   const source = [
-    "bun add https://github.com/hraness/xcb/releases/download/v0.1.2/hraness-agentmixer-0.1.2.tgz",
-    "npm install @hraness/agentmixer@0.1.2",
+    "bun add https://github.com/hraness/xcb/releases/download/v0.1.2/hraness-xcb-0.1.2.tgz",
+    "npm install @hraness/xcb@0.1.2",
     "bun add github:hraness/xcb#v0.1.2",
-    "Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.",
-    "Unrelated @hraness/agentmixer@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.",
+    "Version 0.1.2 and historical @hraness/xcb@0.1.0 remain prose.",
+    "Unrelated @hraness/xcb@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.",
   ].join("\n");
   const projected = publishedReadme(source, "0.1.2", "0.1.1");
-  expect(projected).toContain("/v0.1.1/hraness-agentmixer-0.1.1.tgz");
-  expect(projected).toContain("npm install @hraness/agentmixer@0.1.1");
+  expect(projected).toContain("/v0.1.1/hraness-xcb-0.1.1.tgz");
+  expect(projected).toContain("npm install @hraness/xcb@0.1.1");
   expect(projected).toContain("hraness/xcb#v0.1.1");
-  expect(projected).toContain("Version 0.1.2 and historical @hraness/agentmixer@0.1.0 remain prose.");
-  expect(projected).toContain("Unrelated @hraness/agentmixer@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.");
+  expect(projected).toContain("Version 0.1.2 and historical @hraness/xcb@0.1.0 remain prose.");
+  expect(projected).toContain("Unrelated @hraness/xcb@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.");
   expect(publishedReadme(source, "0.1.2", "0.1.2")).toBe(source);
   expect(publishedReadme(source, "0.1.2", null)).toBe(source);
   expect(() => publishedReadme(source, "0.1.2", "latest")).toThrow();

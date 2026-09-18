@@ -57,6 +57,16 @@ pre-npm job only admits a retry that is an exact continuation of the same run.
 integration on `main`. The site is informational only; it carries no product
 runtime and no release authority.
 
+## Native binary release
+
+`.github/workflows/release-native.yml` runs after a successful `release.yml` run
+on a `v<version>` tag. It builds `xcb` for Ubuntu and macOS, packages it as
+`xcb-<version>-<os>-<arch>.tar.gz` with an adjacent `.sha256` checksum, and
+uploads both to the same immutable GitHub Release. The release job uses the
+shared `scripts/build-native.sh` from the tagged source. Native artifacts are
+not published to npm; they are a separate release surface alongside the
+`@hraness/agentmixer` compatibility package.
+
 ## Site publication datum
 
 `site/published-release.json` starts with `version` and `verificationRun` both

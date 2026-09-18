@@ -46,6 +46,32 @@ foundation, Ghostget's named capability boundaries, and Oompa's usage and recove
 lessons. It does not inherit Oompa's cloud control plane or make promises about
 provider features that have not been admitted.
 
+### Install the native binary
+
+The `xcb` CLI builds with Rust 1.97.1 and works on macOS and Linux. A release
+tarball for your OS and architecture is attached to every `v<version>` GitHub
+Release as `xcb-<version>-<os>-<arch>.tar.gz` plus a `.sha256` checksum.
+
+Install the latest release to `~/.local/bin`:
+
+```sh
+XCB_VERSION=0.1.0 ./scripts/install-native.sh
+```
+
+Build and install from source instead:
+
+```sh
+./scripts/install-native.sh
+```
+
+Generate shell completions:
+
+```sh
+xcb completions bash > /path/to/completions/xcb.bash
+xcb completions zsh  > /path/to/completions/_xcb
+xcb completions fish > /path/to/completions/xcb.fish
+```
+
 ### Devin model modes
 
 Fixed models, Adaptive, and Fusion are different selections. Adaptive delegates

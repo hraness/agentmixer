@@ -60,17 +60,27 @@ pub fn check_file(file: &File, max: u64) -> Result<()> {
 }
 
 pub fn open_file(path: &Path, max: u64) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(
-            (rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK
-                | rustix::fs::OFlags::CLOEXEC)
-                .bits() as i32,
-        )
-        .open(path)?;
-    check_file(&file, max)?;
-    Ok(file)
+    // A racing private::replace can unlink the name between open and fstat:
+    // the descriptor then names an inode with no surviving link. Re-resolve
+    // the path — it now names the replacement, or no longer exists. A bounded
+    // retry keeps a pathological rename storm an honest failure.
+    for _ in 0..4 {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC)
+                    .bits() as i32,
+            )
+            .open(path)?;
+        if file.metadata()?.nlink() == 0 {
+            continue;
+        }
+        check_file(&file, max)?;
+        return Ok(file);
+    }
+    Err(Error::PrivateState)
 }
 
 /// Open a private file whose name a cooperating peer may retire concurrently —

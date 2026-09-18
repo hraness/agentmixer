@@ -1,6 +1,6 @@
 /**
  * gobstopper preset.command shim: drives gobstopper's `agentic` compaction
- * strategy through agentmixer's bounded task runtime (`runAgentTask`).
+ * strategy through XCB's bounded task runtime (`runAgentTask`).
  *
  * Contract (gobstopper-cli `run_preset_command`):
  *   stdin  — {"session_id","provider","items":[{line_index,kind,est_tokens,
@@ -55,7 +55,7 @@ export const GOBSTOPPER_EDITOR_LIMITS = Object.freeze({
 });
 /** Identical to gobstopper's `elide::DEFAULT_STUB`; `{bytes}`/`{kind}` expand adapter-side. */
 export const DEFAULT_STUB = "[output elided by gobstopper: {bytes} bytes]";
-export const EDITOR_PROFILE_ID = "agentmixer.gobstopper-editor.v1";
+export const EDITOR_PROFILE_ID = "xcb.gobstopper-editor.v1";
 const ROUTE: AgentTaskRoute = Object.freeze({ id: "claude-api", provider: "claude", authentication: "api" });
 const ITEM_KINDS = new Set(["system", "user", "assistant", "tool_call", "tool_result", "reasoning", "meta"]);
 const TOOL_NAMES = ["keep", "elide", "summarize", "defer"] as const;

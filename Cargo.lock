@@ -596,8 +596,8 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gobstopper-core"
-version = "0.1.0"
-source = "git+https://github.com/hraness/gobstopper?rev=8bf355c4c86027a4d26136a4761979081b7fd8a0#8bf355c4c86027a4d26136a4761979081b7fd8a0"
+version = "0.2.1"
+source = "git+https://github.com/hraness/gobstopper?rev=d856594fb6cf9e23e4cef2d28eb6dc0cdf4b7030#d856594fb6cf9e23e4cef2d28eb6dc0cdf4b7030"
 dependencies = [
  "serde",
  "serde_json",
@@ -705,6 +705,16 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error 2.0.1",
+]
+
+[[package]]
+name = "indexmap"
+version = "2.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+dependencies = [
+ "equivalent",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -1338,6 +1348,7 @@ version = "1.0.145"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "ryu",

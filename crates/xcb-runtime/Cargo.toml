@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 aicharts-core = { git = "https://github.com/hraness/aicharts", rev = "091433796f7253386c3e3186c67c275fb273b704", version = "0.1.0" }
 base64 = "=0.22.1"
-gobstopper-core = { git = "https://github.com/hraness/gobstopper", rev = "8bf355c4c86027a4d26136a4761979081b7fd8a0", version = "0.1.0" }
+gobstopper-core = { git = "https://github.com/hraness/gobstopper", rev = "d856594fb6cf9e23e4cef2d28eb6dc0cdf4b7030", version = "0.2.1" }
 hex = "=0.4.3"
 image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg", "webp"] }
 regex = "=1.12.2"

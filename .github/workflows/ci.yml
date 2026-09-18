@@ -32,6 +32,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo fmt --all -- --check
 
+  native-build:
+    name: Native build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo build --release --locked -p xcb-cli
+      - run: cp target/release/xcb "xcb-${{ matrix.os }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: xcb-${{ matrix.os }}
+          path: xcb-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 30
+
   site:
     name: Site
     runs-on: ubuntu-24.04

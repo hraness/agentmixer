@@ -34,6 +34,9 @@ pub struct View {
     pub pane_revision: Option<String>,
     pub pane_error: Option<String>,
     pub state: State,
+    /// True when the focused session's live run is owned by another terminal
+    /// instance; the session is actively working elsewhere, not unsettled.
+    pub remote_active: bool,
     pub tokens_per_second: Option<f64>,
     pub share_percent: Option<f64>,
     pub total_runway_seconds: Option<f64>,
@@ -56,6 +59,7 @@ impl Default for View {
             pane_revision: None,
             pane_error: None,
             state: State::Idle,
+            remote_active: false,
             tokens_per_second: None,
             share_percent: None,
             total_runway_seconds: None,
@@ -104,6 +108,12 @@ pub enum Update {
         text: String,
     },
     ClearStream(Id),
+    /// A submission the kernel rejected; restores the complete draft — text
+    /// and attachments — to the composer so nothing is silently lost.
+    Draft {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     Attachment(Attachment),
     PaneCandidate(Pane),
     Notice(String),

@@ -100,7 +100,8 @@ fn attachment_chips_help_and_paused_follow_state_are_visible() {
         height: 480,
     });
     app.stream = "streaming line\n".repeat(50);
-    app.scroll = 10;
+    app.paused.set(true);
+    app.scroll.set(10);
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal
         .draw(|frame| render::draw(frame, &mut app, 0))
@@ -128,6 +129,113 @@ fn tiny_terminal_and_large_text_cannot_panic_the_renderer() {
             .draw(|frame| render::draw(frame, &mut app, 0))
             .unwrap();
     }
+}
+
+#[test]
+fn a_paused_viewport_is_pinned_while_output_streams() {
+    let mut app = app();
+    app.stream = (1..=60).map(|line| format!("line-{line:03}\n")).collect();
+    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    assert!(
+        app.scroll_top() > 0,
+        "tail-follow starts at the bottom of the transcript"
+    );
+    assert!(!app.paused.get());
+
+    // Pause at an absolute line index, then keep streaming: the viewport must
+    // not drift (the audit watched it wander line-052 → line-062).
+    app.scroll.set(40);
+    app.paused.set(true);
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    assert_eq!(app.scroll_top(), 40);
+    app.stream.push_str(
+        &(61..=120)
+            .map(|line| format!("line-{line:03}\n"))
+            .collect::<String>(),
+    );
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    assert_eq!(
+        app.scroll_top(),
+        40,
+        "a growing tail must not move a pinned viewport"
+    );
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(contents.contains("line-041"));
+    assert!(contents.contains("paused · End follows"));
+
+    // PageUp bases its step on the last rendered top line, then End follows.
+    app.handle(
+        crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::PageUp,
+            crossterm::event::KeyModifiers::NONE,
+        )),
+        &std::sync::mpsc::sync_channel(1).0,
+    );
+    assert_eq!(app.scroll.get(), 30);
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    assert_eq!(app.scroll_top(), 30);
+    app.handle(
+        crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::End,
+            crossterm::event::KeyModifiers::NONE,
+        )),
+        &std::sync::mpsc::sync_channel(1).0,
+    );
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    assert!(app.scroll_top() > 40, "End resumes following the tail");
+}
+
+#[test]
+fn a_run_owned_by_another_terminal_is_not_rendered_as_recovery() {
+    let mut app = app();
+    app.view.state = State::Working;
+    app.view.session.as_mut().unwrap().state = State::Working;
+    app.view.remote_active = true;
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(contents.contains("running in another terminal"));
+    assert!(!contents.contains("needs recovery"));
+
+    // The same session without a live owner still reports recovery.
+    app.view.remote_active = false;
+    app.view.state = State::Uncertain;
+    terminal
+        .draw(|frame| render::draw(frame, &mut app, 0))
+        .unwrap();
+    let contents: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(contents.contains("needs recovery"));
 }
 
 fn provenance(run: Option<&str>) -> MessageProvenance {

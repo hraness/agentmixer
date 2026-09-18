@@ -63,6 +63,40 @@ fn private_state_rejects_symlinks_and_public_permissions() {
 }
 
 #[test]
+fn a_vanished_or_planted_sidecar_is_handled_during_startup_scan() {
+    let dir = root();
+    let base = dir.path().canonicalize().unwrap();
+    let store = Store::open(&base.join("state")).unwrap();
+    drop(store);
+    let state = base.join("state");
+    // An absent or retired name is tolerated, matching the sibling-teardown race.
+    assert!(
+        xcb_runtime::private::open_file_maybe_vanished(&state.join("gone"), 1024)
+            .unwrap()
+            .is_none()
+    );
+    // A surviving private name still opens.
+    let named = state.join("named");
+    fs::write(&named, b"x").unwrap();
+    fs::set_permissions(&named, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        xcb_runtime::private::open_file_maybe_vanished(&named, 1024)
+            .unwrap()
+            .is_some()
+    );
+    // A planted second link on a surviving name is still rejected.
+    let planted = state.join("planted");
+    fs::write(&planted, b"x").unwrap();
+    fs::set_permissions(&planted, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&planted, state.join("planted-alias")).unwrap();
+    assert!(xcb_runtime::private::open_file_maybe_vanished(&planted, 1024).is_err());
+    // Group/world-readable is still rejected even though it parses as one name.
+    fs::remove_file(state.join("planted-alias")).unwrap();
+    fs::set_permissions(&planted, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(xcb_runtime::private::open_file_maybe_vanished(&planted, 1024).is_err());
+}
+
+#[test]
 fn revision_checked_messages_persist_across_reopen() {
     let dir = root();
     let base = dir.path().canonicalize().unwrap();

@@ -38,7 +38,7 @@ function promptWithContext(prompt: string, prior: readonly CliTranscriptEntry[])
   let bytes = 0;
   const selected: string[] = [];
   for (const entry of [...prior].reverse()) {
-    const line = `${entry.role === "user" ? "User" : "AgentMixer"}: ${entry.text}`;
+    const line = `${entry.role === "user" ? "User" : "xcb"}: ${entry.text}`;
     bytes += Buffer.byteLength(line) + 1;
     if (bytes > MAX_CONTEXT_BYTES || selected.length >= 40) break;
     selected.unshift(line);

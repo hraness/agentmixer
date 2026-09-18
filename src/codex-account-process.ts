@@ -60,7 +60,7 @@ export interface CodexAccountProcessSystem {
   startEgressBridge?(options: { socketPath: string; allowlist?: readonly string[] }): Promise<EgressBridge>;
 }
 export type CodexAccountProcessReceipt = Readonly<{
-  schema: "agentmixer.codex-account-process.v1"; binding: CodexAccountBinding;
+  schema: "xcb.codex-account-process.v1"; binding: CodexAccountBinding;
   productionQualified: false; network: "denied" | "tcp443-system-resolver-candidate" | "tcp443-system-resolver-var-metadata-candidate" | "tcp443-system-resolver-var-metadata-ca-file-candidate"; nativeVersion: string;
   nativeSha256: string; schemaSha256: string; parentSha256: string;
   configurationSha256: string; profileSha256: string | null;
@@ -236,7 +236,7 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     if (!child || closing || state.phase !== "running") { done(new Error("CODEX_ACCOUNT_PROCESS_STDIN_UNAVAILABLE")); return; }
     try { child.stdin.write(chunk, done); } catch { done(new Error("CODEX_ACCOUNT_PROCESS_STDIN_FAILED")); }
   } }); stdin.on("error", () => {});
-  const receipt = (): CodexAccountProcessReceipt => Object.freeze({ schema: "agentmixer.codex-account-process.v1", binding: owned, productionQualified: false, network, nativeVersion: runtime.version,
+  const receipt = (): CodexAccountProcessReceipt => Object.freeze({ schema: "xcb.codex-account-process.v1", binding: owned, productionQualified: false, network, nativeVersion: runtime.version,
     nativeSha256: runtime.sha256, schemaSha256: runtime.schemaSha256, parentSha256: runtime.parentRuntime.expectedSha256, configurationSha256: hash(configuration), ...state, failures: Object.freeze([...failures]) });
   function recordFailure(code: string) { if (failures.size < 24) failures.add(code); }
   function persist() {
@@ -259,12 +259,12 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     const accountRoot = join(accounts, owned.accountId); let created = false;
     try { await mkdir(accountRoot, { mode: 0o700 }); created = true; await syncDirectory(accounts); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     await directory(accountRoot);
-    await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "agentmixer.codex-account-home.v1", accountId: owned.accountId }) + "\n", created);
+    await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "xcb.codex-account-home.v1", accountId: owned.accountId }) + "\n", created);
     root = join(runs, `${owned.owner}-${owned.processGeneration}-${randomBytes(12).toString("hex")}`); await mkdir(root, { mode: 0o700 });
     await syncDirectory(runs);
     state.journalPath = join(root, "custody.jsonl"); journalFd = openSync(state.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     fsyncSync(journalFd); await syncDirectory(root);
-    lockPath = join(accountRoot, "active.json"); lockContents = JSON.stringify({ schema: "agentmixer.codex-account-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
+    lockPath = join(accountRoot, "active.json"); lockContents = JSON.stringify({ schema: "xcb.codex-account-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
     // Mark ownership as soon as the exclusive create succeeds, including a
     // failed fsync: that uncertainty must never erase somebody else's lock.
     const lock = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); lockOwned = true;
@@ -318,7 +318,7 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
       env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
         ...(networkProfile === "codex-account-device-code-tcp443-dns-v3" && parent.platform === "darwin" ? { SSL_CERT_FILE: "/etc/ssl/cert.pem" } : {}),
-        ...(bridge === undefined ? {} : { AGENTMIXER_EGRESS_SOCKET: bridge.socketPath }) }) });
+        ...(bridge === undefined ? {} : { XCB_EGRESS_SOCKET: bridge.socketPath }) }) });
     child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd: join(scratch, "work"),
       env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
     state.pid = child.pid ?? null;

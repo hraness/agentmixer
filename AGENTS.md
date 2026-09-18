@@ -17,10 +17,12 @@
   in-namespace forwarder that gives stock binaries standard `HTTPS_PROXY`
   egress through the socket.
   `src/index.ts` is the package's complete public surface.
-- `src/cli/` is the standalone `agentmixer` terminal surface (`cli.ts` entry,
-  chat/run/resume/sessions/doctor/auth commands) built on the same task
-  runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the seatbelted
-  subscription route it drives.
+- `src/cli/` is the standalone `xcb` terminal surface (`cli.ts` entry,
+  chat/run/resume/sessions/doctor/auth/migrate commands) built on the same
+  task runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the
+  seatbelted subscription route it drives. `cli/state.ts` resolves `~/.xcb`
+  (env `XCB_STATE`) and owns the explicit `migrate` copy from legacy
+  `~/.agentmixer`; SQLite `agentmixer_*` tables rename lazily at open.
 - `test/` contains synthetic boundary and concurrency tests.
 - `qualification/` holds the host qualification fixtures and native-tooling
   checks; its `contact-workspace.ts` is a vendored synthetic fixture, not a
@@ -32,8 +34,9 @@
 - `scripts/` holds the dist build, packed-package smoke check, and the
   dependency-free release writers and admission checks.
 - `site/` is the informational xcb product page (Next.js, canonical origin
-  xcb.dev); it has no product-runtime connection. The AgentMixer package and
-  its verified publication datum remain a separate compatibility surface.
+  xcb.dev); it has no product-runtime connection. The `@hraness/xcb`
+  TypeScript package and its verified publication datum remain a separate
+  compatibility surface.
 - `.github/workflows/` holds the read-only CI matrix and the tag-gated
   immutable release pipeline.
 - `README.md`, `MANAGED-CODEX.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
@@ -61,8 +64,9 @@
   Require independent process-exit evidence before recovery.
 - Releases use the `v<version>` tag channel and the single-package release
   contract in `docs/publishing.md`. The former scoped `agentmixer-v*` /
-  `agentrouter-v*` namespaces and the `hraness/textbutler` repository identity
-  are rejected by the release checks on purpose; do not reintroduce them.
+  `agentrouter-v*` / `xcb-v*` namespaces and the `hraness/textbutler`
+  repository identity are rejected by the release checks on purpose; do not
+  reintroduce them.
 - Keep the public repository independently buildable. Do not reference
   sibling checkouts, private packages, or monorepo paths.
 

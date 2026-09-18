@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createCapabilityProfile, type CapabilityContext, type CapabilityJson, type CapabilityObject, type CapabilityProfile } from "../capabilities.ts";
 import { boundedText, identifier } from "../validation.ts";
 
-export const CLI_WORKSPACE_PROFILE_ID = "agentmixer.workspace";
+export const CLI_WORKSPACE_PROFILE_ID = "xcb.workspace";
 export const CLI_WORKSPACE_PROFILE_VERSION = 1;
 
 const MAX_FILE_BYTES = 256 * 1024;
@@ -105,7 +105,7 @@ export function createCliWorkspace(rootInput: string) {
     const directory = dirname(target);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     assertNoLinks(root, target, { allowLeafMissing: true });
-    const temp = join(directory, `.agentmixer-write-${identifier(createHash("sha256").update(String(Date.now()) + target).digest("hex").slice(0, 24))}.tmp`);
+    const temp = join(directory, `.xcb-write-${identifier(createHash("sha256").update(String(Date.now()) + target).digest("hex").slice(0, 24))}.tmp`);
     await writeFile(temp, text, { mode: 0o600 });
     await rename(temp, target);
     const stat = await lstat(target);
@@ -139,7 +139,7 @@ export function createCliWorkspace(rootInput: string) {
       }
       for (const entry of entries.slice(0, MAX_ENTRIES)) {
         if (hits.length >= 128) return;
-        if (entry.isSymbolicLink() || entry.name === "node_modules" || entry.name === ".git" || entry.name.startsWith(".agentmixer-")) continue;
+        if (entry.isSymbolicLink() || entry.name === "node_modules" || entry.name === ".git" || entry.name.startsWith(".xcb-")) continue;
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
           await visit(path, depth + 1);

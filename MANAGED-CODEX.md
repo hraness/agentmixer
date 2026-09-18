@@ -20,7 +20,7 @@ starting asynchronous work so that a failed launch can still be joined.
 
 `createCodexAccountStdioTransport()` implements initialization, framed requests,
 account notifications and shutdown over `CodexAccountProcessPort`. The host
-supplies this process port; importing Agentmixer does not discover or launch
+supplies this process port; importing Xcb does not discover or launch
 an installed Codex binary. The protocol exposes only `account/read`, managed
 `account/login/start`, `account/login/cancel`, `account/logout` and `model/list`.
 Unexpected server requests are refused; the transport cannot start a model turn.
@@ -97,7 +97,7 @@ the runtime admission carries the pinned `bwrap` artifact and read-only
 library closure, and a `sandbox.egress` admission is additionally required.
 The host seam `startEgressBridge` then starts a unix-socket CONNECT bridge in
 the private run directory; the socket is bind-mounted into the namespace and
-reaches the child as `AGENTMIXER_EGRESS_SOCKET`. The child's own network
+reaches the child as `XCB_EGRESS_SOCKET`. The child's own network
 namespace never has a route — DNS resolution and TCP dialing happen on the
 host side of the bridge, bounded to port 443 and an optional exact-host
 allowlist. Cleanup joins the bridge (listener closed, sockets joined, socket

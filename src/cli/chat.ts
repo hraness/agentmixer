@@ -46,10 +46,10 @@ list, read, search and write through the brokered workspace tools.`;
 
 function describe(state: Awaited<ReturnType<typeof openCliProvider>>, provider: CliProviderName): string {
   if (state.status === "ready") return "";
-  if (state.status === "binary-missing") return `${provider} binary not found — install the provider CLI and run \`agentmixer doctor\`.`;
-  if (state.status === "version-mismatch") return `${provider} ${state.inspection?.version} found but this build requires the pinned version — run \`agentmixer doctor\`.`;
+  if (state.status === "binary-missing") return `${provider} binary not found — install the provider CLI and run \`xcb doctor\`.`;
+  if (state.status === "version-mismatch") return `${provider} ${state.inspection?.version} found but this build requires the pinned version — run \`xcb doctor\`.`;
   if (state.status === "sandbox-unavailable") return "linux confinement unavailable — needs bubblewrap (`bwrap`) plus unprivileged user namespaces (Ubuntu 23.10+: `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`). Refusing to run unsandboxed.";
-  return `provider not admitted — run \`agentmixer doctor\`, then \`agentmixer auth ${provider}\` if needed.`;
+  return `provider not admitted — run \`xcb doctor\`, then \`xcb auth ${provider}\` if needed.`;
 }
 
 export async function runCliChat(options: { workspace: string; sessionId?: string; provider?: CliProviderName; model?: string }): Promise<number> {
@@ -61,14 +61,14 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   if (options.sessionId !== undefined) {
     resumed = sessions.get(options.sessionId);
     if (resumed === null) {
-      process.stderr.write(`${red("agentmixer:")} session not found.\n`);
+      process.stderr.write(`${red("xcb:")} session not found.\n`);
       sessions.close();
       return 2;
     }
     try {
       workspacePath = await resolveWorkspace(resumed.workspace);
     } catch {
-      process.stderr.write(`${red("agentmixer:")} session workspace is gone: ${resumed.workspace}\n`);
+      process.stderr.write(`${red("xcb:")} session workspace is gone: ${resumed.workspace}\n`);
       sessions.close();
       return 2;
     }
@@ -76,7 +76,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
     try {
       workspacePath = await resolveWorkspace(options.workspace);
     } catch (error) {
-      process.stderr.write(`${red("agentmixer:")} ${error instanceof Error ? error.message : "invalid workspace"}\n`);
+      process.stderr.write(`${red("xcb:")} ${error instanceof Error ? error.message : "invalid workspace"}\n`);
       sessions.close();
       return 2;
     }
@@ -90,14 +90,14 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, providerName, profile, events);
   if (opened.status !== "ready") {
-    process.stderr.write(`${red("agentmixer:")} ${describe(opened, providerName)}\n`);
+    process.stderr.write(`${red("xcb:")} ${describe(opened, providerName)}\n`);
     sessions.close();
     return 2;
   }
   if (providerName === "claude") {
     const auth = await claudeAuthStatus(stateRoot);
     if (!auth.loggedIn) {
-      process.stderr.write(`${red("agentmixer:")} not signed in — run ${bold("agentmixer auth claude")} first.\n`);
+      process.stderr.write(`${red("xcb:")} not signed in — run ${bold("xcb auth claude")} first.\n`);
       sessions.close();
       return 2;
     }
@@ -107,7 +107,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
     if (codexInspection !== null) {
       const codex = await codexAuthStatus(stateRoot, codexInspection);
       if (!codex.loggedIn) {
-        process.stderr.write(`${red("agentmixer:")} not signed in — run ${bold("agentmixer auth codex")} first.\n`);
+        process.stderr.write(`${red("xcb:")} not signed in — run ${bold("xcb auth codex")} first.\n`);
         sessions.close();
         return 2;
       }
@@ -117,7 +117,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   let session: CliSession;
   if (resumed !== null) {
     if (resumed.provider !== providerName) {
-      process.stderr.write(`${red("agentmixer:")} session ${resumed.id} belongs to provider ${resumed.provider} — resume with \`--provider ${resumed.provider}\`.\n`);
+      process.stderr.write(`${red("xcb:")} session ${resumed.id} belongs to provider ${resumed.provider} — resume with \`--provider ${resumed.provider}\`.\n`);
       sessions.close();
       return 2;
     }
@@ -129,7 +129,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   const turn = { controller: null as AbortController | null };
   editor.onInterrupt(() => turn.controller?.abort());
   let currentModel = session.model;
-  process.stdout.write(`${bold("agentmixer")} ${dim("·")} ${cyan(providerName)} ${dim(currentModel)} ${dim("·")} ${workspacePath}\n`);
+  process.stdout.write(`${bold("xcb")} ${dim("·")} ${cyan(providerName)} ${dim(currentModel)} ${dim("·")} ${workspacePath}\n`);
   process.stdout.write(dim(`session ${session.id} — /help for commands, Ctrl-D to exit\n\n`));
   try {
     for (;;) {

@@ -7,7 +7,7 @@ import { createCliWorkspace, createCliWorkspaceProfile } from "../src/cli/worksp
 import { createCapabilityBroker } from "../src/capabilities.ts";
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
   return { root, workspace: createCliWorkspace(root) };
 }
 
@@ -36,7 +36,7 @@ describe("cli workspace", () => {
   test("rejects escaping, absolute and symlinked paths", async () => {
     const { root, workspace } = await fixture();
     await writeFile(join(root, "inside.txt"), "x", { mode: 0o600 });
-    const outside = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-t-")));
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "xcb-t-")));
     await writeFile(join(outside, "secret.txt"), "secret", { mode: 0o600 });
     await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
 

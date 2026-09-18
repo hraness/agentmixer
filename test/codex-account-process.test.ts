@@ -25,7 +25,7 @@ async function fixture(input: {
   stop?: "hold" | "exit-only" | "root-and-close"; pgid?: number | null; pid?: number | null;
   spawnFailsBeforePid?: boolean;
 } = {}) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-account-process-test-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-account-process-test-")));
   await chmod(root, 0o700); const stateRoot = join(root, "state"); await mkdir(stateRoot, { mode: 0o700 });
   const executablePath = join(root, "synthetic-executable");
   await writeFile(executablePath, "synthetic executable bytes; never run", { mode: 0o500 });
@@ -290,7 +290,7 @@ test("explicit v2 device-code admission adds only the reviewed var metadata rule
   expect(f.writes).toEqual([]);
   expectJoined(await f.stop(port));
   const snapshots = (await readFile(port.receipt().journalPath!, "utf8")).trim().split("\n").map(line => JSON.parse(line).snapshot);
-  expect(snapshots.every(value => value.schema === "agentmixer.codex-account-process.v1" && value.productionQualified === false
+  expect(snapshots.every(value => value.schema === "xcb.codex-account-process.v1" && value.productionQualified === false
     && value.network === "tcp443-system-resolver-var-metadata-candidate")).toBe(true);
 });
 
@@ -415,7 +415,7 @@ test("a linux parent launches through the admitted bwrap artifact instead of sea
   expect(binds).toContain(library);
   const policyPath = join(dirname(port.receipt().journalPath!), "sandbox.json");
   const policy = JSON.parse(await readFile(policyPath, "utf8"));
-  expect(policy).toMatchObject({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap", executable: request.args[inner + 1]! });
+  expect(policy).toMatchObject({ schema: "xcb.os-sandbox-bwrap.v1", backend: "bwrap", executable: request.args[inner + 1]! });
   expect(port.receipt()).toMatchObject({ productionQualified: false, network: "denied", phase: "running" });
   expectJoined(await f.stop(port));
 });
@@ -470,9 +470,9 @@ test("a linux device-code launch rides the admitted egress bridge and joins it o
   const request = f.spawns[0]!;
   const pairs = (flag: string) => request.args.flatMap((value, index) => value === flag ? [request.args[index + 1]!] : []);
   // The child's env rides --setenv KEY VALUE pairs; the wrapper env stays minimal.
-  const setenvAt = request.args.findIndex((value, index) => value === "--setenv" && request.args[index + 1] === "AGENTMIXER_EGRESS_SOCKET");
+  const setenvAt = request.args.findIndex((value, index) => value === "--setenv" && request.args[index + 1] === "XCB_EGRESS_SOCKET");
   expect(request.args[setenvAt + 2]).toBe(socketPath);
-  expect(request.env.AGENTMIXER_EGRESS_SOCKET).toBeUndefined();
+  expect(request.env.XCB_EGRESS_SOCKET).toBeUndefined();
   const binds = pairs("--bind");
   expect(binds).toContain(socketPath);
   const policy = JSON.parse(await readFile(join(dirname(port.receipt().journalPath!), "sandbox.json"), "utf8"));

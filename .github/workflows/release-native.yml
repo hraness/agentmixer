@@ -2,7 +2,7 @@ name: Release Native xcb
 
 on:
   workflow_run:
-    workflows: ["Release AgentMixer"]
+    workflows: ["Release XCB"]
     types: [completed]
 
 permissions:

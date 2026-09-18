@@ -18,7 +18,7 @@ test("explicit API-key binding never discovers unrelated account credentials", a
 });
 
 test("owner-file keys reject shared, linked, replaced, and malformed credentials without discovery", async () => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-key-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-key-")));
   try {
     const directory = join(root, "private"); await mkdir(directory, { mode: 0o700 });
     const file = join(directory, "selected"); await writeFile(file, `${key}\n`, { mode: 0o600 });

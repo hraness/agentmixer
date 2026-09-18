@@ -27,7 +27,7 @@ for (const flag of process.argv.slice(2)) {
 }
 if (!bwrap || !bwrapSha256 || !/^[a-f0-9]{64}$/.test(bwrapSha256)) throw new Error("REQUIRES_ADMITTED_BWRAP_ARTIFACT");
 
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-linux-probe-")));
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-linux-probe-")));
 try {
   const scratch = join(root, "scratch"), account = join(root, "account"), outside = join(root, "foreign");
   await mkdir(scratch, { mode: 0o700 }); await mkdir(account, { mode: 0o700 }); await mkdir(outside, { mode: 0o700 });

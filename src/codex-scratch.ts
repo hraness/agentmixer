@@ -14,7 +14,7 @@ export type CodexScratchEntry = Readonly<{
   uid: number; mode: number; links: number; size: string; modifiedNs: string; changedNs: string;
 }>;
 export type CodexScratchInspection = Readonly<{
-  schema: "agentmixer.codex-scratch.v1";
+  schema: "xcb.codex-scratch.v1";
   configurationSha256: string; configurationBytes: number;
   /** Content/layout identity, independent of the newly allocated directory inodes. */
   contentSha256: string;
@@ -102,10 +102,10 @@ export async function inspectCodexScratch(input: { scratch: string; configuratio
     }
     const entries = Object.freeze(inspected.map(item => entry(item.relative, item.metadata)));
     const configurationSha256 = hash(expected);
-    const contentSha256 = hash(JSON.stringify({ schema: "agentmixer.codex-scratch-content.v1", configurationSha256, configurationBytes: expected.length,
+    const contentSha256 = hash(JSON.stringify({ schema: "xcb.codex-scratch-content.v1", configurationSha256, configurationBytes: expected.length,
       entries: entries.map(item => ({ path: item.path, kind: item.kind, mode: item.mode })) }));
-    const identitySha256 = hash(JSON.stringify({ schema: "agentmixer.codex-scratch-identity.v1", physicalRootSha256: hash(scratch), contentSha256, entries }));
-    return Object.freeze({ schema: "agentmixer.codex-scratch.v1", configurationSha256, configurationBytes: expected.length, contentSha256, identitySha256, entries });
+    const identitySha256 = hash(JSON.stringify({ schema: "xcb.codex-scratch-identity.v1", physicalRootSha256: hash(scratch), contentSha256, entries }));
+    return Object.freeze({ schema: "xcb.codex-scratch.v1", configurationSha256, configurationBytes: expected.length, contentSha256, identitySha256, entries });
   } catch (error) {
     failed = true;
     if (error instanceof Error && /^CODEX_SCRATCH_[A-Z0-9_]+$/u.test(error.message)) throw error;

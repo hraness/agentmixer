@@ -8,7 +8,7 @@ import { createBwrapOsSandbox, createSandboxedProviderProcessFactory, createSeat
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
 async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-os-sandbox-test-")));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-os-sandbox-test-")));
   const scratch = join(root, "scratch"), accountHome = join(root, "account"), policyPath = join(root, "policy.sb");
   const executable = join(root, "runtime", "provider");
   return { root, scratch, accountHome, policyPath, executable,
@@ -151,7 +151,7 @@ describe("os-sandbox bwrap planning", () => {
       expect(pairs("--bind")).toContain(f.scratch);
       expect(pairs("--bind")).toContain(f.accountHome);
       const policy = JSON.parse(plan.policy);
-      expect(policy.schema).toBe("agentmixer.os-sandbox-bwrap.v1");
+      expect(policy.schema).toBe("xcb.os-sandbox-bwrap.v1");
       expect(policy.binds.find((b: { target: string }) => b.target === f.scratch).mode).toBe("rw");
       expect(policy.binds.find((b: { target: string }) => b.target === f.executable).mode).toBe("ro");
       expect(plan.policySha256).toBe(sha256(plan.policy));

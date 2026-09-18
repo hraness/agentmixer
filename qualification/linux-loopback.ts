@@ -58,7 +58,7 @@ function lddClosure(executable: string): string[] {
  * file launchers mount — rather than a fixture copy that could drift. */
 const FORWARDER_SOURCE = new URL("../sandbox/loopback-forwarder.cjs", import.meta.url);
 
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-linux-loopback-")));
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-linux-loopback-")));
 let bridge: Awaited<ReturnType<typeof createEgressBridge>> | undefined;
 let sServer: ReturnType<typeof Bun.spawn> | undefined;
 try {

@@ -304,7 +304,7 @@ async function verifyPublishedRelease(): Promise<void> {
     try {
       const coordinate = distribution.parseGitHubRelease(await readRelease(), releaseVersion);
       assertReleaseAssetBytes(coordinate, tarballBytes, checksumBytes, sha256);
-      const directory = mkdtempSync(join(tmpdir(), "agentmixer-release-assets-"));
+      const directory = mkdtempSync(join(tmpdir(), "xcb-release-assets-"));
       try {
         await run([
           "gh", "release", "download", releaseTag,

@@ -25,7 +25,7 @@ export type CliProviderState =
   | Readonly<{ status: "binary-missing" | "version-mismatch" | "unadmitted" | "sandbox-unavailable"; inspection: CliBinaryInspection | null }>;
 
 export const CLI_SYSTEM_PROMPT = [
-  "You are AgentMixer, a coding assistant running inside the user's terminal.",
+  "You are xcb, a coding assistant running inside the user's terminal.",
   "The workspace tools address files inside the opened project directory only; there is no shell, process or arbitrary-path access.",
   "Use workspace.list and workspace.search before workspace.read; keep each file's revision and pass it back as expectedRevision to workspace.write.",
   "Answer directly and concisely. Never claim an action you did not perform through the tools.",

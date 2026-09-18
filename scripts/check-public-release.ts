@@ -78,7 +78,7 @@ async function fetchJson(url: string, label: string, headers: HeadersInit = {}):
 async function fetchArtifact(url: string, label: string): Promise<Uint8Array> {
   const response = await fetch(url, {
     cache: "no-store",
-    headers: { "Cache-Control": "no-cache", "User-Agent": "agentmixer-release-admission" },
+    headers: { "Cache-Control": "no-cache", "User-Agent": "xcb-release-admission" },
     redirect: "follow",
     signal: AbortSignal.timeout(30_000),
   });
@@ -188,7 +188,7 @@ await verifyNpmProvenance(npmTarball, {
 const githubHeaders = {
   Accept: "application/vnd.github+json",
   Authorization: `Bearer ${token}`,
-  "User-Agent": "agentmixer-release-admission",
+  "User-Agent": "xcb-release-admission",
   "X-GitHub-Api-Version": "2026-03-10",
 };
 const apiBase = `https://api.github.com/repos/${publicRepository}`;

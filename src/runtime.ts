@@ -4,7 +4,7 @@ import type { CapabilityBroker } from "./capabilities.ts";
 import { runAgentTask, type AgentTaskAdapter, type AgentTaskRequest, type AgentTaskResult } from "./task-runtime.ts";
 import { boundedText, identifier, provider, safeInteger, type AgentProvider } from "./validation.ts";
 
-export const CONTACT_TOOL_PROFILE = "agentmixer.scoped-tools.v1" as const;
+export const CONTACT_TOOL_PROFILE = "xcb.scoped-tools.v1" as const;
 export type RuntimeQualification =
   | Readonly<{ status: "unqualified"; reason: string }>
   | Readonly<{
@@ -70,7 +70,7 @@ export type AccountBinding = Readonly<{ provider: AgentProvider; accountId: stri
 /** The trusted adapter resolves this opaque handle; the broker/model never receives credentials. */
 export interface AccountResolver { resolve(provider: AgentProvider, accountId: string): Promise<AccountBinding> }
 
-export class AgentMixer {
+export class Xcb {
   private readonly taskAdapters: readonly AgentTaskAdapter[];
   constructor(private readonly options: {
     adapters: readonly AgentAdapter[];

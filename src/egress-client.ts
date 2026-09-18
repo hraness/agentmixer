@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path";
 import type { Duplex } from "node:stream";
 
 /** In-sandbox consumer for the egress-bridge contract — the reverse seam of
- * `egress-bridge.ts`. A confined process reads `AGENTMIXER_EGRESS_SOCKET`,
+ * `egress-bridge.ts`. A confined process reads `XCB_EGRESS_SOCKET`,
  * speaks `CONNECT host:443` over that unix socket, and receives a raw tunnel
  * to layer TLS or HTTP onto. The bridge owns DNS and dialing; this module
  * never resolves names and never opens a direct socket. Works under Node ≥ 20
@@ -15,7 +15,7 @@ import type { Duplex } from "node:stream";
  * port, malformed head) the failure surfaces as a typed error and the process
  * keeps whatever isolation it already had. */
 
-export const EGRESS_SOCKET_ENV = "AGENTMIXER_EGRESS_SOCKET";
+export const EGRESS_SOCKET_ENV = "XCB_EGRESS_SOCKET";
 
 const MAX_HEAD_BYTES = 8 * 1024;
 const MAX_HOST_BYTES = 253;
@@ -45,7 +45,7 @@ export function egressSocketFromEnv(env: Readonly<Record<string, string | undefi
 }
 
 export type EgressConnectOptions = Readonly<{
-  /** Bridge socket path; defaults to `AGENTMIXER_EGRESS_SOCKET`. */
+  /** Bridge socket path; defaults to `XCB_EGRESS_SOCKET`. */
   socketPath?: string;
   timeoutMs?: number;
 }>;

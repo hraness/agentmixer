@@ -26,7 +26,7 @@ function managedLoginEnv(home: string, config: string): NodeJS.ProcessEnv {
 
 const TOKEN_PATH = (stateRoot: string) => join(stateRoot, "claude-oauth-token");
 
-/** Host-owned subscription token custody: `agentmixer auth claude` runs
+/** Host-owned subscription token custody: `xcb auth claude` runs
  * `claude setup-token`, which mints a one-year OAuth token using an existing
  * Claude Code login or a fresh browser flow. The token is stored mode-0600 in
  * the private state root — not the shared login keychain — and reaches the

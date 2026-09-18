@@ -1,6 +1,6 @@
 {
-  "name": "@hraness/agentmixer",
-  "version": "0.3.0",
+  "name": "@hraness/xcb",
+  "version": "0.4.0",
   "description": "Provider-neutral agent routing, account custody and scoped tool contracts.",
   "type": "module",
   "license": "MIT",
@@ -30,7 +30,7 @@
     }
   },
   "bin": {
-    "agentmixer": "dist/cli.js"
+    "xcb": "dist/cli.js"
   },
   "files": [
     "dist",

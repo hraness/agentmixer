@@ -29,7 +29,7 @@ for (const flag of process.argv.slice(2)) {
 }
 if (!bwrap || !bwrapSha256 || !/^[a-f0-9]{64}$/.test(bwrapSha256)) throw new Error("REQUIRES_ADMITTED_BWRAP_ARTIFACT");
 
-const root = await realpath(await mkdtemp(join(tmpdir(), "agentmixer-linux-egress-probe-")));
+const root = await realpath(await mkdtemp(join(tmpdir(), "xcb-linux-egress-probe-")));
 let bridge: Awaited<ReturnType<typeof createEgressBridge>> | undefined;
 try {
   const scratch = join(root, "scratch"), account = join(root, "account"), runDir = join(root, "runDir"), outside = join(root, "foreign");

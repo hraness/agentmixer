@@ -109,7 +109,7 @@ export function createCapabilityProfile(options: { id: string; version: number; 
     registered.set(name, { descriptor, parseInput: tool.parseInput, execute: tool.execute });
   }
   const tools = Object.freeze([...registered.values()].map(tool => tool.descriptor));
-  const text = snapshot({ format: "agentmixer.capability-profile.v1", id, version, tools }, CAPABILITY_LIMITS.manifestBytes).text;
+  const text = snapshot({ format: "xcb.capability-profile.v1", id, version, tools }, CAPABILITY_LIMITS.manifestBytes).text;
   const profile = Object.freeze({ id, version, digest: createHash("sha256").update(text).digest("hex"), tools });
   profiles.set(profile, registered); return profile;
 }

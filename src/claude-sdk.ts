@@ -12,7 +12,7 @@ import { assertQualified, AgentStoppedError, type AgentAdapter, type AgentRunReq
 
 export const CLAUDE_SDK_VERSION = "0.3.268";
 export const CLAUDE_CODE_VERSION = "2.1.268";
-const SERVER = "agentmixer";
+const SERVER = "xcb";
 const MAX_OUTPUT_BYTES = 512 * 1024;
 
 /** Host-only credential use: never pass a subscription token, personal config home, or credential file. */
@@ -177,7 +177,7 @@ export function createClaudeSdkAdapter(options: ClaudeSdkAdapterOptions): AgentA
           controller.signal.throwIfAborted();
           const env: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: config, TMPDIR: temp, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8",
             ANTHROPIC_API_KEY: apiKey, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.1.0", NO_COLOR: "1" };
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "xcb/0.1.0", NO_COLOR: "1" };
           let child: BoundedProviderProcess | undefined;
           let admitted = false;
           const schema = schemas();

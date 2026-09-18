@@ -290,7 +290,7 @@ export function planBwrapPolicy(input: OsSandboxSpec, wrapperExecutable: string)
   ]);
   // The canonical policy binds every mount decision before any argv is
   // wrapped: namespace flags, bind set, and the in-sandbox executable.
-  const policy = JSON.stringify({ schema: "agentmixer.os-sandbox-bwrap.v1", backend: "bwrap",
+  const policy = JSON.stringify({ schema: "xcb.os-sandbox-bwrap.v1", backend: "bwrap",
     namespaces: ["user", "mount", "pid", "ipc", "uts", "cgroup", "net"], newSession: true, dieWithParent: true,
     executable: spec.executable, binds,
     ...(spec.egressSocket === undefined ? {} : { egress: { socket: spec.egressSocket, protocol: "connect-tcp443",

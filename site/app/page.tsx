@@ -26,10 +26,10 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/xcb";
-const archiveUrl = releaseVersion === undefined ? null : `${repository}/releases/download/v${releaseVersion}/hraness-agentmixer-${releaseVersion}.tgz`;
+const archiveUrl = releaseVersion === undefined ? null : `${repository}/releases/download/v${releaseVersion}/hraness-xcb-${releaseVersion}.tgz`;
 
 const heading = "Your agents. Your terminal. Your edge.";
-const footnote = "Excalibur, for short. Local-first and MIT licensed. Native Rust interface in development; the AgentMixer compatibility package remains available.";
+const footnote = "Excalibur, for short. Local-first and MIT licensed. Native Rust interface in development; the @hraness/xcb compatibility package remains available.";
 
 const primitives = [
   {
@@ -98,7 +98,7 @@ const questions = [
   },
   {
     question: "What can I install today?",
-    answer: "The AgentMixer 0.3.0 TypeScript package remains the verified compatibility release. Native xcb is being developed separately. An old package release is not advertised as a native xcb binary.",
+    answer: "The @hraness/xcb TypeScript package remains the verified compatibility release. Native xcb is being developed separately. A compatibility package release is not advertised as a native xcb binary.",
   },
   {
     question: "Who made it?",
@@ -290,14 +290,14 @@ aiCharts upload off`}</code></pre>
           >
             <p className="install-note">Native xcb is in development. The source tree keeps the Rust work separate from the published TypeScript compatibility package.</p>
             <p><a href={repository}>Follow the native work</a> · <a href="/docs#native-xcb">Read the native interface guide</a></p>
-            <h3>AgentMixer compatibility package</h3>
-            <p className="install-note">{releaseVersion === undefined ? "First AgentMixer release in preparation" : `Current verified compatibility release · v${releaseVersion}`}</p>
+            <h3>xcb compatibility package</h3>
+            <p className="install-note">{releaseVersion === undefined ? "First xcb package release in preparation" : `Current verified compatibility release · v${releaseVersion}`}</p>
             {publishedRelease !== null && archiveUrl !== null ? (
               <>
                 <pre className="install-command" tabIndex={0}><code>{`bun add ${archiveUrl}`}</code></pre>
                 <p className="install-note">
                   <a href={publishedRelease.verificationRun}>Public release verification</a>.{" "}
-                  This installs <code>@hraness/agentmixer</code>, not a native xcb release.{" "}
+                  This installs <code>@hraness/xcb</code>, not a native xcb release.{" "}
                   <a href="/docs#standalone-package">Compatibility package reference</a>.
                 </p>
               </>

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  AgentMixer, CONTACT_TOOL_PROFILE, SqliteAccountLeases, createProviderLaunchPlan,
+  Xcb, CONTACT_TOOL_PROFILE, SqliteAccountLeases, createProviderLaunchPlan,
   createToolBroker, parseClassification, publicHttpsUrl, relativeFile, selectClassifierModel,
   unqualifiedAdapter, type AgentAdapter, type RuntimeQualification, type ToolBroker,
 } from "../src/index.ts";
@@ -44,7 +44,7 @@ describe("classification", () => {
 
 describe("shared account custody", () => {
   test("separate connections cannot acquire one account, even after heartbeat expiry", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agentmixer-")); tempDirectories.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "xcb-")); tempDirectories.push(dir);
     const a = new Database(join(dir, "leases.db")), b = new Database(join(dir, "leases.db"));
     try {
       const first = new SqliteAccountLeases(a), second = new SqliteAccountLeases(b);
@@ -134,7 +134,7 @@ describe("routing qualification", () => {
     const db = new Database(":memory:");
     try {
       const leases = new SqliteAccountLeases(db);
-      const router = new AgentMixer({ adapters: [unqualifiedAdapter("codex"), unqualifiedAdapter("claude")], leases, now: () => 100 });
+      const router = new Xcb({ adapters: [unqualifiedAdapter("codex"), unqualifiedAdapter("claude")], leases, now: () => 100 });
       for (const provider of ["codex", "claude"] as const) {
         const tools = broker();
         await expect(router.run({ ...request, provider }, tools)).rejects.toThrow("PROVIDER_UNQUALIFIED");
@@ -149,7 +149,7 @@ describe("routing qualification", () => {
     try {
       let ran = false;
       const adapter: AgentAdapter = { provider: "codex", qualification, run: async () => { ran = true; return { output: "", processStopped: true }; } };
-      const router = new AgentMixer({ adapters: [adapter], leases: new SqliteAccountLeases(db), now: () => 100 });
+      const router = new Xcb({ adapters: [adapter], leases: new SqliteAccountLeases(db), now: () => 100 });
       await expect(router.run(request, broker({ workspaceId: "other-contact" }))).rejects.toThrow("BINDING_MISMATCH");
       expect(ran).toBe(false);
     } finally { db.close(); }
@@ -159,10 +159,10 @@ describe("routing qualification", () => {
     try {
       const leases = new SqliteAccountLeases(db);
       const adapter: AgentAdapter = { provider: "codex", qualification, run: async () => ({ output: "hello", processStopped: true }) };
-      expect((await new AgentMixer({ adapters: [adapter], leases, now: () => 100 }).run(request, broker())).output).toBe("hello");
+      expect((await new Xcb({ adapters: [adapter], leases, now: () => 100 }).run(request, broker())).output).toBe("hello");
       expect(leases.inspect("codex", "shared")).toBeNull();
       const failed = { ...adapter, run: async () => { throw new Error("connection-lost"); } };
-      await expect(new AgentMixer({ adapters: [failed], leases, now: () => 100 }).run(request, broker())).rejects.toThrow("connection-lost");
+      await expect(new Xcb({ adapters: [failed], leases, now: () => 100 }).run(request, broker())).rejects.toThrow("connection-lost");
       expect(leases.inspect("codex", "shared")?.owner).toBe("run-one");
     } finally { db.close(); }
   });
@@ -171,7 +171,7 @@ describe("routing qualification", () => {
     try {
       let ran = false;
       const adapter: AgentAdapter = { provider: "codex", qualification, run: async () => { ran = true; return { output: "{}", processStopped: true }; } };
-      const router = new AgentMixer({ adapters: [adapter], leases: new SqliteAccountLeases(db), now: () => 100 });
+      const router = new Xcb({ adapters: [adapter], leases: new SqliteAccountLeases(db), now: () => 100 });
       await expect(router.run({ ...request, purpose: "classify" }, broker())).rejects.toThrow("NO_TOOLS");
       expect(ran).toBe(false);
     } finally { db.close(); }

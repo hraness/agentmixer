@@ -236,7 +236,7 @@ export async function runCodexSession(options: {
     workflow = (async () => {
       await process!.ready; signal.throwIfAborted();
       stage = "initialize";
-      await rpc("initialize", { clientInfo: { name: "agentmixer", version: "0.1.0" }, capabilities: { experimentalApi: true } }); initialized = true;
+      await rpc("initialize", { clientInfo: { name: "xcb", version: "0.4.0" }, capabilities: { experimentalApi: true } }); initialized = true;
       await write({ method: "initialized", params: {} });
       stage = "thread/start";
       await rpc("thread/start", { model: request.model, modelProvider: CODEX_PROVIDER, cwd: process!.cwd, approvalPolicy: "never",

@@ -31,6 +31,8 @@ const MAX_TITLE_BYTES = 200;
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
 const MAX_SESSIONS = 512;
 const MAX_ENTRY_BYTES = 256 * 1024;
+const TABLE = "xcb_cli_sessions";
+const LEGACY_TABLE = "agentmixer_cli_sessions";
 
 const fail = (code: string): never => { throw new Error(code); };
 const provider = (value: unknown): CliProvider => (value === "codex" || value === "claude" ? value : fail("SESSION_PROVIDER_INVALID"));
@@ -66,7 +68,13 @@ export class CliSessionStore {
     private readonly database: SqliteDatabase,
     private readonly directory: string,
   ) {
-    database.exec(`CREATE TABLE IF NOT EXISTS agentmixer_cli_sessions (
+    const tables = new Set(database.query<Readonly<{ name: string }>, []>(
+      "SELECT name FROM sqlite_master WHERE type='table'",
+    ).all().map((row) => row.name));
+    if (tables.has(LEGACY_TABLE) && !tables.has(TABLE)) {
+      database.exec(`ALTER TABLE ${LEGACY_TABLE} RENAME TO ${TABLE}`);
+    }
+    database.exec(`CREATE TABLE IF NOT EXISTS ${TABLE} (
       id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_id TEXT,
       workspace TEXT NOT NULL, model TEXT NOT NULL, title TEXT NOT NULL,
       created_at INTEGER NOT NULL, last_active_at INTEGER NOT NULL, turns INTEGER NOT NULL
@@ -89,10 +97,10 @@ export class CliSessionStore {
   async create(input: { provider: CliProvider; accountId: string | null; workspace: string; model: string; now: number }): Promise<CliSession> {
     const id = `s_${randomBytes(12).toString("hex")}`;
     const workspace = boundedText(input.workspace, 4096);
-    const count = this.database.query<Readonly<{ n: number }>, []>("SELECT COUNT(*) AS n FROM agentmixer_cli_sessions").get();
+    const count = this.database.query<Readonly<{ n: number }>, []>("SELECT COUNT(*) AS n FROM xcb_cli_sessions").get();
     if ((count?.n ?? 0) >= MAX_SESSIONS) fail("SESSION_LIMIT");
     const row = this.database.query<SessionRow, [string, string, string | null, string, string, number]>(
-      `INSERT INTO agentmixer_cli_sessions (id, provider, account_id, workspace, model, title, created_at, last_active_at, turns)
+      `INSERT INTO xcb_cli_sessions (id, provider, account_id, workspace, model, title, created_at, last_active_at, turns)
        VALUES (?, ?, ?, ?, ?, '', ?, ?, 0) RETURNING *`,
     ).get(id, provider(input.provider), input.accountId === null ? null : identifier(input.accountId),
       workspace, boundedText(input.model, 160), safeInteger(input.now, 0, Number.MAX_SAFE_INTEGER), safeInteger(input.now, 0, Number.MAX_SAFE_INTEGER));
@@ -100,13 +108,13 @@ export class CliSessionStore {
   }
 
   get(id: string): CliSession | null {
-    const row = this.database.query<SessionRow, [string]>("SELECT * FROM agentmixer_cli_sessions WHERE id=?").get(identifier(id));
+    const row = this.database.query<SessionRow, [string]>("SELECT * FROM xcb_cli_sessions WHERE id=?").get(identifier(id));
     return row === null ? null : sessionFrom(row);
   }
 
   list(limit = 64): readonly CliSession[] {
     const rows = this.database.query<SessionRow, [number]>(
-      "SELECT * FROM agentmixer_cli_sessions ORDER BY last_active_at DESC LIMIT ?",
+      "SELECT * FROM xcb_cli_sessions ORDER BY last_active_at DESC LIMIT ?",
     ).all(safeInteger(limit, 1, MAX_SESSIONS));
     return Object.freeze(rows.map(sessionFrom));
   }
@@ -124,7 +132,7 @@ export class CliSessionStore {
       ? boundedText(firstUser.text.split("\n")[0]!.slice(0, 80), MAX_TITLE_BYTES, true)
       : current.title;
     const row = this.database.query<SessionRow, [string, number, number, string]>(
-      `UPDATE agentmixer_cli_sessions SET title=?, last_active_at=?, turns=turns+? WHERE id=? RETURNING *`,
+      `UPDATE xcb_cli_sessions SET title=?, last_active_at=?, turns=turns+? WHERE id=? RETURNING *`,
     ).get(title, safeInteger(now, 0, Number.MAX_SAFE_INTEGER), entries.length, current.id);
     return row === null ? current : sessionFrom(row);
   }
@@ -133,7 +141,7 @@ export class CliSessionStore {
   async remove(id: string): Promise<boolean> {
     const session = this.get(id);
     if (session === null) return false;
-    this.database.query<unknown, [string]>("DELETE FROM agentmixer_cli_sessions WHERE id=?").run(session.id);
+    this.database.query<unknown, [string]>("DELETE FROM xcb_cli_sessions WHERE id=?").run(session.id);
     await rm(this.transcriptPath(session.id), { force: true });
     return true;
   }
@@ -141,7 +149,7 @@ export class CliSessionStore {
   /** Remove every session idle since before `beforeMs`; returns the count. */
   async prune(beforeMs: number): Promise<number> {
     const rows = this.database.query<Readonly<{ id: string }>, [number]>(
-      "SELECT id FROM agentmixer_cli_sessions WHERE last_active_at < ?",
+      "SELECT id FROM xcb_cli_sessions WHERE last_active_at < ?",
     ).all(safeInteger(beforeMs, 0, Number.MAX_SAFE_INTEGER));
     let removed = 0;
     for (const row of rows) {

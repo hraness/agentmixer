@@ -2,7 +2,7 @@
 
 > xcb (Excalibur) is a local, terminal-first workspace for coding agents. Bring accounts, choose models, and shape the interface with composable panes and extensions.
 
-The native Rust interface is in development. The published AgentMixer TypeScript package is a retained compatibility surface, not a native xcb release. No cloud synchronization or required daemon is part of the native design.
+The native Rust interface is in development. The published @hraness/xcb TypeScript package is a retained compatibility surface, not a native xcb release. No cloud synchronization or required daemon is part of the native design.
 
 ## Pages
 

@@ -22,7 +22,7 @@ import {
 } from "./task-runtime.ts";
 import { boundedText, identifier, safeInteger } from "./validation.ts";
 
-const SERVER = "agentmixer";
+const SERVER = "xcb";
 const fail = (code: string): never => { throw new Error(code); };
 const hash = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 
@@ -177,7 +177,7 @@ type Active = {
 /**
  * Claude Code through the Agent SDK as an application-profile task adapter. The
  * model's entire tool surface is the capability broker; subscription auth uses
- * the managed CLAUDE_CONFIG_DIR written by `agentmixer auth claude`, while API
+ * the managed CLAUDE_CONFIG_DIR written by `xcb auth claude`, while API
  * auth keeps the key-resolver seam. No native tools, hooks, plugins, skills or
  * inherited configuration reach the provider.
  */
@@ -416,7 +416,7 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
       const env: Record<string, string> = {
         HOME: home, CLAUDE_CONFIG_DIR: authDirectoryResolved, TMPDIR: temp, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8",
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "agentmixer/0.3.0", NO_COLOR: "1",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_AGENT_SDK_CLIENT_APP: "xcb/0.3.0", NO_COLOR: "1",
       };
       if (authentication === "api") {
         return await credentials!.withApiKey(request.accountId, slot.controller.signal, async (apiKey) => {

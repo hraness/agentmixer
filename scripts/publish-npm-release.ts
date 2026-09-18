@@ -178,7 +178,7 @@ async function main(): Promise<void> {
       headers: {
         Accept: "application/json",
         "Cache-Control": "no-cache",
-        "User-Agent": "agentmixer-release",
+        "User-Agent": "xcb-release",
       },
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
       cache: "no-store",
       headers: {
         "Cache-Control": "no-cache",
-        "User-Agent": "agentmixer-release",
+        "User-Agent": "xcb-release",
       },
       redirect: "follow",
       signal: AbortSignal.timeout(30_000),
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
 
   async function publishTarball(): Promise<number> {
     const directory = await mkdtemp(
-      join(tmpdir(), "agentmixer-npm-publish-"),
+      join(tmpdir(), "xcb-npm-publish-"),
     );
     try {
       const npmrc = join(directory, ".npmrc");

@@ -6,7 +6,7 @@ import { readmeHtml, readmeTitle } from "../readme.generated";
 
 export const metadata: Metadata = {
   title: `${readmeTitle} documentation`,
-  description: "xcb documentation: the native terminal direction, local accounts, panes, extensions, and the retained AgentMixer compatibility package.",
+  description: "xcb documentation: the native terminal direction, local accounts, panes, extensions, and the retained xcb compatibility package.",
   alternates: { canonical: "/docs" },
   openGraph: {
     title: `${readmeTitle} documentation`,

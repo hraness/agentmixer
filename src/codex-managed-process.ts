@@ -59,7 +59,7 @@ type CoreReceipt<B, S extends string> = CodexProcessReceipt & Readonly<{
   productionQualified: false; network: "denied" | "general-tcp443-system-resolver-var-metadata-candidate" | "general-tcp443-system-resolver-var-metadata-ca-file-candidate"; profile: ManagedSandboxProfile; schemaSha256: string;
   launchAttempted: boolean; lockReleased: boolean; phase: "preparing" | "launch-pending" | "running" | "release-pending" | "recovery-required" | "closed";
 }>;
-export type CodexManagedProcessReceipt = CoreReceipt<AgentTaskBinding, "agentmixer.codex-managed-process.v1">;
+export type CodexManagedProcessReceipt = CoreReceipt<AgentTaskBinding, "xcb.codex-managed-process.v1">;
 export interface CodexManagedOwnedProcess extends CodexProcessHandle { readonly stdin: Writable; receipt(): CodexManagedProcessReceipt; stopAndJoin(): Promise<CodexManagedProcessReceipt> }
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const fail = (code: string): never => { throw new Error(code); };
@@ -145,7 +145,7 @@ async function inspectScratch(scratch: string): Promise<{ content: string; ident
     const current = await directory(value); check(current.dev === metadata.dev && current.ino === metadata.ino, "CODEX_MANAGED_PROCESS_SCRATCH_CHANGED");
     entries.push({ name, device: String(metadata.dev), inode: String(metadata.ino) });
   }
-  const content = hash(JSON.stringify({ schema: "agentmixer.codex-managed-scratch.v1", directories: entries.map(entry => entry.name), mode: 0o700 }));
+  const content = hash(JSON.stringify({ schema: "xcb.codex-managed-scratch.v1", directories: entries.map(entry => entry.name), mode: 0o700 }));
   return { content, identity: hash(JSON.stringify({ scratch, content, entries })) };
 }
 async function bounded<T>(promise: Promise<T>, deadline: number): Promise<T> {
@@ -229,7 +229,7 @@ export function createCodexManagedProcessLauncher(options: CodexManagedProcessOp
       profile: Object.freeze({ ...request.profile }), model: Object.freeze({ ...request.model }), runtime: Object.freeze({ ...request.runtime }), accountLease: lease });
     return Promise.resolve(createOwnedCore({ stateRoot, runtime, host, binding, lease, processGeneration, configuration, runId: request.runId,
       originalSignal, cancellationSignal, startupMs, sandboxProfile, executionDeadline: request.executionDeadlineUnixMs,
-      outerDeadline: request.cleanupDeadlineUnixMs, maxCleanupMs: request.limits.maxCleanupMs, schema: "agentmixer.codex-managed-process.v1",
+      outerDeadline: request.cleanupDeadlineUnixMs, maxCleanupMs: request.limits.maxCleanupMs, schema: "xcb.codex-managed-process.v1",
       authority() { assertAgentTaskAccountLease(request); check(request.accountLease === lease && request.signal === originalSignal, "CODEX_MANAGED_PROCESS_BINDING_MISMATCH"); } }));
   } });
 }
@@ -251,7 +251,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
     const owned = Object.freeze({ accountId: lease.accountId, owner: lease.owner, leaseGeneration: lease.generation, processGeneration });
     const accountRoot = join(stateRoot, "accounts", lease.accountId), accountHome = join(accountRoot, "codex-home"), runs = join(stateRoot, "runs");
     const root = join(runs, `task-${runId}-${processGeneration}-${randomBytes(12).toString("hex")}`), scratch = join(root, "scratch"), runtimeRoot = join(root, "runtime"), executable = join(runtimeRoot, "codex"), cwd = join(scratch, "work"), custodyPath = join(root, "custody.jsonl"), lockPath = join(accountRoot, "active.json");
-    const lockContents = JSON.stringify({ schema: "agentmixer.codex-account-lock.v1", binding: owned, journalPath: custodyPath }) + "\n";
+    const lockContents = JSON.stringify({ schema: "xcb.codex-account-lock.v1", binding: owned, journalPath: custodyPath }) + "\n";
     const startupDeadline = Math.min(executionDeadline, Date.now() + startupMs);
     const state = { phase: "preparing" as CodexManagedProcessReceipt["phase"], launchAttempted: false, pid: null as number | null, pgid: null as number | null, rootExited: false, groupAbsent: false, stdioJoined: false, lockReleased: false, scratchRetained: false,
       nativeExitCode: null as number | null, nativeExitSignal: null as string | null, runtimeSnapshotSha256: "", profileSha256: "", scratchContentSha256: "", scratchIdentitySha256: "" };
@@ -298,7 +298,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
     }
     const preparation = Promise.resolve().then(async () => {
       admitted(); await directory(stateRoot); await directory(join(stateRoot, "accounts")); await directory(accountRoot);
-      await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "agentmixer.codex-account-home.v1", accountId: owned.accountId }) + "\n");
+      await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "xcb.codex-account-home.v1", accountId: owned.accountId }) + "\n");
       const parent = await host.inspectParent(runtime.parentRuntime);
       check(parent.sha256 === runtime.parentRuntime.expectedSha256 && (parent.platform === "darwin" || parent.platform === "linux")
         && (parent.arch === "arm64" || parent.arch === "x64") && parent.version === "1.3.14", "CODEX_MANAGED_PROCESS_PARENT_MISMATCH");
@@ -337,7 +337,7 @@ function createOwnedCore<B, S extends string>(input: Readonly<{ stateRoot: strin
       const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd,
         env: Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: join(scratch, "home"), CODEX_HOME: accountHome, TMPDIR: join(scratch, "tmp"), NO_COLOR: "1", CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
           ...(sandboxProfile === "managed-task-provider-tcp443-dns-candidate-v2" && parent.platform === "darwin" ? { SSL_CERT_FILE: "/etc/ssl/cert.pem" } : {}),
-          ...(bridge === undefined ? {} : { AGENTMIXER_EGRESS_SOCKET: bridge.socketPath }) }) });
+          ...(bridge === undefined ? {} : { XCB_EGRESS_SOCKET: bridge.socketPath }) }) });
       child = host.spawn(Object.freeze({ executable: sandboxPlan.executable, args: wrapped.args, cwd,
         env: wrapped.env, detached: true, stdio: Object.freeze(["pipe", "pipe", "pipe"] as const) }));
       state.pid = child.pid ?? null;
@@ -418,13 +418,13 @@ export type CodexManagedOfflineDiagnosticOptions = Readonly<{
   admission: Readonly<{ kind: "managed-offline-lifecycle-diagnostic-v1"; nativeSha256: string; schemaSha256: string; parentSha256: string }>;
 }>;
 export type CodexManagedOfflineDiagnosticReceipt = Readonly<{
-  schema: "agentmixer.codex-managed-offline-diagnostic.v1"; passed: boolean; productionQualified: false; network: "denied";
+  schema: "xcb.codex-managed-offline-diagnostic.v1"; passed: boolean; productionQualified: false; network: "denied";
   root: string; receiptPath: string; configurationSha256: string; nativeSha256: string; schemaSha256: string; parentSha256: string;
   bootstrapJoined: boolean; processJoined: boolean; leaseReleased: boolean; protocol: OfflineProtocolReceipt | null; failures: readonly string[];
 }>;
 type DiagnosticBinding = Readonly<{ kind: "offline-diagnostic"; diagnosticId: string; accountId: string; accountLease: AccountLease }>;
 type DiagnosticCustody = { database: SqliteDatabase; journal: FileHandle; bootstrap?: CodexAccountOwnedProcessPort;
-  core?: OwnedCore<DiagnosticBinding, "agentmixer.codex-managed-offline-process.v1">; protocol?: ReturnType<typeof createManagedOfflineProtocol>; joins: Set<Promise<unknown>> };
+  core?: OwnedCore<DiagnosticBinding, "xcb.codex-managed-offline-process.v1">; protocol?: ReturnType<typeof createManagedOfflineProtocol>; joins: Set<Promise<unknown>> };
 // Failed diagnostics keep the actual open store, native owners and pending joins.
 // There is no TTL takeover, implicit retry, or exported process handle.
 const retainedOfflineDiagnostics = new Map<string, DiagnosticCustody>();
@@ -472,7 +472,7 @@ export function runCodexManagedOfflineDiagnostic(options: CodexManagedOfflineDia
     const controller = new AbortController(), interrupt = () => controller.abort(); signal.addEventListener("abort", interrupt, { once: true });
     if (signal.aborted) controller.abort();
     const timer = setTimeout(interrupt, Math.max(0, executionDeadline - Date.now()));
-    let lease: AccountLease | undefined, bootstrap: CodexAccountOwnedProcessPort | undefined, core: OwnedCore<DiagnosticBinding, "agentmixer.codex-managed-offline-process.v1"> | undefined;
+    let lease: AccountLease | undefined, bootstrap: CodexAccountOwnedProcessPort | undefined, core: OwnedCore<DiagnosticBinding, "xcb.codex-managed-offline-process.v1"> | undefined;
     let protocol: ReturnType<typeof createManagedOfflineProtocol> | undefined, bootstrapJoined = false, processJoined = false, protocolReceipt: OfflineProtocolReceipt | null = null, sequence = 0, journalFailed = false;
     const failures = new Set<string>(), error = (code: string) => { if (failures.size < 16) failures.add(code); };
     async function persist(event: string, detail: unknown) {
@@ -507,7 +507,7 @@ export function runCodexManagedOfflineDiagnostic(options: CodexManagedOfflineDia
       const admittedLease = lease, binding: DiagnosticBinding = Object.freeze({ kind: "offline-diagnostic", diagnosticId, accountId, accountLease: admittedLease });
       await persist("diagnostic-admitted", { kind: binding.kind, accountId, leaseGeneration: lease.generation });
       core = createOwnedCore({ stateRoot, runtime, host, binding, lease: admittedLease, processGeneration: 2, configuration, runId: `diagnostic-${diagnosticId}`,
-        schema: "agentmixer.codex-managed-offline-process.v1", originalSignal: controller.signal, cancellationSignal: controller.signal,
+        schema: "xcb.codex-managed-offline-process.v1", originalSignal: controller.signal, cancellationSignal: controller.signal,
         startupMs: 10_000, executionDeadline, outerDeadline, maxCleanupMs: 10_000,
         authority() { check(lease === admittedLease && JSON.stringify(leases.inspect("codex", accountId)) === JSON.stringify(admittedLease), "OFFLINE_DIAGNOSTIC_LEASE_CHANGED"); } });
       custody.core = core;
@@ -532,7 +532,7 @@ export function runCodexManagedOfflineDiagnostic(options: CodexManagedOfflineDia
       } catch { error("OFFLINE_DIAGNOSTIC_RELEASE_FAILED"); }
     }
     const leaseReleased = lease === undefined && leases.inspect("codex", accountId) === null;
-    const receipt: CodexManagedOfflineDiagnosticReceipt = Object.freeze({ schema: "agentmixer.codex-managed-offline-diagnostic.v1", passed: failures.size === 0 && bootstrapJoined && processJoined && leaseReleased && protocolReceipt?.configurationObserved === true,
+    const receipt: CodexManagedOfflineDiagnosticReceipt = Object.freeze({ schema: "xcb.codex-managed-offline-diagnostic.v1", passed: failures.size === 0 && bootstrapJoined && processJoined && leaseReleased && protocolReceipt?.configurationObserved === true,
       productionQualified: false, network: "denied", root, receiptPath, configurationSha256: hash(configuration), nativeSha256: runtime.sha256, schemaSha256: runtime.schemaSha256, parentSha256: runtime.parentRuntime.expectedSha256,
       bootstrapJoined, processJoined, leaseReleased, protocol: protocolReceipt, failures: Object.freeze([...failures]) });
     try { await persist("finished", receipt); }

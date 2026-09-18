@@ -132,7 +132,8 @@ export async function prepareCliLinuxSandbox(input: Readonly<{
       const readOnlyPaths = [...new Set([...runtimeLibs, ...lddClosure(exe)])].sort();
       return planBwrapPolicy({ platform: "linux", executable: exe, scratch, accountHome, readOnlyPaths,
         network: "provider-tcp443-dns", egressSocket: socketPath,
-        egressForward: { runtime, script: forwarderScript, port: FORWARDER_PORT }, policyPath }, wrapper);
+        egressForward: { runtime, script: forwarderScript, port: FORWARDER_PORT,
+          envFile: join(scratch, "forwarder.env") }, policyPath }, wrapper);
     },
     close: () => bridge.close(),
   });

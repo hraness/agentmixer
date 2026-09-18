@@ -4,7 +4,7 @@
  * mounted JS runtime (node or bun); it is not a launcher and holds no
  * credentials.
  *
- *   <runtime> loopback-forwarder.cjs <bridge-socket> <port> <lo-up-cmd|-> -- <child argv...>
+ *   <runtime> loopback-forwarder.cjs <bridge-socket> <port> <lo-up-cmd|-> <env-file|-> -- <child argv...>
  *
  * It listens on 127.0.0.1:<port>, accepts only `CONNECT host:443`, forwards
  * each request verbatim onto the mounted host bridge unix socket, relays the
@@ -15,16 +15,23 @@
  * an absolute path to `ip` runs `ip link set lo up` first; `-` skips (bwrap
  * raises loopback itself on --unshare-net).
  *
+ * `env-file` is the secret channel: bwrap `--setenv` values are visible in
+ * the wrapper's own argv, so the host writes `KEY=VALUE` pairs into a
+ * private file inside the writable scratch instead. The forwarder reads,
+ * validates, and deletes it before spawning, injecting the pairs only into
+ * the child's environment; proxy variables are forwarder-owned and always
+ * win over file entries.
+ *
  * Diagnostics go to stderr as `FWD key=json` lines; the child's stdio is
  * inherited verbatim. Exit status is the child's. */
 const net = require("node:net");
 const fs = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 
-const [, , socketPath, portText, loUpPath, separator, ...childArgv] = process.argv;
+const [, , socketPath, portText, loUpPath, envFilePath, separator, ...childArgv] = process.argv;
 if (typeof socketPath !== "string" || !socketPath.startsWith("/")
   || !/^[0-9]+$/.test(portText ?? "") || separator !== "--" || childArgv.length === 0) {
-  fs.writeSync(2, "FWD usage=<bridge-socket> <port> <lo-up-cmd|-> -- <child argv...>\n");
+  fs.writeSync(2, "FWD usage=<bridge-socket> <port> <lo-up-cmd|-> <env-file|-> -- <child argv...>\n");
   process.exit(2);
 }
 const report = (key, value) => { try { fs.writeSync(2, "FWD " + key + "=" + JSON.stringify(value) + "\n"); } catch {} };
@@ -37,6 +44,29 @@ if (loUpPath !== "-") {
   report("loUpStatus", raised.status);
   report("loUpError", raised.error ? String(raised.error.code || raised.error) : null);
   report("loUpStderr", (raised.stderr || "").toString().slice(0, 200));
+}
+
+// Secret channel: bounded KEY=VALUE lines the host left inside the writable
+// scratch. The file is deleted before the child spawns whether parsing
+// succeeds or not — never log its contents.
+const PROXY_KEYS = new Set(["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"]);
+const fileEnv = Object.create(null);
+if (envFilePath !== "-") {
+  let text;
+  try { text = fs.readFileSync(envFilePath, "utf8"); }
+  catch (error) { report("envFileError", String(error && error.code || error)); process.exit(1); }
+  try { fs.unlinkSync(envFilePath); } catch {}
+  if (Buffer.byteLength(text) > 64 * 1024) { report("envFileError", "limit"); process.exit(1); }
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const eq = line.indexOf("=");
+    const key = eq === -1 ? "" : line.slice(0, eq);
+    const value = eq === -1 ? "" : line.slice(eq + 1);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || PROXY_KEYS.has(key) || value.includes("\0")) {
+      report("envFileError", "invalid"); process.exit(1);
+    }
+    fileEnv[key] = value;
+  }
 }
 
 const port = Number(portText);
@@ -87,7 +117,7 @@ const server = net.createServer((inbound) => {
 server.listen(port, "127.0.0.1", () => {
   report("listening", server.address());
   const proxy = "http://127.0.0.1:" + port;
-  const env = { ...process.env,
+  const env = { ...process.env, ...fileEnv,
     http_proxy: proxy, HTTP_PROXY: proxy, https_proxy: proxy, HTTPS_PROXY: proxy,
     all_proxy: proxy, ALL_PROXY: proxy, no_proxy: "", NO_PROXY: "" };
   const child = spawn(childArgv[0], childArgv.slice(1), { stdio: "inherit", env });

@@ -91,6 +91,16 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    #[command(name = "egress-forward", hide = true)]
+    EgressForward {
+        socket: PathBuf,
+        port: u16,
+        lo_up: String,
+        #[arg(long, default_value_t = 443)]
+        target_port: u16,
+        #[arg(last = true, required = true)]
+        child: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -812,6 +822,17 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
             }
             Ok(0)
+        }
+        Some(Commands::EgressForward {
+            socket,
+            port,
+            lo_up,
+            target_port,
+            child,
+        }) => {
+            let lo_up = (lo_up != "-").then_some(PathBuf::from(lo_up));
+            xcb_runtime::egress::run_forwarder(&socket, port, target_port, lo_up.as_deref(), &child)
+                .await
         }
     }
 }

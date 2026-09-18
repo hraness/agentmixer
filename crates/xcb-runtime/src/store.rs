@@ -161,11 +161,10 @@ impl Store {
             Err(error) => return Err(error.into()),
         }
         for suffix in ["xcb.sqlite-wal", "xcb.sqlite-shm", "xcb.sqlite-journal"] {
-            match private::open_file(&root.join(suffix), 1024 * 1024 * 1024) {
-                Ok(_) => (),
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error),
-            }
+            // SQLite retires these sidecars when the last connection closes;
+            // a sibling store can legitimately unlink one after this process
+            // releases the initialization lock but before it exits.
+            private::open_file_maybe_vanished(&root.join(suffix), 1024 * 1024 * 1024)?;
         }
         let mut connection = Connection::open(&path)?;
         connection.busy_timeout(Duration::from_secs(2))?;

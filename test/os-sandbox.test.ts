@@ -202,7 +202,7 @@ describe("os-sandbox bwrap planning", () => {
         egressForward: { runtime, script, port: 48123 } }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: ["--serve"], env: { MODE: "x" }, cwd: "/" }).args];
       const tail = args.slice(args.indexOf("--") + 1);
-      expect(tail).toEqual([runtime, script, socket, "48123", "-", "-", "--", f.executable, "--serve"]);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", "-", "-", "--", f.executable, "--serve"]);
       const pairs = (flag: string) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
       expect(pairs("--ro-bind")).toEqual(expect.arrayContaining([runtime, script]));
       const policy = JSON.parse(plan.policy);
@@ -223,7 +223,7 @@ describe("os-sandbox bwrap planning", () => {
         egressForward: { runtime, script, port: 48123, envFile } }), join(f.root, "bwrap"));
       const args = [...plan.wrap({ args: ["--serve"], env: { SECRET_TOKEN: "s3cr3t", PATH: "/usr/bin:/bin" }, cwd: "/" }).args];
       const tail = args.slice(args.indexOf("--") + 1);
-      expect(tail).toEqual([runtime, script, socket, "48123", "-", envFile, "--", f.executable, "--serve"]);
+      expect(tail).toEqual([runtime, script, socket, "48123", "-", envFile, "-", "--", f.executable, "--serve"]);
       // No --setenv at all: neither secrets nor mundane values ride argv.
       expect(args).not.toContain("--setenv");
       expect(JSON.stringify(args)).not.toContain("s3cr3t");

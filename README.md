@@ -212,16 +212,22 @@ custody without an OS-confinement claim. The sandbox is enforcement on top of
 the broker boundary, not a substitute for it.
 
 `doctor` inspects the provider binary (explicit `XCB_CLAUDE` /
-`XCB_CODEX` pin, then PATH and known install locations), requires an admitted
-version — Claude Code `>= 2.1.268` within major 2, Codex's exact native build —
-records the binary's SHA-256, and writes a time-boxed local admission record
-binding that executable, its exact version, this runtime build, and the
-capability profile digest. Any drift — a replaced binary, a new release, an
-edited profile — revokes admission until `doctor` runs again. The adapter
-re-proves the effective boundary on every run: `doctor`'s record is a gate,
-not a sandbox attestation.
+`XCB_CODEX` / `XCB_DEVIN` pin, then PATH and known install
+locations), requires an admitted version — Claude Code `>= 2.1.268` within
+major 2, Devin CLI `>= 3000.10.27` within major 3000, Codex's exact native
+build — records the binary's SHA-256, and writes a time-boxed local
+admission record binding that executable, its exact version, this runtime
+build, and the capability profile digest. Any drift — a replaced binary, a
+new release, an edited profile — revokes admission until `doctor` runs
+again. The adapter re-proves the effective boundary on every run:
+`doctor`'s record is a gate, not a sandbox attestation.
 
-Claude is the working provider today. Codex discovery is implemented, but
+Claude and Devin are the working providers today. Claude requires
+`>= 2.1.268` within major 2; Devin requires `devin` CLI 3000.10.27 or newer within major
+3000 and drives the provider's `devin acp` stdio protocol under the same
+managed-home custody and OS confinement — its file tools stay on the
+host-brokered relay, so the seatbelt/bwrap boundary grants the consumer
+workspace read-only and loopback only. Codex discovery is implemented, but
 managed sign-in and task admission stay gated: they require the trusted
 protocol manifest and pinned parent runtime described in
 [MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot

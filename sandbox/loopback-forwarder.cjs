@@ -4,7 +4,13 @@
  * mounted JS runtime (node or bun); it is not a launcher and holds no
  * credentials.
  *
- *   <runtime> loopback-forwarder.cjs <bridge-socket> <port> <lo-up-cmd|-> <env-file|-> -- <child argv...>
+ *   <runtime> loopback-forwarder.cjs <bridge-socket> <port> <lo-up-cmd|-> <env-file|-> [<service|->] -- <child argv...>
+ *
+ * The optional `service` positional is `<host-unix-socket>:<port>`: the
+ * forwarder also binds 127.0.0.1:<port> inside the namespace and pipes each
+ * accepted connection verbatim to that mounted host socket — the in-namespace
+ * consumption path for host services (the tool relay) that are not CONNECT
+ * egress. `-` (or omitting the argument) disables it.
  *
  * It listens on 127.0.0.1:<port>, accepts only `CONNECT host:443`, forwards
  * each request verbatim onto the mounted host bridge unix socket, relays the
@@ -28,10 +34,18 @@ const net = require("node:net");
 const fs = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 
-const [, , socketPath, portText, loUpPath, envFilePath, separator, ...childArgv] = process.argv;
+// Positional layout: <socket> <port> <lo-up|-> <env-file|-> [<service|->] -- <child...>
+// The service slot is optional — when the argument before `--` is absent the
+// arity is the legacy five, so both forms parse.
+const raw = process.argv.slice(2);
+const separatorIndex = raw.indexOf("--");
+const positionals = separatorIndex === -1 ? raw : raw.slice(0, separatorIndex);
+const [socketPath, portText, loUpPath, envFilePath, serviceText] = positionals;
+const childArgv = separatorIndex === -1 ? [] : raw.slice(separatorIndex + 1);
 if (typeof socketPath !== "string" || !socketPath.startsWith("/")
-  || !/^[0-9]+$/.test(portText ?? "") || separator !== "--" || childArgv.length === 0) {
-  fs.writeSync(2, "FWD usage=<bridge-socket> <port> <lo-up-cmd|-> <env-file|-> -- <child argv...>\n");
+  || !/^[0-9]+$/.test(portText ?? "") || positionals.length < 4 || positionals.length > 5
+  || separatorIndex === -1 || childArgv.length === 0) {
+  fs.writeSync(2, "FWD usage=<bridge-socket> <port> <lo-up-cmd|-> <env-file|-> [<service|->] -- <child argv...>\n");
   process.exit(2);
 }
 const report = (key, value) => { try { fs.writeSync(2, "FWD " + key + "=" + JSON.stringify(value) + "\n"); } catch {} };
@@ -67,6 +81,36 @@ if (envFilePath !== "-") {
     }
     fileEnv[key] = value;
   }
+}
+
+// Optional host-service forward: "<socket>:<port>" pipes 127.0.0.1:<port> in
+// this namespace straight to the mounted unix socket — no CONNECT protocol,
+// the host service owns its own admission.
+let service = null;
+if (serviceText !== undefined && serviceText !== "-") {
+  const split = serviceText.lastIndexOf(":");
+  const svcSocket = split === -1 ? "" : serviceText.slice(0, split);
+  const svcPort = split === -1 ? NaN : Number(serviceText.slice(split + 1));
+  if (!svcSocket.startsWith("/") || !Number.isInteger(svcPort) || svcPort < 1 || svcPort > 65535) {
+    report("serviceError", "invalid"); process.exit(2);
+  }
+  service = { socket: svcSocket, port: svcPort };
+}
+if (service !== null) {
+  const serviceServer = net.createServer((inbound) => {
+    inbound.on("error", () => {});
+    const upstream = net.createConnection(service.socket);
+    upstream.on("error", () => {});
+    // Pipe immediately: inbound data must not be dropped while the upstream
+    // unix connection is still establishing, and upstream cannot produce data
+    // before it connects.
+    inbound.pipe(upstream);
+    upstream.pipe(inbound);
+    upstream.once("error", () => inbound.destroy());
+    inbound.once("close", () => upstream.destroy());
+  });
+  serviceServer.on("error", (error) => { report("serviceListenError", String(error && error.code || error)); process.exit(1); });
+  serviceServer.listen(service.port, "127.0.0.1", () => report("serviceListening", serviceServer.address()));
 }
 
 const port = Number(portText);

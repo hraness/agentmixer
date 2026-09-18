@@ -206,7 +206,11 @@ impl Store {
             private::open_file_maybe_vanished(&root.join(suffix), 1024 * 1024 * 1024)?;
         }
         let mut connection = Connection::open(&path)?;
-        connection.busy_timeout(Duration::from_secs(2))?;
+        // Writers serialize on the WAL writer lock; readers never block.
+        // Twenty parallel terminals × short transactions still fit well under
+        // this bound on a loaded host, and a dead process's locks are released
+        // by the kernel, so a generous ceiling cannot deadlock the store.
+        connection.busy_timeout(Duration::from_secs(30))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let journal: String =
             connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;

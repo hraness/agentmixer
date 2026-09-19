@@ -563,16 +563,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 Some(judge::JudgeKeySource::Vault) => "vault",
                 None => "none",
             };
-            let judge_endpoint = config
-                .extensions
-                .judge
-                .endpoint
-                .as_deref()
-                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL);
+            let (judge_model, judge_endpoint) =
+                xcb_runtime::jev::effective_target(&config.extensions.judge);
             let judge_status = json!({
                 "enabled": config.extensions.judge.enabled,
                 "key": judge_key_name,
-                "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
+                "model": judge_model,
                 "endpoint": judge_endpoint,
             });
             if cli.json {
@@ -956,6 +952,8 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
                 None | Some(JudgeCommand::Status) => {
                     let source = judge::judge_token(store.root())?.map(|(_, source)| source);
+                    let (judge_model, judge_endpoint) =
+                        xcb_runtime::jev::effective_target(&config.extensions.judge);
                     if cli.json {
                         print_json(json!({
                             "version": 1,
@@ -965,8 +963,8 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                                 Some(judge::JudgeKeySource::Vault) => "vault",
                                 None => "none",
                             },
-                            "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
-                            "endpoint": config.extensions.judge.endpoint.as_deref().unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
+                            "model": judge_model,
+                            "endpoint": judge_endpoint,
                         }))?;
                     } else {
                         let key = match source {
@@ -975,25 +973,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                             None => "none",
                         };
                         println!(
-                            "judge: {} · key {key} · model {} · {}",
+                            "judge: {} · key {key} · model {judge_model} · {judge_endpoint}",
                             if config.extensions.judge.enabled {
                                 "enabled"
                             } else {
                                 "disabled"
                             },
-                            config
-                                .extensions
-                                .judge
-                                .model
-                                .as_ref()
-                                .map(|m| m.as_str())
-                                .unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
-                            config
-                                .extensions
-                                .judge
-                                .endpoint
-                                .as_deref()
-                                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
                         );
                     }
                 }

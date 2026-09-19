@@ -180,6 +180,68 @@ pub fn check_questions(questions: &JudgeQuestions) -> Result<()> {
     Ok(())
 }
 
+fn valid_probability(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
+/// Validates that a response is complete, matches every asked question's type,
+/// and cannot select an option or probability bucket outside that question.
+pub fn check_answers(questions: &JudgeQuestions, response: &JudgeAnswers) -> Result<()> {
+    check_questions(questions)?;
+    if response.answers.len() != questions.len() {
+        return Err(Error::Unavailable("judge response question mismatch"));
+    }
+    for (name, question) in questions {
+        let answer = response
+            .answers
+            .get(name)
+            .ok_or(Error::Unavailable("judge response missing answer"))?;
+        let valid = match (question, answer) {
+            (JudgeQuestion::Noul { .. }, JudgeAnswer::Noul(value)) => valid_probability(*value),
+            (
+                JudgeQuestion::Choice { criteria, .. },
+                JudgeAnswer::Choice {
+                    choice,
+                    confidence,
+                    probabilities,
+                },
+            ) => {
+                criteria.contains_key(choice)
+                    && probabilities.contains_key(choice)
+                    && valid_probability(*confidence)
+                    && !probabilities.is_empty()
+                    && probabilities.iter().all(|(option, probability)| {
+                        criteria.contains_key(option) && valid_probability(*probability)
+                    })
+            }
+            (
+                JudgeQuestion::Score { criteria, .. },
+                JudgeAnswer::Score {
+                    score,
+                    confidence,
+                    probabilities,
+                },
+            ) => {
+                score.is_finite()
+                    && (0.0..=(criteria.len() - 1) as f64).contains(score)
+                    && valid_probability(*confidence)
+                    && !probabilities.is_empty()
+                    && probabilities.iter().all(|(bucket, probability)| {
+                        bucket
+                            .parse::<usize>()
+                            .is_ok_and(|index| index < criteria.len())
+                            && valid_probability(*probability)
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(Error::Unavailable("judge response does not match question"));
+        }
+    }
+    Ok(())
+}
+
 /// Validates the serialized state before it reaches any backend.
 pub fn check_state(state: &serde_json::Value) -> Result<()> {
     let bytes = serde_json::to_vec(state).map_err(|_| xcb_core::Error::Invalid("judge state"))?;

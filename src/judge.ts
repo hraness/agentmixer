@@ -82,7 +82,11 @@ const fail = (code: string): never => { throw new Error(code); };
 const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 const finite = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fail("JUDGE_ANSWER_MALFORMED");
-const NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u;
+const probability = (value: unknown): number => {
+  const result = finite(value);
+  return result >= 0 && result <= 1 ? result : fail("JUDGE_ANSWER_RANGE");
+};
+const NAME = /^[A-Za-z0-9][A-Za-z0-9_.\[\]-]*$/u;
 
 function checkName(name: string): string {
   if (typeof name !== "string" || !NAME.test(name) || bytes(name) > MAX_JUDGE_NAME_BYTES) {
@@ -142,40 +146,37 @@ export function checkJudgeState(state: JudgeState): JudgeState {
 }
 
 function parseAnswer(name: string, value: unknown): JudgeAnswer {
+  checkName(name);
   if (value === null || typeof value !== "object") fail(`JUDGE_ANSWER_MALFORMED:${name}`);
   const answer = value as Record<string, unknown>;
-  if ("noul" in answer) {
-    const noul = finite(answer.noul);
-    if (noul < 0 || noul > 1) fail("JUDGE_ANSWER_RANGE");
-    return { type: "noul", noul };
+  const kinds = (["noul", "choice", "score"] as const).filter(kind => kind in answer);
+  const kind = kinds[0];
+  if (kind === undefined || kinds.length !== 1 || (answer.type !== undefined && answer.type !== kind)) {
+    return fail("JUDGE_ANSWER_MALFORMED");
   }
-  if ("choice" in answer) {
-    const choice = answer.choice;
-    if (typeof choice !== "string") return fail("JUDGE_ANSWER_MALFORMED");
-    const probabilities = answer.probabilities;
-    if (probabilities === null || typeof probabilities !== "object") return fail("JUDGE_ANSWER_MALFORMED");
-    const entries = Object.entries(probabilities as Record<string, unknown>)
-      .map(([key, probability]) => [key, finite(probability)] as const);
+  if (kind === "noul") return { type: "noul", noul: probability(answer.noul) };
+  const probabilities = answer.probabilities;
+  if (probabilities === null || typeof probabilities !== "object" || Array.isArray(probabilities)) {
+    return fail("JUDGE_ANSWER_MALFORMED");
+  }
+  const entries = Object.entries(probabilities as Record<string, unknown>)
+    .map(([key, value]) => [checkName(key), probability(value)] as const);
+  if (entries.length === 0) return fail("JUDGE_ANSWER_MALFORMED");
+  if (kind === "choice") {
+    if (typeof answer.choice !== "string") return fail("JUDGE_ANSWER_MALFORMED");
     return {
       type: "choice",
-      choice,
-      confidence: finite(answer.confidence),
+      choice: checkName(answer.choice),
+      confidence: probability(answer.confidence),
       probabilities: Object.fromEntries(entries),
     };
   }
-  if ("score" in answer) {
-    const probabilities = answer.probabilities;
-    if (probabilities === null || typeof probabilities !== "object") return fail("JUDGE_ANSWER_MALFORMED");
-    const entries = Object.entries(probabilities as Record<string, unknown>)
-      .map(([key, probability]) => [key, finite(probability)] as const);
-    return {
-      type: "score",
-      score: finite(answer.score),
-      confidence: finite(answer.confidence),
-      probabilities: Object.fromEntries(entries),
-    };
-  }
-  return fail("JUDGE_ANSWER_MALFORMED");
+  return {
+    type: "score",
+    score: finite(answer.score),
+    confidence: probability(answer.confidence),
+    probabilities: Object.fromEntries(entries),
+  };
 }
 
 /** Validates a System One response body; throws on anything malformed. */
@@ -201,12 +202,64 @@ export function parseJudgeResponse(status: number, body: string): JudgeAnswers {
   const answers: Record<string, JudgeAnswer> = {};
   for (const [name, value] of entries) answers[name] = parseAnswer(name, value);
   const result: JudgeAnswers = { answers };
-  if (typeof response.model === "string") result.model = response.model;
+  const responseModel = response.model;
+  if (responseModel !== undefined) {
+    if (typeof responseModel !== "string") return fail("JUDGE_RESPONSE_MALFORMED");
+    result.model = checkName(responseModel);
+  }
   const usage = response.usage;
-  if (usage !== null && typeof usage === "object") {
-    result.usage = usage as { input_tokens?: number; output_tokens?: number };
+  if (usage !== undefined) {
+    if (usage === null || typeof usage !== "object" || Array.isArray(usage)) {
+      return fail("JUDGE_RESPONSE_MALFORMED");
+    }
+    const record = usage as Record<string, unknown>;
+    if (Object.keys(record).some(key => !["input_tokens", "output_tokens"].includes(key))) {
+      return fail("JUDGE_RESPONSE_MALFORMED");
+    }
+    const admitted: { input_tokens?: number; output_tokens?: number } = {};
+    for (const key of ["input_tokens", "output_tokens"] as const) {
+      const value = record[key];
+      if (value !== undefined) {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+          return fail("JUDGE_RESPONSE_MALFORMED");
+        }
+        admitted[key] = value;
+      }
+    }
+    result.usage = admitted;
   }
   return result;
+}
+
+/** Validates a complete response against the exact questions that were sent. */
+export function checkJudgeAnswers(questions: JudgeQuestions, response: JudgeAnswers): JudgeAnswers {
+  checkJudgeQuestions(questions);
+  const names = Object.keys(questions), answered = Object.keys(response.answers);
+  if (answered.length !== names.length || names.some(name => !(name in response.answers))) {
+    return fail("JUDGE_RESPONSE_QUESTION_MISMATCH");
+  }
+  for (const name of names) {
+    const question = questions[name]!, answer = response.answers[name]!;
+    if (answer.type === "choice") {
+      if (question.type !== "choice") return fail("JUDGE_RESPONSE_TYPE_MISMATCH");
+      const criteria = question.criteria, buckets = Object.keys(answer.probabilities);
+      if (!(answer.choice in criteria) || !(answer.choice in answer.probabilities)
+        || buckets.length === 0 || buckets.some(bucket => !(bucket in criteria))) {
+        return fail("JUDGE_RESPONSE_OPTION_MISMATCH");
+      }
+    } else if (answer.type === "score") {
+      if (question.type !== "score") return fail("JUDGE_RESPONSE_TYPE_MISMATCH");
+      const criteria = question.criteria, buckets = Object.keys(answer.probabilities);
+      if (answer.score < 0 || answer.score > criteria.length - 1 || buckets.length === 0
+        || buckets.some(bucket => !/^(0|[1-9][0-9]*)$/u.test(bucket)
+          || Number(bucket) >= criteria.length)) {
+        return fail("JUDGE_RESPONSE_SCORE_MISMATCH");
+      }
+    } else if (question.type !== "noul") {
+      return fail("JUDGE_RESPONSE_TYPE_MISMATCH");
+    }
+  }
+  return response;
 }
 
 /** Where a resolved judge key came from; `status` reports it, secrets never print. */
@@ -219,6 +272,7 @@ function validJudgeToken(token: string): boolean {
 /** One HTTPS endpoint the judge may call; only `https` with a clean authority. */
 export function parseJudgeEndpoint(url: string): URL {
   boundedText(url, 1024);
+  if (/[\u0000-\u0020\u007f]/u.test(url)) fail("JUDGE_ENDPOINT_INVALID");
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -249,7 +303,7 @@ export interface SystemOneOptions {
 export function createSystemOneJudge(options: SystemOneOptions): Judge {
   if (!validJudgeToken(options.token)) fail("JUDGE_KEY_INVALID");
   const endpoint = parseJudgeEndpoint(options.endpoint ?? SYSTEM_ONE_URL).toString();
-  const model = boundedText(options.model ?? DEFAULT_JUDGE_MODEL, 128);
+  const model = checkName(options.model ?? DEFAULT_JUDGE_MODEL);
   const fetcher = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000) fail("JUDGE_TIMEOUT_INVALID");
@@ -268,7 +322,10 @@ export function createSystemOneJudge(options: SystemOneOptions): Judge {
         signal: AbortSignal.timeout(timeoutMs),
         redirect: "error",
       });
-      return parseJudgeResponse(response.status, await boundedBody(response));
+      return checkJudgeAnswers(
+        questions,
+        parseJudgeResponse(response.status, await boundedBody(response)),
+      );
     },
   });
 }

@@ -257,7 +257,7 @@ async function commandJudge(sub: string | undefined, stateRoot: string): Promise
     }
     const started = Date.now();
     const answers = await judge.ask("xcb judge connectivity probe", {
-      probe: { type: "noul", instructions: "Is this a connectivity test that should answer yes?" },
+      probe: { type: "noul", instructions: "Is the sky blue on a clear day?" },
       pick: { type: "choice", instructions: "Which option names a color?", criteria: { red: "a color", spoon: "not a color" } },
       rate: { type: "score", instructions: "Rate the claim that water is wet.", criteria: ["factual accuracy"] },
     });

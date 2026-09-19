@@ -8,12 +8,13 @@ use crate::{
     context, digest, egress, judge, new_id, now_ms, private,
     process::{Pin, StreamProcess},
     sandbox,
-    store::{Store, UsageObservation},
+    store::{RunRecord, Store, UsageObservation},
 };
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -52,6 +53,114 @@ struct Launch {
     command: Command,
     cwd: PathBuf,
     bridge: Option<egress::EgressBridge>,
+    artifacts: LaunchArtifacts,
+}
+
+impl Launch {
+    async fn discard_unstarted(&mut self) {
+        let joined = close_bridge(self.bridge.take()).await;
+        self.artifacts.release_after_join(joined, EffectState::None);
+    }
+}
+
+async fn close_bridge(bridge: Option<egress::EgressBridge>) -> bool {
+    if let Some(bridge) = bridge {
+        let receipt = bridge.close().await;
+        receipt.listener_closed && receipt.sockets_joined && receipt.socket_removed
+    } else {
+        true
+    }
+}
+
+async fn spawn_process(
+    store: &Store,
+    run: Option<&RunRecord>,
+    command: Command,
+    artifacts: &mut LaunchArtifacts,
+    bridge: Option<egress::EgressBridge>,
+) -> Result<(StreamProcess, Option<egress::EgressBridge>)> {
+    artifacts.retain_before_launch();
+    match StreamProcess::spawn(command) {
+        Ok(process) => Ok((process, bridge)),
+        Err(error @ Error::LaunchNotStarted(_)) => {
+            // This variant proves command.spawn() failed before a child
+            // existed. Postspawn errors carry no such proof and stay held.
+            if close_bridge(bridge).await {
+                if let Some(run) = run {
+                    store.settle(run, State::Failed, now_ms())?;
+                }
+                artifacts.release_after_join(true, EffectState::None);
+            }
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Launch snapshots are disposable only before spawn or after independent
+/// process-join evidence and settled effects. Cancellation/drop alone never
+/// grants cleanup permission.
+struct LaunchArtifacts {
+    directory: PathBuf,
+    identity: (u64, u64),
+    retained: bool,
+}
+impl LaunchArtifacts {
+    fn create(root: &Path) -> Result<Self> {
+        let directory = private::directory(&root.join("runs").join(new_id("launch").as_str()))?;
+        let metadata = std::fs::symlink_metadata(&directory)?;
+        Ok(Self {
+            directory,
+            identity: (metadata.dev(), metadata.ino()),
+            retained: false,
+        })
+    }
+    fn retain_before_launch(&mut self) {
+        self.retained = true;
+    }
+    fn release_after_join(&mut self, joined: bool, effects: EffectState) {
+        if joined && effects != EffectState::Uncertain {
+            self.retained = false;
+        }
+    }
+}
+impl Drop for LaunchArtifacts {
+    fn drop(&mut self) {
+        if self.retained || private::check_directory(&self.directory).is_err() {
+            return;
+        }
+        if std::fs::symlink_metadata(&self.directory)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.identity)
+        {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Answer {
+    complete: String,
+    partial: String,
+}
+impl Answer {
+    fn delta(&mut self, text: &str) -> Result<()> {
+        if self.partial.len().saturating_add(text.len()) > MAX_TEXT_BYTES {
+            return Err(Error::Protocol("answer limit"));
+        }
+        self.partial.push_str(text);
+        Ok(())
+    }
+    fn completed(&mut self, text: String) {
+        self.complete = text;
+        self.partial.clear();
+    }
+    fn into_text(self) -> String {
+        if self.partial.is_empty() {
+            self.complete
+        } else {
+            self.partial
+        }
+    }
 }
 
 fn provider_args(model: &ModelChoice, tools: bool) -> Vec<String> {
@@ -193,8 +302,9 @@ async fn prepare(
             "native OS confinement is not qualified on this platform; no unsandboxed fallback",
         ));
     }
-    let directory = private::directory(&root.join("runs").join(new_id("launch").as_str()))?;
-    let executable = pin.snapshot(&directory)?;
+    let artifacts = LaunchArtifacts::create(root)?;
+    let directory = &artifacts.directory;
+    let executable = pin.snapshot(directory)?;
     let scratch = private::directory(&directory.join("scratch"))?;
     let cwd = private::directory(&scratch.join("work"))?;
     let home = private::directory(&scratch.join("home"))?;
@@ -225,6 +335,7 @@ async fn prepare(
         command,
         cwd,
         bridge: None,
+        artifacts,
     })
 }
 
@@ -252,8 +363,9 @@ async fn prepare(
         .as_deref()
         .and_then(|path| sandbox::BwrapPin::admit(path).ok())
         .ok_or(Error::Unavailable("bwrap not admitted"))?;
-    let directory = private::directory(&root.join("runs").join(new_id("launch").as_str()))?;
-    let executable = pin.snapshot(&directory)?;
+    let mut artifacts = LaunchArtifacts::create(root)?;
+    let directory = &artifacts.directory;
+    let executable = pin.snapshot(directory)?;
     let scratch = private::directory(&directory.join("scratch"))?;
     let cwd = private::directory(&scratch.join("work"))?;
     let home = private::directory(&scratch.join("home"))?;
@@ -262,42 +374,56 @@ async fn prepare(
     let env_file = egress::write_forwarder_env(&scratch, &child_env(&home, &config, &tmp, token))?;
     let socket_dir = private::directory(&directory.join("egress"))?;
     let socket = socket_dir.join("egress.sock");
-    let bridge =
-        egress::EgressBridge::start(egress::EgressBridgeOptions::new(socket.clone())).await?;
     let xcb = std::env::current_exe()?.canonicalize()?;
     // The planner mounts the executable and the forwarder runtime itself;
     // read_only carries only the shared-library closure the dynamic loader
     // needs — provider snapshot and runtime alike.
     let mut read_only = shared_library_closure(&executable)?;
     read_only.extend(shared_library_closure(&xcb)?);
+    let policy_path = directory.join("sandbox.json");
+    artifacts.retain_before_launch();
+    let bridge =
+        egress::EgressBridge::start(egress::EgressBridgeOptions::new(socket.clone())).await?;
     let spec = linux_spec(
         executable,
         xcb,
         scratch,
-        directory.join("sandbox.json"),
+        policy_path,
         socket,
         env_file,
         read_only,
     );
     let wrapper_env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
-    let launch = sandbox::bwrap_launch(
-        &bwrap,
-        &spec,
-        &provider_args(model, tools),
-        &wrapper_env,
-        &cwd,
-    )?;
-    private::create(&spec.policy_path, launch.policy.as_bytes())?;
-    let mut command = Command::new(&bwrap.executable);
-    command
-        .args(launch.args)
-        .env_clear()
-        .envs(launch.env)
-        .current_dir(&cwd);
+    let planned = (|| -> Result<Command> {
+        let launch = sandbox::bwrap_launch(
+            &bwrap,
+            &spec,
+            &provider_args(model, tools),
+            &wrapper_env,
+            &cwd,
+        )?;
+        private::create(&spec.policy_path, launch.policy.as_bytes())?;
+        let mut command = Command::new(&bwrap.executable);
+        command
+            .args(launch.args)
+            .env_clear()
+            .envs(launch.env)
+            .current_dir(&cwd);
+        Ok(command)
+    })();
+    let command = match planned {
+        Ok(command) => command,
+        Err(error) => {
+            let joined = close_bridge(Some(bridge)).await;
+            artifacts.release_after_join(joined, EffectState::None);
+            return Err(error);
+        }
+    };
     Ok(Launch {
         command,
         cwd,
         bridge: Some(bridge),
+        artifacts,
     })
 }
 
@@ -599,19 +725,24 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         false,
     )
     .await?;
-    let bridge = launch.bridge.take();
-    let run = account
+    let run = match account
         .map(|id| store.prepare_probe(id, Some(model.clone()), now))
-        .transpose()?;
-    let mut process = match StreamProcess::spawn(launch.command) {
-        Ok(process) => process,
+        .transpose()
+    {
+        Ok(run) => run,
         Err(error) => {
-            if let Some(run) = &run {
-                store.settle(run, State::Failed, now_ms())?;
-            }
+            launch.discard_unstarted().await;
             return Err(error);
         }
     };
+    let (mut process, bridge) = spawn_process(
+        store,
+        run.as_ref(),
+        launch.command,
+        &mut launch.artifacts,
+        launch.bridge.take(),
+    )
+    .await?;
     let result = async {
         if let Some(run) = &run { store.mark_spawned(run, process.pid())?; }
         let models = handshake(&mut process, false, "Return no messages; this connection is for host metadata queries only.").await?;
@@ -632,10 +763,9 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
         }
         Ok::<_, Error>(models)
     }.await;
-    let joined = process.join().await;
-    if let Some(bridge) = bridge {
-        let _ = bridge.close().await;
-    }
+    let process_joined = process.join().await;
+    let bridge_joined = close_bridge(bridge).await;
+    let joined = process_joined && bridge_joined;
     if !joined {
         return Err(Error::Unavailable(
             "metadata process stop is unproven; account custody retained",
@@ -644,7 +774,34 @@ pub async fn probe(store: &Store, pin: &Pin, account: Option<&Id>) -> Result<Vec
     if let Some(run) = &run {
         store.settle(run, State::Idle, now_ms())?;
     }
+    launch
+        .artifacts
+        .release_after_join(joined, EffectState::None);
     result
+}
+
+fn settle_tool_effects(
+    store: &Store,
+    run: &RunRecord,
+    call: &str,
+    call_effects: EffectState,
+    effects: &mut EffectState,
+) -> Result<()> {
+    let previous = *effects;
+    // A receipt write can fail after the tool ran. Until that receipt is
+    // durable, retain custody even when the filesystem result was known.
+    *effects = EffectState::Uncertain;
+    if call_effects != EffectState::Uncertain {
+        store.settle_tool(run, call)?;
+        *effects = if previous == EffectState::Uncertain {
+            EffectState::Uncertain
+        } else if call_effects == EffectState::Settled {
+            EffectState::Settled
+        } else {
+            previous
+        };
+    }
+    Ok(())
 }
 
 pub struct RunInput {
@@ -672,29 +829,35 @@ pub async fn run(
     let pin = Pin::load(store.root(), Provider::Claude)?;
     let credential = auth::token(&store, &session.account)?;
     let tools = !input.pane_generation;
-    let mut launch = prepare(&pin, store.root(), &session.model, Some(&credential), tools).await?;
-    let bridge = launch.bridge.take();
     let workspace = Workspace::open(Path::new(&session.workspace))?;
-    let run = store.prepare_run(&session.id, session.revision, now_ms())?;
-    let mut process = match StreamProcess::spawn(launch.command) {
-        Ok(process) => process,
+    let mut launch = prepare(&pin, store.root(), &session.model, Some(&credential), tools).await?;
+    let run = match store.prepare_run(&session.id, session.revision, now_ms()) {
+        Ok(run) => run,
         Err(error) => {
-            store.settle(&run, State::Failed, now_ms())?;
+            launch.discard_unstarted().await;
             return Err(error);
         }
     };
+    let (mut process, bridge) = spawn_process(
+        &store,
+        Some(&run),
+        launch.command,
+        &mut launch.artifacts,
+        launch.bridge.take(),
+    )
+    .await?;
     let mut effects = EffectState::None;
     let mut pending_attention = false;
     let mut quota_failure = None;
-    let mut final_text = String::new();
+    let mut answer = Answer::default();
     let mut thinking = String::new();
-    let baseline = store
-        .velocities(&session.id, 0)?
-        .last()
-        .map(|point| point.output_tokens)
-        .unwrap_or(0);
     let execution = async {
         store.mark_spawned(&run, process.pid())?;
+        let baseline = store
+            .velocities(&session.id, 0)?
+            .last()
+            .map(|point| point.output_tokens)
+            .unwrap_or(0);
         let models = handshake(&mut process, tools, "You are xcb (Excalibur), a local coding assistant. Only the declared workspace tools can affect the project. There is no shell or arbitrary path access. Keep file revisions and use expectedRevision when writing. Never claim effects you did not perform. Ask for human input when it is necessary.").await?;
         if !models.iter().any(|choice| {
             choice.id == session.model.id
@@ -858,6 +1021,8 @@ pub async fn run(
                             return Err(Error::Protocol("thinking limit"));
                         }
                         thinking.push_str(&text);
+                    } else {
+                        answer.delta(&text)?;
                     }
                     observer(Progress::Text {
                         thinking: is_thinking,
@@ -865,7 +1030,7 @@ pub async fn run(
                     });
                 }
                 Event::Assistant { text, .. } if admitted => {
-                    final_text = text;
+                    answer.completed(text);
                 }
                 Event::Quota {
                     window,
@@ -928,18 +1093,8 @@ pub async fn run(
                             &digest(serde_json::to_vec(arguments)?),
                         )?;
                         observer(Progress::Tool(name.to_owned()));
-                        let output = workspace.call(name, arguments);
-                        if output.is_ok() || name != "workspace_write" {
-                            store.settle_tool(&run, call_id)?;
-                        } else {
-                            effects = EffectState::Uncertain;
-                        }
-                        if name == "workspace_write"
-                            && output.is_ok()
-                            && effects != EffectState::Uncertain
-                        {
-                            effects = EffectState::Settled;
-                        }
+                        let (output, call_effects) = workspace.call_observed(name, arguments);
+                        settle_tool_effects(&store, &run, call_id, call_effects, &mut effects)?;
                         let (text, failed) = match output {
                             Ok(output) => (serde_json::to_string(&output)?, false),
                             Err(error) => (error.to_string(), true),
@@ -979,7 +1134,7 @@ pub async fn run(
                     models,
                 } if admitted => {
                     if !text.is_empty() {
-                        final_text = text;
+                        answer.completed(text);
                     }
                     if input.config.extensions.usage {
                         store.record_velocity(
@@ -1032,10 +1187,9 @@ pub async fn run(
         execution,
     )
     .await;
-    let joined = process.join().await;
-    if let Some(bridge) = bridge {
-        let _ = bridge.close().await;
-    }
+    let process_joined = process.join().await;
+    let bridge_joined = close_bridge(bridge).await;
+    let joined = process_joined && bridge_joined;
     let (terminal, models, failure) = match result {
         Ok(Ok((terminal, models))) => (
             terminal,
@@ -1055,6 +1209,7 @@ pub async fn run(
             (Terminal::Failed, vec![], Some(Failure::Transport))
         }
     };
+    let final_text = answer.into_text();
     let mut facts = TurnFacts {
         terminal,
         joined,
@@ -1126,6 +1281,7 @@ pub async fn run(
         }
         if effects != EffectState::Uncertain {
             store.settle(&run, state, now_ms())?;
+            launch.artifacts.release_after_join(joined, effects);
         }
     }
     Ok(Outcome {
@@ -1145,6 +1301,201 @@ mod tests {
         let mut created = std::fs::File::create(path).unwrap();
         created.write_all(b"artifact").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unstarted_process_releases_only_after_complete_bridge_stop() {
+        for interfere_with_socket in [false, true] {
+            // Keep Unix socket paths below the platform's small length bound.
+            let root = tempfile::tempdir_in("/tmp").unwrap();
+            let base = root.path().canonicalize().unwrap();
+            let store = Store::open(&base.join("state")).unwrap();
+            let account = store
+                .add_account(Provider::Claude, "Test", "Test", 1)
+                .unwrap();
+            let run = store.prepare_probe(&account.id, None, 2).unwrap();
+            let mut artifacts = LaunchArtifacts::create(&base).unwrap();
+            let directory = artifacts.directory.clone();
+            let socket = directory.join("egress.sock");
+            artifacts.retain_before_launch();
+            let bridge =
+                egress::EgressBridge::start(egress::EgressBridgeOptions::new(socket.clone()))
+                    .await
+                    .unwrap();
+            if interfere_with_socket {
+                std::fs::remove_file(&socket).unwrap();
+                std::fs::create_dir(&socket).unwrap();
+            }
+            let result = spawn_process(
+                &store,
+                Some(&run),
+                Command::new(base.join("missing-executable")),
+                &mut artifacts,
+                Some(bridge),
+            )
+            .await;
+            assert!(matches!(result, Err(Error::LaunchNotStarted(_))));
+            drop(artifacts);
+            assert_eq!(directory.exists(), interfere_with_socket);
+            assert_eq!(
+                store.prepare_probe(&account.id, None, 3).is_err(),
+                interfere_with_socket
+            );
+            assert_eq!(
+                store.run(&run.id).unwrap().unwrap().phase == "settled",
+                !interfere_with_socket
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_launch_closes_its_bridge_before_removing_artifacts() {
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let mut artifacts = LaunchArtifacts::create(&base).unwrap();
+        let directory = artifacts.directory.clone();
+        artifacts.retain_before_launch();
+        let bridge = egress::EgressBridge::start(egress::EgressBridgeOptions::new(
+            directory.join("egress.sock"),
+        ))
+        .await
+        .unwrap();
+        let mut launch = Launch {
+            command: Command::new(base.join("unused")),
+            cwd: base,
+            bridge: Some(bridge),
+            artifacts,
+        };
+        launch.discard_unstarted().await;
+        drop(launch);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn launch_artifacts_require_join_and_settled_effects_after_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        for (spawned, joined, effects, retained) in [
+            (false, false, EffectState::None, false),
+            (true, false, EffectState::None, true),
+            (true, true, EffectState::Uncertain, true),
+            (true, true, EffectState::Settled, false),
+            (true, true, EffectState::None, false),
+        ] {
+            let mut artifacts = LaunchArtifacts::create(&base).unwrap();
+            let path = artifacts.directory.clone();
+            file(&path.join("provider"), 0o500);
+            if spawned {
+                artifacts.retain_before_launch();
+                artifacts.release_after_join(joined, effects);
+            }
+            drop(artifacts);
+            assert_eq!(path.exists(), retained);
+        }
+    }
+
+    #[test]
+    fn artifact_cleanup_preserves_a_replaced_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let artifacts = LaunchArtifacts::create(&base).unwrap();
+        let path = artifacts.directory.clone();
+        std::fs::rename(&path, base.join("original")).unwrap();
+        private::directory(&path).unwrap();
+        file(&path.join("other-run"), 0o600);
+        drop(artifacts);
+        assert!(path.join("other-run").exists());
+    }
+
+    #[test]
+    fn interrupted_answers_preserve_streamed_text_without_duplicates() {
+        let mut answer = Answer::default();
+        answer.delta("first ").unwrap();
+        answer.delta("part").unwrap();
+        assert_eq!(answer.into_text(), "first part");
+
+        let mut answer = Answer::default();
+        answer.delta("draft").unwrap();
+        answer.completed("authoritative result".into());
+        assert_eq!(answer.into_text(), "authoritative result");
+
+        let mut answer = Answer::default();
+        answer.completed("prior tool explanation".into());
+        answer.delta("new partial answer").unwrap();
+        assert_eq!(answer.into_text(), "new partial answer");
+    }
+
+    #[test]
+    fn interrupted_answers_keep_the_last_bounded_prefix() {
+        let mut answer = Answer::default();
+        answer.delta(&"x".repeat(MAX_TEXT_BYTES)).unwrap();
+        assert!(answer.delta("overflow").is_err());
+        assert_eq!(answer.into_text().len(), MAX_TEXT_BYTES);
+    }
+
+    #[test]
+    fn rejected_workspace_write_settles_receipt_and_releases_account() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let workspace_root = base.join("work");
+        std::fs::create_dir(&workspace_root).unwrap();
+        std::fs::write(workspace_root.join("file"), "current").unwrap();
+        let workspace =
+            Workspace::open_with_coordination(&workspace_root, &base.join("coordination")).unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Test", "Test", 1)
+            .unwrap();
+        let run = store.prepare_probe(&account.id, None, 2).unwrap();
+        let arguments = json!({"path":"file","text":"clobber","expectedRevision":digest("stale")});
+        store
+            .begin_tool(
+                &run,
+                "rejected-write",
+                "workspace_write",
+                &digest(arguments.to_string()),
+            )
+            .unwrap();
+        let (result, call_effects) = workspace.call_observed("workspace_write", &arguments);
+        assert!(result.is_err());
+        let mut effects = EffectState::None;
+        settle_tool_effects(&store, &run, "rejected-write", call_effects, &mut effects).unwrap();
+        assert_eq!(effects, EffectState::None);
+        store.settle(&run, State::Idle, 3).unwrap();
+        assert!(store.prepare_probe(&account.id, None, 4).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(workspace_root.join("file")).unwrap(),
+            "current"
+        );
+    }
+
+    #[test]
+    fn a_missing_tool_receipt_and_prior_uncertainty_never_release_effect_custody() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let store = Store::open(&base.join("state")).unwrap();
+        let account = store
+            .add_account(Provider::Claude, "Test", "Test", 1)
+            .unwrap();
+        let run = store.prepare_probe(&account.id, None, 2).unwrap();
+        let mut effects = EffectState::None;
+        assert!(
+            settle_tool_effects(
+                &store,
+                &run,
+                "missing-receipt",
+                EffectState::Settled,
+                &mut effects
+            )
+            .is_err()
+        );
+        assert_eq!(effects, EffectState::Uncertain);
+        store
+            .begin_tool(&run, "later-read", "workspace_read", &digest("{}"))
+            .unwrap();
+        settle_tool_effects(&store, &run, "later-read", EffectState::None, &mut effects).unwrap();
+        assert_eq!(effects, EffectState::Uncertain);
+        assert!(store.prepare_probe(&account.id, None, 3).is_err());
     }
 
     /// Regression test for the Linux launch-plan seam: `prepare` builds its

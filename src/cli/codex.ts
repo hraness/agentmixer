@@ -21,6 +21,22 @@ export const CLI_CODEX_SCHEMA_BYTES = 4_137_012;
 export const CLI_CODEX_BUN_DARWIN_ARM64_SHA256 = "e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233";
 export const CLI_CODEX_RUNTIME_VERSION = `codex-app-server:${CODEX_NATIVE_VERSION}:managed-task:v2`;
 
+/** The managed Codex boundary is qualified against this exact parent runtime. */
+export function cliCodexHostDiagnostic(): string | null {
+  if (typeof Bun === "undefined" || Bun.version !== "1.3.14") {
+    return "Codex managed mode requires Bun 1.3.14. Launch xcb with Bun 1.3.14, then run `xcb doctor`; Node cannot run this qualified route.";
+  }
+  if (process.platform !== "darwin" || process.arch !== "arm64") {
+    return "Codex managed mode requires macOS arm64; this host has no qualified Codex sandbox.";
+  }
+  return null;
+}
+
+function assertCliCodexHost(): void {
+  if (typeof Bun === "undefined" || Bun.version !== "1.3.14") throw new Error(`CLI_CODEX_BUN_REQUIRED: ${cliCodexHostDiagnostic()}`);
+  if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error(`CLI_CODEX_HOST_UNSUPPORTED: ${cliCodexHostDiagnostic()}`);
+}
+
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
 export type CliCodexRuntimeIdentity = Readonly<{
@@ -92,7 +108,7 @@ async function schemaBundleDigest(root: string): Promise<{ sha256: string; files
 export async function qualifyCliCodexRuntime(input: Readonly<{
   stateRoot: string; inspection: CliBinaryInspection; now?: () => number;
 }>): Promise<CliCodexAdmissionEvidence> {
-  if (process.platform !== "darwin" || process.arch !== "arm64" || Bun.version !== "1.3.14") throw new Error("CLI_CODEX_HOST_UNSUPPORTED");
+  assertCliCodexHost();
   if (input.inspection.provider !== "codex" || input.inspection.version !== CODEX_NATIVE_VERSION
     || input.inspection.sha256 !== CODEX_NATIVE_SHA256 || !input.inspection.versionMatches || !input.inspection.digestMatches) {
     throw new Error("CLI_CODEX_RUNTIME_UNADMITTED");
@@ -155,6 +171,7 @@ function currentCodexIdentity(): CliCodexRuntimeIdentity {
 }
 
 async function admittedCodex(stateRoot: string, inspection: CliBinaryInspection): Promise<CliCodexRuntimeIdentity> {
+  assertCliCodexHost();
   if (process.platform !== "darwin" || process.arch !== "arm64" || inspection.provider !== "codex"
     || inspection.version !== CODEX_NATIVE_VERSION || inspection.sha256 !== CODEX_NATIVE_SHA256
     || !inspection.versionMatches || !inspection.digestMatches) throw new Error("CLI_CODEX_RUNTIME_UNADMITTED");
@@ -165,6 +182,7 @@ async function admittedCodex(stateRoot: string, inspection: CliBinaryInspection)
 }
 
 export function createCliCodexManagedLauncher(stateRoot: string, inspection: CliBinaryInspection, runtime = currentCodexIdentity()) {
+  assertCliCodexHost();
   return createCodexManagedProcessLauncher({ stateRoot,
     runtime: { executablePath: inspection.executablePath, version: CODEX_NATIVE_VERSION, sha256: CODEX_NATIVE_SHA256,
       schemaSha256: CLI_CODEX_SCHEMA_SHA256, parentRuntime: { expectedSha256: CLI_CODEX_BUN_DARWIN_ARM64_SHA256 } },

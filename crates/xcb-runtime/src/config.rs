@@ -123,7 +123,11 @@ impl Config {
         let path = root.join("config.json");
         match private::read(&path, 64 * 1024) {
             Ok(bytes) => {
-                let config: Self = serde_json::from_slice(&bytes)?;
+                let config: Self = serde_json::from_slice(&bytes).map_err(|_| {
+                    Error::Unavailable(
+                        "config.json is incompatible with this xcb build; update xcb or check the configuration file",
+                    )
+                })?;
                 config.validate()?;
                 Ok((config, Some(digest(bytes))))
             }

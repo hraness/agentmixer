@@ -847,6 +847,7 @@ pub async fn serve(
     let outbox = Arc::new(Mutex::new(Outbox::default()));
     let (completed, mut completions) = mpsc::channel::<(Id, Result<Outcome>)>(16);
     let mut ticker = tokio::time::interval(Duration::from_millis(20));
+    let mut activity_published = tokio::time::Instant::now();
     let mut pending_pane: Option<(Id, String)> = None;
     let mut quit = false;
     publish(&store, current.as_ref(), &config, &active, &outbox)?;
@@ -945,6 +946,14 @@ pub async fn serve(
                     })();
                     if let Err(error) = handled { queue(&outbox, Update::Notice(error.to_string())); }
                     publish(&store, current.as_ref(), &config, &active, &outbox)?;
+                    activity_published = tokio::time::Instant::now();
+                }
+                // Streaming activity and usage change without user intents.
+                // Refresh at the meter's 250ms cadence, not on every 20ms
+                // input tick or text delta.
+                if !active.is_empty() && activity_published.elapsed() >= Duration::from_millis(250) {
+                    publish(&store, current.as_ref(), &config, &active, &outbox)?;
+                    activity_published = tokio::time::Instant::now();
                 }
             }
         }

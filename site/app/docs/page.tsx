@@ -32,7 +32,7 @@ export default function Docs() {
           <a href="https://github.com/hraness/xcb">Source on GitHub</a>
           <a href="https://github.com/hraness/xcb/releases">Releases</a>
         </nav>
-        {publishedRelease === null && <p>Release preview: the installation examples below target the forthcoming xcb release. <a href="https://github.com/hraness/xcb/releases">Check published releases before installing</a>.</p>}
+        {publishedRelease === null && <p>Source preview: the installation steps below build native xcb from source. No xcb package or native release is published. <a href="https://github.com/hraness/xcb/releases">Check published releases before installing</a>.</p>}
         <article dangerouslySetInnerHTML={{ __html: readmeHtml }} />
       </main>
       <AskAiAboutThis className="ask-ai" url="https://xcb.dev/docs" />

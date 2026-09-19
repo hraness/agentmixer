@@ -1,14 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync, mkdirSync, copyFileSync, chmodSync, constants } from "node:fs";
+import { writeFileSync, mkdirSync, openSync, closeSync, readSync, writeSync, fstatSync, lstatSync, realpathSync, rmSync, constants } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { planSeatbeltPolicy, planBwrapPolicy, createSandboxedProviderProcessFactory, verifyOsSandboxExecutable, type OsSandboxPlan } from "../os-sandbox.ts";
 import { createEgressBridge, egressBridgeDialer, type EgressBridgeReceipt } from "../egress-bridge.ts";
-import type { BoundedProviderProcessFactory } from "../provider-process.ts";
-import { canonicalizePrivatePath } from "../private-file.ts";
+import { finished } from "node:stream/promises";
+import { identifier } from "../validation.ts";
+import type { BoundedProviderProcess, BoundedProviderProcessFactory } from "../provider-process.ts";
+import { canonicalizePrivatePath, assertPrivateStat } from "../private-file.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
 function path(value: unknown): string {
@@ -247,52 +249,127 @@ export async function prepareDevinCliLinuxSandbox(input: Readonly<{
   });
 }
 
-/** Devin's factory mirrors the Claude contract with two differences: the
- * adapter hands over the *host* executable, so the per-run snapshot copy
- * happens here — `devin-run-<runId>/provider` keeps the run-id marker in
- * argv for lease-recovery stop evidence and freezes the admitted bytes for
- * the run's lifetime. The workspace root arrives read-only; every write the
- * agent performs still flows through the relay's revision-checked
- * `workspace.write`. */
+type DevinDirectoryIdentity = Readonly<{ dev: bigint; ino: bigint }>;
+function devinPrivateDirectoryIdentity(directory: string): DevinDirectoryIdentity {
+  const stat = lstatSync(directory, { bigint: true });
+  assertPrivateStat(stat, { kind: "directory", noSymlink: true, owner: "self", mode: [{ mask: 0o077, equals: 0 }] }, "CLI_DEVIN_DIRECTORY_INVALID");
+  if (realpathSync(directory) !== directory) fail("CLI_DEVIN_DIRECTORY_INVALID");
+  return Object.freeze({ dev: stat.dev, ino: stat.ino });
+}
+
+function removeDevinSnapshot(runRoot: string, runIdentity: DevinDirectoryIdentity, stateIdentity: DevinDirectoryIdentity): void {
+  // Revalidate physical paths and inode custody immediately before removal.
+  // If another actor replaced either directory, retain it untouched.
+  const state = devinPrivateDirectoryIdentity(dirname(runRoot)), run = devinPrivateDirectoryIdentity(runRoot);
+  if (state.dev !== stateIdentity.dev || state.ino !== stateIdentity.ino
+    || run.dev !== runIdentity.dev || run.ino !== runIdentity.ino) fail("CLI_DEVIN_DIRECTORY_CHANGED");
+  rmSync(runRoot, { recursive: true, force: true });
+}
+
+/** Delete a run snapshot only after both process custody and stdio join are
+ * proven. An uncertain join keeps its executable and policy for recovery. */
+function withDevinSnapshotCleanup(handle: BoundedProviderProcess, runRoot: string, runIdentity: DevinDirectoryIdentity, stateIdentity: DevinDirectoryIdentity): BoundedProviderProcess {
+  let stopped = false, stopping: Promise<void> | undefined;
+  return Object.freeze({ process: handle.process, isStopped: () => stopped,
+    stopAndJoin() {
+      return stopping ??= (async () => {
+        try { handle.process.stdin.end(); } catch { /* join is authoritative */ }
+        await handle.stopAndJoin();
+        if (!handle.isStopped()) throw new Error("DEVIN_PROCESS_JOIN_UNPROVEN");
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 1_000);
+        try {
+          await Promise.all([handle.process.stdin, handle.process.stdout].map(stream =>
+            finished(stream, { signal: controller.signal, cleanup: true }).catch(() => undefined)));
+          if (!(handle.process.stdin.closed || handle.process.stdin.writableFinished)
+            || !(handle.process.stdout.closed || handle.process.stdout.readableEnded)) {
+            throw new Error("DEVIN_PROCESS_STDIO_JOIN_UNPROVEN");
+          }
+        } finally { clearTimeout(timer); }
+        stopped = true;
+        // Cleanup failure does not invalidate the independent stop proof.
+        try { removeDevinSnapshot(runRoot, runIdentity, stateIdentity); } catch { /* retain uncertain artifacts */ }
+      })();
+    },
+  });
+}
+
+/** Snapshot the exact admitted executable before launch. A fresh private run
+ * directory prevents overwriting an earlier run's retained recovery evidence. */
+function snapshotDevinExecutable(source: string, executable: string, expectedSha256: string): void {
+  const sourceFd = openSync(path(source), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const sourceStat = fstatSync(sourceFd);
+    assertPrivateStat(sourceStat, { kind: "file", links: "single", owner: "selfOrRoot",
+      mode: [{ mask: 0o022, equals: 0 }, { mask: 0o111, notEquals: 0 }],
+      size: { min: 1, max: 256 * 1024 * 1024 } }, "CLI_DEVIN_EXECUTABLE_INVALID");
+    const destination = openSync(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o500);
+    try {
+      const buffer = Buffer.alloc(64 * 1024);
+      let bytes = 0, count: number;
+      while ((count = readSync(sourceFd, buffer, 0, buffer.length, null)) > 0) {
+        bytes += count;
+        if (bytes > sourceStat.size || bytes > 256 * 1024 * 1024) fail("CLI_DEVIN_EXECUTABLE_CHANGED");
+        let written = 0;
+        while (written < count) {
+          const progress = writeSync(destination, buffer, written, count - written);
+          if (progress === 0) fail("CLI_DEVIN_EXECUTABLE_COPY_FAILED");
+          written += progress;
+        }
+      }
+      if (bytes !== sourceStat.size) fail("CLI_DEVIN_EXECUTABLE_CHANGED");
+    } finally { closeSync(destination); }
+  } finally { closeSync(sourceFd); }
+  const fd = openSync(executable, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size < 1 || stat.size > 256 * 1024 * 1024) fail("CLI_DEVIN_EXECUTABLE_INVALID");
+    const hash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024);
+    let bytes = 0, count: number;
+    while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      bytes += count;
+      if (bytes > 256 * 1024 * 1024) fail("CLI_DEVIN_EXECUTABLE_INVALID");
+      hash.update(buffer.subarray(0, count));
+    }
+    if (bytes !== stat.size || hash.digest("hex") !== expectedSha256) fail("CLI_DEVIN_EXECUTABLE_CHANGED");
+  } finally { closeSync(fd); }
+}
+
 export function devinCliProcessFactory(input: Readonly<{
-  stateRoot: string; accountHome: string; workspace: string; bridgeExecutable: string; linux?: DevinCliLinuxSandbox;
+  stateRoot: string; accountHome: string; workspace: string; bridgeExecutable: string;
+  executableSha256: string; linux?: DevinCliLinuxSandbox;
 }>, platform: string = process.platform): BoundedProviderProcessFactory | undefined {
   const stateRoot = path(input.stateRoot), accountHome = path(input.accountHome),
     workspace = path(input.workspace), bridge = path(input.bridgeExecutable);
-  if (platform === "darwin") {
-    return (request) => {
-      const runRoot = join(stateRoot, `devin-run-${request.binding.runId}`);
-      mkdirSync(join(runRoot, "scratch"), { mode: 0o700, recursive: true });
-      const executable = join(runRoot, "provider");
-      copyFileSync(path(request.executable), executable);
-      chmodSync(executable, 0o500);
-      const policyPath = join(runRoot, "sandbox.sb");
-      const plan: OsSandboxPlan = planSeatbeltPolicy(
-        { platform: "darwin", executable, scratch: join(runRoot, "scratch"), accountHome,
-          readOnlyPaths: [workspace], network: "provider-tcp443-dns", policyPath },
-        devinCliSandboxPolicy({ executable, bridgeExecutable: bridge, scratch: join(runRoot, "scratch"), accountHome, workspace }),
-      );
-      writeFileSync(policyPath, plan.policy, { mode: 0o400, flag: "w" });
-      return createSandboxedProviderProcessFactory(plan)({ ...request, executable });
-    };
-  }
-  if (platform === "linux" && input.linux !== undefined) {
-    const linux = input.linux;
-    return (request) => {
-      const runRoot = join(stateRoot, `devin-run-${request.binding.runId}`);
-      const scratch = join(runRoot, "scratch");
-      mkdirSync(scratch, { mode: 0o700, recursive: true });
-      const executable = join(runRoot, "provider");
-      copyFileSync(path(request.executable), executable);
-      chmodSync(executable, 0o500);
-      const policyPath = join(runRoot, "sandbox.json");
-      const plan = linux.plan({ executable, bridgeExecutable: bridge, scratch, accountHome, workspace, policyPath });
-      writeFileSync(policyPath, plan.policy, { mode: 0o400, flag: "w" });
-      const env = Object.freeze({ PATH: "/usr/bin:/bin", HOME: scratch, TMPDIR: scratch, ...request.env });
-      return createSandboxedProviderProcessFactory(plan)({ ...request, executable, env });
-    };
-  }
-  return undefined;
+  if (!/^[a-f0-9]{64}$/u.test(input.executableSha256)) fail("CLI_DEVIN_EXECUTABLE_DIGEST_INVALID");
+  if (platform !== "darwin" && (platform !== "linux" || input.linux === undefined)) return undefined;
+  return request => {
+    const runRoot = join(stateRoot, `devin-run-${identifier(request.binding.runId)}`);
+    const stateIdentity = devinPrivateDirectoryIdentity(stateRoot);
+    mkdirSync(runRoot, { mode: 0o700 });
+    const runIdentity = devinPrivateDirectoryIdentity(runRoot);
+    let launchStarted = false;
+    try {
+      const scratch = join(runRoot, "scratch"), executable = join(runRoot, "provider");
+      mkdirSync(scratch, { mode: 0o700 });
+      snapshotDevinExecutable(request.executable, executable, input.executableSha256);
+      const policyPath = join(runRoot, platform === "darwin" ? "sandbox.sb" : "sandbox.json");
+      const plan = platform === "darwin"
+        ? planSeatbeltPolicy(
+          { platform: "darwin", executable, scratch, accountHome, readOnlyPaths: [workspace], network: "provider-tcp443-dns", policyPath },
+          devinCliSandboxPolicy({ executable, bridgeExecutable: bridge, scratch, accountHome, workspace }))
+        : input.linux!.plan({ executable, bridgeExecutable: bridge, scratch, accountHome, workspace, policyPath });
+      writeFileSync(policyPath, plan.policy, { mode: 0o400, flag: "wx" });
+      const env = platform === "linux"
+        ? Object.freeze({ PATH: "/usr/bin:/bin", HOME: scratch, TMPDIR: scratch, ...request.env }) : request.env;
+      launchStarted = true;
+      return withDevinSnapshotCleanup(createSandboxedProviderProcessFactory(plan)({ ...request, executable, env }), runRoot, runIdentity, stateIdentity);
+    } catch (error) {
+      if (!launchStarted) {
+        try { removeDevinSnapshot(runRoot, runIdentity, stateIdentity); } catch { /* retain uncertain artifacts */ }
+      }
+      throw error;
+    }
+  };
 }
 
 /** Seatbelt is darwin-only; on Linux an admitted bwrap plan plus the

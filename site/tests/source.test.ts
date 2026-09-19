@@ -36,7 +36,7 @@ describe("xcb site source contract", () => {
     ]);
     const publishedRelease = record(JSON.parse(publication) as unknown, "published release");
     const packageJson = record(JSON.parse(packageSource) as unknown, "source package");
-    expect(Object.keys(publishedRelease).sort()).toEqual(["verificationRun", "version"]);
+    expect(Object.keys(publishedRelease).sort()).toEqual(["archiveUrl", "verificationRun", "version"]);
     const admitted = parsePublishedRelease(publishedRelease);
     if (admitted === null) {
       expect(home).toContain("First xcb package release in preparation");
@@ -94,11 +94,20 @@ describe("xcb site source contract", () => {
 });
 
 
-test("publication metadata fails closed on malformed or partially verified releases", () => {
-  expect(parsePublishedRelease({ version: null, verificationRun: null })).toBeNull();
+test("publication metadata fails closed without an exact xcb artifact and verification", () => {
+  expect(parsePublishedRelease({ version: null, archiveUrl: null, verificationRun: null })).toBeNull();
   const verificationRun = "https://github.com/hraness/xcb/actions/runs/123";
-  expect(parsePublishedRelease({ version: "0.20.0", verificationRun })).toEqual({ version: "0.20.0", verificationRun });
-  for (const value of [null, {}, { version: "0.20.0", verificationRun: null }, { version: "0.20.0", verificationRun: "https://example.com" }, { version: "9007199254740992.0.0", verificationRun }, { version: "0.20.0", verificationRun, extra: true }]) {
+  const archiveUrl = "https://github.com/hraness/xcb/releases/download/v0.20.0/hraness-xcb-0.20.0.tgz";
+  const valid = { version: "0.20.0", archiveUrl, verificationRun };
+  expect(parsePublishedRelease(valid)).toEqual(valid);
+  for (const value of [
+    null, {}, { ...valid, archiveUrl: null }, { ...valid, verificationRun: null },
+    { ...valid, verificationRun: "https://example.com" },
+    { ...valid, version: "9007199254740992.0.0" }, { ...valid, extra: true },
+    { ...valid, archiveUrl: "https://github.com/hraness/xcb/releases/download/v0.3.0/hraness-agentmixer-0.3.0.tgz" },
+    { ...valid, archiveUrl: archiveUrl.replace("0.20.0.tgz", "0.19.0.tgz") },
+    { version: "0.3.0", verificationRun },
+  ]) {
     expect(() => parsePublishedRelease(value)).toThrow();
   }
 });

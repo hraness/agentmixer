@@ -30,5 +30,5 @@ tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "process
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 uuid = { version = "=1.18.1", features = ["v4", "serde"] }
 webpki-roots = "=1.0.8"
-xcb-core = { version = "0.1.0", path = "../xcb-core" }
+xcb-core = { version = "0.4.0", path = "../xcb-core" }
 zeroize = "=1.8.2"

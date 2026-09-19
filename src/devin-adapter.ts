@@ -104,6 +104,7 @@ export function createDevinAcpAdapter(options: DevinAcpAdapterOptions): AgentTas
         const bytes = encoder.encode(text);
         if (outputBytes + bytes.byteLength <= outputLimit) { outputText += text; outputBytes += bytes.byteLength; return; }
         outputTruncated = true;
+        controller.abort(new Error("DEVIN_OUTPUT_LIMIT_EXCEEDED"));
       }
       async function execute(): Promise<AgentTaskCompletion> {
         let usage = failedUsage;
@@ -154,6 +155,7 @@ export function createDevinAcpAdapter(options: DevinAcpAdapterOptions): AgentTas
               await client.close();
               slot.processStopped = true;
             }
+            if (outputTruncated) throw new Error("DEVIN_OUTPUT_LIMIT_EXCEEDED");
             signal.throwIfAborted();
             return Object.freeze({ ...slot.binding, output: outputText.length === 0 ? null : outputText,
               usage, outcome: Object.freeze({ status: "completed" as const, code: null }) });
@@ -161,7 +163,8 @@ export function createDevinAcpAdapter(options: DevinAcpAdapterOptions): AgentTas
         } catch (error) {
           return Object.freeze({ ...slot.binding, output: null, usage,
             outcome: Object.freeze({ status: "failed" as const,
-              code: busy ? "DEVIN_TASK_ALREADY_RUNNING"
+              code: outputTruncated ? "DEVIN_OUTPUT_LIMIT_EXCEEDED"
+                : busy ? "DEVIN_TASK_ALREADY_RUNNING"
                 : error instanceof Error && /^DEVIN_[A-Z_]+$/u.test(error.message) ? error.message : "DEVIN_ADAPTER_FAILED" }) });
         }
       }

@@ -54,6 +54,14 @@ describe("cli qualification records", () => {
     expect(drifted.status).toBe("unqualified");
   });
 
+  test("legacy Devin records cannot synthesize effective tool-inventory evidence", async () => {
+    const { profile, identity } = await fixture();
+    const route = { id: "devin-subscription", provider: "devin" as const, authentication: "subscription" as const };
+    const record = buildQualificationRecord({ provider: "devin", route, executablePath: "/x/devin", executableSha256: sha("a"),
+      runtimeVersion: identity.version, runtimeDigest: identity.digest, profileDigest: profile.digest, now: Date.now() });
+    expect(toTaskQualification(record, { route, profile, runtimeVersion: identity.version, runtimeDigest: identity.digest }).status).toBe("unqualified");
+  });
+
   test("expired records read as absent", async () => {
     const { root, profile, route, identity } = await fixture();
     const record = buildQualificationRecord({

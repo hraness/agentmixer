@@ -1,18 +1,22 @@
 # Security
 
-xcb's boundary is the execution seam: model-facing tool inputs stay
-closed and bounded, provider accounts stay under exclusive host custody, and
-adapters run only after the host proves the exact runtime and confinement it
-claims. If you find a way for model output, a lease, a workspace, or a
-credential to cross a boundary it should not — custody takeover, unbounded
-input, ambient network or credential access, or process-ownership confusion —
-please report it.
+xcb is in development. Native Claude execution remains subject to exact-binary
+admission and per-run boundary verification. Native Codex and Devin execution
+are unavailable; compatibility Devin remains disabled pending qualification.
+A model catalog, successful metadata probe, or synthetic fixture is not a
+production security attestation.
+
+The execution boundary keeps model-facing tools closed and bounded, credentials
+outside workspaces, and provider accounts under exclusive host custody. Report
+custody takeover, unbounded input, ambient network or credential access,
+confinement escapes, unsafe replay, and process-ownership confusion.
 
 ## Reporting
 
-Open a private security advisory on the GitHub repository
-(`hraness/xcb`, Security → Advisories) or email the maintainers through
-the contact listed on the organization profile. Please include a minimal
-reproduction or test that demonstrates the issue where possible.
+Open a private security advisory on
+[hraness/xcb](https://github.com/hraness/xcb/security/advisories/new), or use the
+maintainer contact listed on the organization profile. Include a minimal
+reproduction when possible. Remove account keys, private paths, provider state,
+and transcript contents from diagnostic attachments.
 
 Do not open a public issue for an unpatched vulnerability.

@@ -118,7 +118,7 @@ describe("startDevinToolRelay", () => {
 });
 
 /** A scripted ACP peer that auto-answers the adapter's request sequence. */
-function acpPeer() {
+function acpPeer(output = "answer body", joinFailure = false) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const events = new EventEmitter();
@@ -142,7 +142,7 @@ function acpPeer() {
         send({ jsonrpc: "2.0", id: message.id, result: {} });
       else if (message.method === "session/prompt") {
         send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: message.params.sessionId,
-          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer body" } } } });
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } } } });
         send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn", usage: { totalTokens: 42, inputTokens: 30, outputTokens: 12 } } });
       }
     }
@@ -157,15 +157,15 @@ function acpPeer() {
   } as unknown as SpawnedProcess;
   const handle: BoundedProviderProcess = {
     process: process_, isStopped: () => stopped,
-    stopAndJoin: async () => { stopped = true; stdout.destroy(); },
+    stopAndJoin: async () => { if (joinFailure) throw new Error("DEVIN_PROCESS_JOIN_UNPROVEN"); stopped = true; stdout.destroy(); },
   };
   return { handle, written };
 }
 
 /** Synthetic-qualified adapter behind the real task runtime; the scripted peer
  * stands in for the provider process — no devin binary is launched. */
-function adapterFixture(tools: CapabilityTool[] = []) {
-  const peer = acpPeer();
+function adapterFixture(tools: CapabilityTool[] = [], output?: string, joinFailure = false) {
+  const peer = acpPeer(output, joinFailure);
   const profile = createCapabilityProfile({ id: "devin.adapter.fixture", version: 1, tools });
   const broker = createCapabilityBroker({ profile, workspaceId: "workspace-one", runId: "run-one", isActive: () => true });
   const db = new Database(":memory:");
@@ -216,6 +216,27 @@ describe("createDevinAcpAdapter", () => {
       expect(configCall!.params).toMatchObject({ configId: "model", value: "swe-2-max" });
       const newSession = f.peer.written.find(message => message.method === "session/new");
       expect(newSession!.params.mcpServers).toEqual([]);
+    } finally { f.db.close(); }
+  });
+
+  test("uncertain process join keeps account custody held", async () => {
+    const f = adapterFixture([], "answer body", true);
+    try {
+      await expect(f.run()).rejects.toThrow("TASK_CUSTODY_UNPROVEN");
+      expect(f.leases.inspect("devin", "account-one")?.owner).toBe("run-one");
+      expect(() => f.leases.acquire({ provider: "devin", accountId: "account-one", owner: "next-run",
+        now: 9_000_000, ttlMs: 1_000 })).toThrow("ACCOUNT_BUSY_OR_RECOVERY_REQUIRED");
+    } finally { f.db.close(); }
+  });
+
+  test("oversized UTF-8 output fails explicitly and releases custody only after joining", async () => {
+    const f = adapterFixture([], "éééééé");
+    try {
+      const result = await f.run({ limits: { ...f.request.limits, maxOutputBytes: 10 } });
+      expect(result.outcome).toEqual({ status: "failed", code: "DEVIN_OUTPUT_LIMIT_EXCEEDED" });
+      expect(result.output).toBeNull();
+      expect(result.custody).toBe("released");
+      expect(result.stop.joined).toBe(true);
     } finally { f.db.close(); }
   });
 

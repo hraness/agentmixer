@@ -3,34 +3,15 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { LANDING_END, LANDING_START, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
-import { publishedReadme } from "./published-readme.ts";
 
 const repository = join(import.meta.dir, "..", "..");
-
-test("site installation coordinates stay on the admitted release while new source is prepared", () => {
-  const source = [
-    "bun add https://github.com/hraness/xcb/releases/download/v0.1.2/hraness-xcb-0.1.2.tgz",
-    "npm install @hraness/xcb@0.1.2",
-    "bun add github:hraness/xcb#v0.1.2",
-    "Version 0.1.2 and historical @hraness/xcb@0.1.0 remain prose.",
-    "Unrelated @hraness/xcb@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.",
-  ].join("\n");
-  const projected = publishedReadme(source, "0.1.2", "0.1.1");
-  expect(projected).toContain("/v0.1.1/hraness-xcb-0.1.1.tgz");
-  expect(projected).toContain("npm install @hraness/xcb@0.1.1");
-  expect(projected).toContain("hraness/xcb#v0.1.1");
-  expect(projected).toContain("Version 0.1.2 and historical @hraness/xcb@0.1.0 remain prose.");
-  expect(projected).toContain("Unrelated @hraness/xcb@0.1.20 and hraness/xcb#v0.1.2-beta.1 stay literal.");
-  expect(publishedReadme(source, "0.1.2", "0.1.2")).toBe(source);
-  expect(publishedReadme(source, "0.1.2", null)).toBe(source);
-  expect(() => publishedReadme(source, "0.1.2", "latest")).toThrow();
-});
 
 test("renders the repository README with stable heading fragments and repository-rooted relative links", async () => {
   const source = await readFile(join(repository, "README.md"), "utf8");
   const html = renderReadmeHtml(source);
   expect(html).toContain('<h2 id="standalone-package">Standalone package</h2>');
-  expect(html).toContain('<h2 id="application-owned-capability-profiles">Application-owned capability profiles</h2>');
+  expect(html).toContain('<h2 id="readiness">Readiness</h2>');
+  expect(html).toContain('href="https://github.com/hraness/xcb/blob/main/docs/compatibility.md"');
   expect(html).toContain('href="https://github.com/hraness/xcb/blob/main/MANAGED-CODEX.md"');
   expect(html).not.toContain("<script");
 });

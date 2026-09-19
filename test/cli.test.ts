@@ -1,3 +1,4 @@
+import { CliSessionStore } from "../src/cli/sessions.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -121,6 +122,20 @@ describe("xcb CLI", () => {
     const { code, stderr } = await cli(["resume", "s_nonexistent"]);
     expect(code).toBe(2);
     expect(stderr).toContain("session not found");
+  });
+
+  test("resume inherits the stored provider when --provider is omitted", async () => {
+    const root = await stateDir();
+    const sessions = await CliSessionStore.open(join(root, "sessions"));
+    const session = await sessions.create({ provider: "devin", accountId: "local", workspace: ROOT, model: "adaptive", now: Date.now() });
+    sessions.close();
+    const resumed = await cli(["resume", session.id], "", root);
+    expect(resumed.code).toBe(2);
+    expect(resumed.stderr).toContain("devin binary not found");
+    expect(resumed.stderr).not.toContain("claude binary not found");
+    const mismatched = await cli(["resume", session.id, "--provider", "claude"], "", root);
+    expect(mismatched.code).toBe(2);
+    expect(mismatched.stderr).toContain("belongs to provider devin");
   });
 
   test("resume without an id reports no sessions on a fresh state root", async () => {

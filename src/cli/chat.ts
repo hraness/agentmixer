@@ -47,6 +47,7 @@ list, read, search and write through the brokered workspace tools.`;
 
 function describe(state: Awaited<ReturnType<typeof openCliProvider>>, provider: CliProviderName): string {
   if (state.status === "ready") return "";
+  if (state.detail !== undefined) return state.detail;
   if (state.status === "binary-missing") return `${provider} binary not found — install the provider CLI and run \`xcb doctor\`.`;
   if (state.status === "version-mismatch") return `${provider} ${state.inspection?.version} found but this build requires the pinned version — run \`xcb doctor\`.`;
   if (state.status === "sandbox-unavailable") return "linux confinement unavailable — needs bubblewrap (`bwrap`) plus unprivileged user namespaces (Ubuntu 23.10+: `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`). Refusing to run unsandboxed.";
@@ -84,12 +85,17 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   }
   try { assertWorkspaceStateSeparation(workspacePath, stateRoot); }
   catch (error) { sessions.close(); throw error; }
+  const providerName: CliProviderName = options.provider ?? resumed?.provider ?? "claude";
+  if (resumed !== null && resumed.provider !== providerName) {
+    process.stderr.write(`${red("xcb:")} session ${resumed.id} belongs to provider ${resumed.provider} — resume with \`--provider ${resumed.provider}\`.\n`);
+    sessions.close();
+    return 2;
+  }
   await mkdir(join(stateRoot, "runs"), { mode: 0o700, recursive: true });
   const leases = new SqliteAccountLeases(await openAccountDatabase(join(stateRoot, "account-leases.sqlite")));
   const web = createPublicWeb();
   const workspace = createCliWorkspace(workspacePath);
   const profile = createCliWorkspaceProfile(workspace, { fetch: (url, signal) => web.fetchPublic(url, 256 * 1024, signal).then((r) => ({ text: r.text })) });
-  const providerName: CliProviderName = options.provider ?? "claude";
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, providerName, profile, events, { workspaceRoot: workspace.root });
   if (opened.status !== "ready") {
@@ -131,11 +137,6 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
     : providerName === "devin" ? CLI_DEVIN_DEFAULT_MODEL : CLI_CODEX_DEFAULT_MODEL), 160);
   let session: CliSession;
   if (resumed !== null) {
-    if (resumed.provider !== providerName) {
-      process.stderr.write(`${red("xcb:")} session ${resumed.id} belongs to provider ${resumed.provider} — resume with \`--provider ${resumed.provider}\`.\n`);
-      sessions.close();
-      return 2;
-    }
     session = resumed;
   } else {
     session = await sessions.create({ provider: providerName, accountId: ACCOUNT_ID, workspace: workspacePath, model, now: Date.now() });
@@ -143,7 +144,7 @@ export async function runCliChat(options: { workspace: string; sessionId?: strin
   const editor = new LineEditor();
   const turn = { controller: null as AbortController | null };
   editor.onInterrupt(() => turn.controller?.abort());
-  let currentModel = session.model;
+  let currentModel = options.model ?? session.model;
   process.stdout.write(`${bold("xcb")} ${dim("·")} ${cyan(providerName)} ${dim(currentModel)} ${dim("·")} ${workspacePath}\n`);
   process.stdout.write(dim(`session ${session.id} — /help for commands, Ctrl-D to exit\n\n`));
   try {

@@ -30,10 +30,17 @@ pub fn store_token(store: &Store, id: &Id, bytes: &[u8]) -> Result<()> {
     if !valid_token(token) {
         return Err(Error::Unavailable("invalid subscription token"));
     }
-    private::create(
-        &store.account_root(id)?.join("subscription-token"),
-        token.as_bytes(),
-    )
+    let path = store.account_root(id)?.join("subscription-token");
+    match private::read(&path, 2048) {
+        Ok(previous) => {
+            let previous = Zeroizing::new(previous);
+            private::replace(&path, token.as_bytes(), &crate::digest(&previous))
+        }
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            private::create(&path, token.as_bytes())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn token(store: &Store, id: &Id) -> Result<Zeroizing<String>> {

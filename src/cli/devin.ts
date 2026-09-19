@@ -10,13 +10,15 @@ import { providerAuthDirs } from "./auth.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
 
-/** Earliest Devin CLI generation this build admits: the ACP v1 handshake,
+/** Earliest Devin CLI protocol generation this build recognizes: the ACP v1 handshake,
  * session modes, `session/set_config_option` model selection and the
  * `auth status/login/logout` surface were verified against the 3000.10.x
- * line. Admission still binds the exact executable SHA-256 per version —
- * the floor only rejects generations too old to speak the protocol. */
+ * line. External host qualification must still bind the exact executable SHA-256 —
+ * the floor only rejects generations too old to speak the protocol and does not activate tasks. */
 export const CLI_DEVIN_MIN_VERSION = "3000.10.27";
 export const CLI_DEVIN_MAX_MAJOR = 3000;
+
+export const CLI_DEVIN_QUALIFICATION_REQUIRED = "Devin tasks are disabled: the exact effective tool inventory, command-tool exclusion, configuration isolation and workspace confinement have not been qualified. A matching CLI version or sign-in does not qualify this route; use Claude or an admitted Codex route until host qualification is implemented.";
 
 function versionTuple(version: string): readonly [number, number, number] | null {
   const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version.trim());
@@ -25,7 +27,7 @@ function versionTuple(version: string): readonly [number, number, number] | null
 }
 
 /** `devin --version` reports `devin 3000.10.31 (<sha>)`; inspection extracts
- * the semver. The matcher enforces the admitted generation window, never a
+ * the semver. The matcher enforces the protocol generation window, never a
  * downgrade to an unverified major line. */
 export function devinCliVersionMatches(version: string): boolean {
   const got = versionTuple(version), min = versionTuple(CLI_DEVIN_MIN_VERSION);

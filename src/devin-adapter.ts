@@ -11,6 +11,7 @@ import type {
 } from "./task-runtime.ts";
 import { assertAgentTaskAccountLease } from "./task-runtime.ts";
 import { boundedText } from "./validation.ts";
+import { canonicalJsonSha256 } from "./canonical-json.ts";
 
 /**
  * Devin task adapter over ACP v1 (`devin acp`). One bounded child per run:
@@ -58,14 +59,14 @@ type Active = {
   stopping?: Promise<AgentTaskStopEvidence>;
 };
 
-const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const proof = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const binding = (request: AgentTaskExecutionRequest): AgentTaskBinding => Object.freeze({
   route: Object.freeze({ ...request.route }), accountId: request.accountId, workspaceId: request.workspaceId,
   runId: request.runId, profile: Object.freeze({ ...request.profile }), model: Object.freeze({ ...request.model }),
   runtime: Object.freeze({ ...request.runtime }), accountLease: request.accountLease,
   ...(request.authority === undefined ? {} : { authority: Object.freeze({ ...request.authority }) }),
 });
-const requestDigest = (request: AgentTaskExecutionRequest) => digest({ ...binding(request),
+const requestDigest = (request: AgentTaskExecutionRequest) => canonicalJsonSha256({ ...binding(request),
   purpose: request.purpose, prompt: request.prompt, limits: request.limits,
   admittedAtUnixMs: request.admittedAtUnixMs, executionDeadlineUnixMs: request.executionDeadlineUnixMs });
 const failedUsage: AgentTaskUsage = Object.freeze({ inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null });
@@ -178,7 +179,7 @@ export function createDevinAcpAdapter(options: DevinAcpAdapterOptions): AgentTas
         if (slot.processLaunched && !slot.processStopped) throw Error("DEVIN_TASK_PROCESS_STOP_UNPROVEN");
         if (active === slot) active = null;
         return Object.freeze({ ...slot.binding, processStopped: true, controllersStopped: true, joined: true,
-          stoppedAtUnixMs: options.now(), proofDigest: digest({ requestDigest: slot.requestDigest,
+          stoppedAtUnixMs: options.now(), proofDigest: proof({ requestDigest: slot.requestDigest,
             processLaunched: slot.processLaunched, processStopped: slot.processStopped }) });
       });
     },

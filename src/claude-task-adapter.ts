@@ -21,6 +21,7 @@ import {
 } from "./task-runtime.ts";
 import { boundedText, identifier, safeInteger } from "./validation.ts";
 import { assertPrivateDirectory, canonicalizePrivatePath, openPrivateRead, writeFileOnce } from "./private-file.ts";
+import { canonicalJsonSha256 } from "./canonical-json.ts";
 
 const SERVER = "xcb";
 const fail = (code: string): never => { throw new Error(code); };
@@ -155,7 +156,7 @@ function freezeCopy<T>(value: T): T {
 }
 
 const proof = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const requestDigest = (request: AgentTaskExecutionRequest) => proof({
+const requestDigest = (request: AgentTaskExecutionRequest) => canonicalJsonSha256({
   route: request.route, accountId: request.accountId, workspaceId: request.workspaceId, runId: request.runId,
   profile: request.profile, model: request.model, runtime: request.runtime, purpose: request.purpose,
   prompt: request.prompt, limits: request.limits, admittedAtUnixMs: request.admittedAtUnixMs,

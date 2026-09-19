@@ -813,8 +813,8 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "local-custody"
-version = "0.5.1"
-source = "git+https://github.com/hraness/local-custody?rev=b00c710d5e8e2941786fa53035cabfd0a99fb116#b00c710d5e8e2941786fa53035cabfd0a99fb116"
+version = "0.6.0"
+source = "git+https://github.com/hraness/local-custody?rev=4fd65854da14c80f47ba45ea2ae091732c37fba9#4fd65854da14c80f47ba45ea2ae091732c37fba9"
 dependencies = [
  "libc",
  "serde",

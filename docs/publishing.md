@@ -1,6 +1,9 @@
 # Publishing
 
-xcb publishes one package, `@hraness/xcb`, from one tag channel.
+The planned xcb pipeline publishes `@hraness/xcb` and native binaries from one
+tag channel. As of September 19, 2026, xcb has no published release; existing
+v0.3.0 assets are AgentMixer. This document describes the release contract, not
+publication evidence.
 An immutable annotated `v<version>` tag at a reviewed commit in current `main`
 history is a release request. The tag version must equal `package.json`'s
 `version`; no other tag shape is admitted.
@@ -79,11 +82,19 @@ alongside the `@hraness/xcb` compatibility package.
 
 ## Site publication datum
 
-`site/published-release.json` starts with `version` and `verificationRun` both
-null. The homepage then shows the first-release preparation state and offers
-no archive download. After the canonical GitHub release has passed public
-verification, set both fields to the exact stable release version and its
-successful `https://github.com/hraness/xcb/actions/runs/<run-id>` URL.
-Keep both fields null if publication or verification is incomplete. Regenerate
-the README projection with `cd site && bun run sync:readme` and validate the
-site with `bun run check` before deploying the update.
+`site/published-release.json` keeps `version`, `archiveUrl`, and
+`verificationRun` null until a verified xcb package exists. The homepage then
+shows the source installation path and offers no archive download. After public
+release verification passes, set all three fields to the exact stable version,
+existing `hraness-xcb-<version>.tgz` asset URL, and successful
+`https://github.com/hraness/xcb/actions/runs/<run-id>` URL.
+
+Verify the actual asset and its packed manifest (`name: @hraness/xcb`, matching
+version), checksum, and provenance before changing the datum. A pre-rename
+AgentMixer release cannot satisfy this contract: do not invent an xcb asset URL
+from its version number. The site validates the explicit archive coordinate and
+never rewrites README installation commands to another release version.
+Keep all fields null if publication or verification is incomplete. Regenerate
+the README with `cd site && bun run sync:readme`, then run `bun run check` before
+deploying. Native binary availability must be verified separately; a compatibility
+archive does not prove native artifacts exist.

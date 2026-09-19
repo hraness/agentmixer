@@ -10,7 +10,7 @@ import { boundedText } from "./validation.ts";
 import { assertWorkspaceStateSeparation, ensureCliState, migrateLegacyState } from "./cli/state.ts";
 import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, CLI_DEVIN_ENV, type CliProviderName } from "./cli/binaries.ts";
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
-import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
+import { cliCodexHostDiagnostic, codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
 import { CLI_DEVIN_MIN_VERSION, devinAuthStatus, devinLogin, devinLogout } from "./cli/devin.ts";
 import { checkJudgeKeyTarget, resolveJudge, resolveJudgeKey, storeJudgeKey, removeJudgeKey, hasJudgeKey,
   JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, JUDGE_URL_ENV, type JudgeAnswers } from "./judge.ts";
@@ -49,7 +49,7 @@ Usage:
   xcb --version
 
 Options:
-  --provider <claude|codex|devin|auto>  pick the provider for run/chat/resume (default claude)
+  --provider <claude|codex|devin|auto>  pick the provider for run/chat/resume (default claude; resume uses session provider)
   --model <id>                 model for this run or session
   --cwd <path>                 workspace for run (default: current directory)
 
@@ -61,7 +61,7 @@ Environment:
   XCB_STATE     override the state root (default ~/.xcb)
 `;
 
-function parseFlags(args: readonly string[]): { provider: CliProviderName | "auto"; model: string | undefined; positional: string[]; prompt: string | undefined; cwd: string | undefined } {
+function parseFlags(args: readonly string[]): { provider: CliProviderName | "auto"; providerExplicit: boolean; model: string | undefined; positional: string[]; prompt: string | undefined; cwd: string | undefined } {
   const positional: string[] = [];
   let provider: CliProviderName | "auto" = "claude", model: string | undefined, prompt: string | undefined, cwd: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
@@ -82,7 +82,7 @@ function parseFlags(args: readonly string[]): { provider: CliProviderName | "aut
     if (arg.startsWith("--")) fail(`unknown option ${arg}`);
     positional.push(arg);
   }
-  return { provider, model, positional, prompt, cwd };
+  return { provider, providerExplicit: args.includes("--provider"), model, positional, prompt, cwd };
 }
 
 const fail = (message: string): never => {
@@ -332,13 +332,13 @@ async function commandSessions(stateRoot: string, rest: readonly string[]): Prom
  * list — `openCliProvider` re-verifies the winner before anything runs. */
 async function autoProviderCandidates(stateRoot: string): Promise<Readonly<{ provider: CliProviderName; label: string }>[]> {
   const candidates: { provider: CliProviderName; label: string }[] = [];
-  for (const provider of ["claude", "devin", "codex"] as const) {
+  for (const provider of ["claude", "codex"] as const) {
+    if (provider === "codex" && cliCodexHostDiagnostic() !== null) continue;
     const inspection = await inspectCliBinary(provider);
     if (inspection === null || !inspection.versionMatches) continue;
     const record = await readCliQualification(stateRoot, provider);
     if (record === null || record.executableSha256 !== inspection.sha256 || record.executablePath !== inspection.executablePath) continue;
     const authed = provider === "claude" ? (await claudeAuthStatus(stateRoot)).loggedIn
-      : provider === "devin" ? (await devinAuthStatus(stateRoot, inspection)).loggedIn
       : (await codexAuthStatus(stateRoot, inspection)).loggedIn;
     if (authed) candidates.push({ provider, label: `${provider} ${inspection.version}` });
   }
@@ -386,7 +386,7 @@ async function commandRun(prompt: string, workspace: string, stateRoot: string, 
   if (provider === "auto") provider = await routeAutoProvider(stateRoot, prompt);
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, provider, profile, events, { workspaceRoot: ws.root });
-  if (opened.status !== "ready") return fail(`provider not admitted — run \`xcb doctor\` and \`xcb auth ${provider}\` first.`);
+  if (opened.status !== "ready") return fail(opened.detail ?? `provider not admitted — run \`xcb doctor\` and \`xcb auth ${provider}\` first.`);
   if (provider === "claude") {
     const auth = await claudeAuthStatus(stateRoot);
     if (!auth.loggedIn) return fail("not signed in — run `xcb auth claude` first.");
@@ -496,7 +496,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (flags.positional.length > 1) return fail("usage: xcb resume [session-id]");
     const id = flags.positional[0] ?? await latestSessionId(stateRoot);
     if (id === undefined) return fail("no sessions yet — start one with `xcb`");
-    return await runCliChat({ workspace: process.cwd(), sessionId: id, provider, ...(flags.model === undefined ? {} : { model: flags.model }) });
+    return await runCliChat({ workspace: process.cwd(), sessionId: id, ...(flags.providerExplicit ? { provider } : {}), ...(flags.model === undefined ? {} : { model: flags.model }) });
   }
   // Default surface is the chat: `xcb`, `xcb chat [path]`,
   // `xcb <path>` or flags first like `xcb --provider claude`.

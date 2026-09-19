@@ -8,7 +8,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
-use xcb_core::MAX_TEXT_BYTES;
+use xcb_core::{MAX_TEXT_BYTES, policy::EffectState};
 
 #[derive(Debug, Serialize)]
 pub struct ReadResult {
@@ -138,6 +138,15 @@ impl Workspace {
         read_at(&parent, name)
     }
     pub fn write(&self, path: &str, text: &str, expected: Option<&str>) -> Result<String> {
+        self.write_observed(path, text, expected, &mut EffectState::None)
+    }
+    fn write_observed(
+        &self,
+        path: &str,
+        text: &str,
+        expected: Option<&str>,
+        effects: &mut EffectState,
+    ) -> Result<String> {
         if text.len() > MAX_TEXT_BYTES {
             return Err(xcb_core::Error::Limit("workspace write").into());
         }
@@ -175,12 +184,18 @@ impl Workspace {
             )
             .map_err(io)?,
         );
+        // Until publication, a rejected write has no lasting effect if its
+        // staging file is removed. Once publication is attempted, an error
+        // (including directory fsync failure) requires reconciliation.
+        let mut publication_attempted = false;
+        *effects = EffectState::Uncertain;
         let result = (|| {
             file.write_all(text.as_bytes())?;
             file.set_permissions(std::fs::Permissions::from_mode(mode))?;
             file.sync_all()?;
             check()?;
             self.check_root()?;
+            publication_attempted = true;
             if expected.is_none() {
                 rustix::fs::linkat(&parent, temp.as_str(), &parent, name, AtFlags::empty())
                     .map_err(io)?;
@@ -189,10 +204,15 @@ impl Workspace {
                 rustix::fs::renameat(&parent, temp.as_str(), &parent, name).map_err(io)?;
             }
             parent.sync_all()?;
+            *effects = EffectState::Settled;
             Ok(digest(text))
         })();
-        if result.is_err() {
-            let _ = rustix::fs::unlinkat(&parent, temp.as_str(), AtFlags::empty());
+        if result.is_err()
+            && rustix::fs::unlinkat(&parent, temp.as_str(), AtFlags::empty()).is_ok()
+            && !publication_attempted
+            && parent.sync_all().is_ok()
+        {
+            *effects = EffectState::None;
         }
         result
     }
@@ -284,6 +304,17 @@ impl Workspace {
         Ok(json!({"matches":matches,"truncated":truncated}))
     }
     pub fn call(&self, name: &str, input: &Value) -> Result<Value> {
+        self.call_observed(name, input).0
+    }
+    /// Report effects separately from tool success: a stale revision or bad
+    /// argument is a settled rejection, whereas a failed publication may
+    /// have affected the workspace and must retain account custody.
+    pub fn call_observed(&self, name: &str, input: &Value) -> (Result<Value>, EffectState) {
+        let mut effects = EffectState::None;
+        let result = self.call_inner(name, input, &mut effects);
+        (result, effects)
+    }
+    fn call_inner(&self, name: &str, input: &Value, effects: &mut EffectState) -> Result<Value> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct PathArgs {
@@ -314,7 +345,7 @@ impl Workspace {
             "workspace_write" => {
                 let args: WriteArgs = serde_json::from_value(input.clone())?;
                 Ok(
-                    json!({"revision":self.write(&args.path, &args.text, args.expected_revision.as_deref())?}),
+                    json!({"revision":self.write_observed(&args.path, &args.text, args.expected_revision.as_deref(), effects)?}),
                 )
             }
             "workspace_search" => {

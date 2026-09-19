@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, Socket, type Server } from "node:net";
@@ -13,6 +14,8 @@ import { devinCliProcessFactory, devinCliSandboxPolicy, type DevinCliLinuxSandbo
 import { planBwrapPolicy, type OsSandboxSpec } from "../src/os-sandbox.ts";
 import { startDevinToolRelay } from "../src/devin-mcp.ts";
 import { createCapabilityBroker, createCapabilityProfile } from "../src/capabilities.ts";
+import { admitCliProvider, openCliProvider } from "../src/cli/provider.ts";
+import { buildQualificationRecord, writeCliQualification } from "../src/cli/qualification.ts";
 import type { CliBinaryInspection } from "../src/cli/binaries.ts";
 
 async function dir(prefix = "agentmixer-devin-") {
@@ -137,16 +140,41 @@ describe("cli devin seatbelt policy", () => {
 describe("cli devin process factory", () => {
   test("linux without a prepared sandbox never produces a factory", () => {
     expect(devinCliProcessFactory({ stateRoot: "/state", accountHome: "/acct",
-      workspace: "/work", bridgeExecutable: "/opt/bun" }, "linux")).toBeUndefined();
+      workspace: "/work", bridgeExecutable: "/opt/bun", executableSha256: "a".repeat(64) }, "linux")).toBeUndefined();
     expect(devinCliProcessFactory({ stateRoot: "/state", accountHome: "/acct",
-      workspace: "/work", bridgeExecutable: "/opt/bun" }, "freebsd")).toBeUndefined();
+      workspace: "/work", bridgeExecutable: "/opt/bun", executableSha256: "a".repeat(64) }, "freebsd")).toBeUndefined();
+  });
+
+  test("changed executable bytes fail before the sandbox is planned and remove only the new snapshot", async () => {
+    const root = await dir();
+    try {
+      const state = join(root, "state"), executable = join(root, "devin");
+      await mkdir(state, { mode: 0o700 });
+      await writeFile(executable, "changed-bytes", { mode: 0o700 });
+      const factory = devinCliProcessFactory({ stateRoot: state, accountHome: join(root, "account"),
+        workspace: join(root, "workspace"), bridgeExecutable: process.execPath,
+        executableSha256: createHash("sha256").update("admitted-bytes").digest("hex") }, "darwin")!;
+      expect(() => factory({ executable, args: ["acp"], cwd: root, env: {}, onViolation() {},
+        binding: { runId: "changed", accountId: "a", workspaceId: "w" } })).toThrow("CLI_DEVIN_EXECUTABLE_CHANGED");
+      expect(await readFile(executable, "utf8")).toBe("changed-bytes");
+      expect(await readFile(join(state, "devin-run-changed", "provider")).then(() => true, () => false)).toBe(false);
+      await mkdir(join(state, "devin-run-existing"));
+      await writeFile(join(state, "devin-run-existing", "evidence"), "retain");
+      expect(() => factory({ executable, args: ["acp"], cwd: root, env: {}, onViolation() {},
+        binding: { runId: "existing", accountId: "a", workspaceId: "w" } })).toThrow();
+      expect(await readFile(join(state, "devin-run-existing", "evidence"), "utf8")).toBe("retain");
+      await truncate(executable, 256 * 1024 * 1024 + 1);
+      expect(() => factory({ executable, args: ["acp"], cwd: root, env: {}, onViolation() {},
+        binding: { runId: "oversized", accountId: "a", workspaceId: "w" } })).toThrow("CLI_DEVIN_EXECUTABLE_INVALID");
+      expect(await readFile(join(state, "devin-run-oversized", "provider")).then(() => true, () => false)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   test("linux factory snapshots the executable under the run marker, plans service forwarding and defaults env", async () => {
     const root = await dir();
     try {
       const state = join(root, "state"), account = join(root, "acct"), workspace = join(root, "work"), bridge = join(root, "bunrt");
-      for (const target of [state, account, workspace]) await mkdir(target, { recursive: true });
+      for (const target of [state, account, workspace]) await mkdir(target, { recursive: true, mode: 0o700 });
       const hostExe = join(root, "host-devin");
       await writeFile(hostExe, "devin-bytes", { mode: 0o755 });
       await writeFile(bridge, "bridge-bytes", { mode: 0o755 });
@@ -168,11 +196,10 @@ describe("cli devin process factory", () => {
         close: () => Promise.resolve({} as never),
       };
       const factory = devinCliProcessFactory({ stateRoot: state, accountHome: account,
-        workspace, bridgeExecutable: bridge, linux }, "linux")!;
+        workspace, bridgeExecutable: bridge, executableSha256: createHash("sha256").update("devin-bytes").digest("hex"), linux }, "linux")!;
       const handle = factory({ executable: hostExe, args: ["acp"], cwd: workspace,
         env: { HOME: account }, onViolation: () => {},
         binding: { runId: "r1", accountId: "a", workspaceId: "w" } });
-      await handle.stopAndJoin().catch(() => {});
       const runRoot = join(state, "devin-run-r1");
       // The snapshot copy carries the run-id marker for lease recovery.
       expect(await readFile(join(runRoot, "provider"), "utf8")).toBe("devin-bytes");
@@ -186,6 +213,19 @@ describe("cli devin process factory", () => {
       expect(envSeen!.PATH).toBe("/usr/bin:/bin");
       expect(envSeen!.HOME).toBe(account);
       expect(envSeen!.TMPDIR).toBe(join(runRoot, "scratch"));
+      await handle.stopAndJoin();
+      expect(handle.isStopped()).toBe(true);
+      expect(await readFile(join(runRoot, "provider")).then(() => true, () => false)).toBe(false);
+      const replaced = factory({ executable: hostExe, args: ["acp"], cwd: workspace,
+        env: { HOME: account }, onViolation() {}, binding: { runId: "replaced", accountId: "a", workspaceId: "w" } });
+      const replacedRoot = join(state, "devin-run-replaced"), retainedRoot = join(state, "retained-original");
+      await rename(replacedRoot, retainedRoot);
+      await mkdir(replacedRoot, { mode: 0o700 });
+      await writeFile(join(replacedRoot, "evidence"), "replacement directory");
+      await replaced.stopAndJoin();
+      expect(replaced.isStopped()).toBe(true);
+      expect(await readFile(join(replacedRoot, "evidence"), "utf8")).toBe("replacement directory");
+      expect(await readFile(join(retainedRoot, "provider"), "utf8")).toBe("devin-bytes");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
@@ -349,5 +389,34 @@ describe("devin tool relay unix listener", () => {
         expect(manifest.body).toContain('"tools"');
       } finally { await relay.stop(); }
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+
+describe("Devin CLI admission remains disabled", () => {
+  test("doctor and an old matching record cannot qualify a version-only inspected binary", async () => {
+    const root = await dir(), previous = process.env.XCB_DEVIN;
+    try {
+      const executable = join(root, "devin");
+      await writeFile(executable, "#!/bin/sh\nprintf 'devin 3000.10.31 (fixture)\\n'\n", { mode: 0o700 });
+      process.env.XCB_DEVIN = executable;
+      const profile = createCapabilityProfile({ id: "cli.devin.admission", version: 1, tools: [] });
+      const admission = await admitCliProvider(root, "devin", profile);
+      expect(admission.inspection?.versionMatches).toBe(true);
+      expect(admission.record).toBeNull();
+      expect(admission.detail).toContain("Devin tasks are disabled");
+      const inspection = admission.inspection!;
+      const runtime = cliDevinRuntimeIdentity({ executableSha256: inspection.sha256, cliVersion: inspection.version });
+      await writeCliQualification(root, buildQualificationRecord({ provider: "devin",
+        route: { id: "devin-subscription", provider: "devin", authentication: "subscription" },
+        executablePath: executable, executableSha256: inspection.sha256,
+        runtimeVersion: runtime.version, runtimeDigest: runtime.digest, profileDigest: profile.digest, now: Date.now() }));
+      const opened = await openCliProvider(root, "devin", profile);
+      expect(opened.status).toBe("unadmitted");
+      if (opened.status !== "ready") expect(opened.detail).toContain("tool inventory");
+    } finally {
+      if (previous === undefined) delete process.env.XCB_DEVIN; else process.env.XCB_DEVIN = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

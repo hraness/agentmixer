@@ -17,7 +17,7 @@ test("every public route has one optional support footer without product signup"
   }
 });
 
-test("the homepage leads with the README identity and the verified install command", () => {
+test("the homepage binds release downloads to an exact verified xcb archive", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
   expect(html).toContain("Your agents. Your terminal. Your edge.");
@@ -25,7 +25,7 @@ test("the homepage leads with the README identity and the verified install comma
     expect(html).toContain("First xcb package release in preparation");
     expect(html).not.toContain(".tgz");
   } else {
-    expect(html).toContain(`hraness-xcb-${publishedRelease.version}.tgz`);
+    expect(html).toContain(publishedRelease.archiveUrl);
     expect(html).toContain("@hraness/xcb");
     expect(html).toContain(publishedRelease.verificationRun);
   }
@@ -35,8 +35,8 @@ test("the homepage leads with the README identity and the verified install comma
 test("the docs page renders the README with its package anchor", () => {
   const html = renderToStaticMarkup(<Docs />);
   expect(html).toContain('id="standalone-package"');
-  expect(html).toContain('id="application-owned-capability-profiles"');
-  expect(html).toContain("createCapabilityBroker");
+  expect(html).toContain('id="readiness"');
+  expect(html).toContain("docs/compatibility.md");
   expect(html).not.toContain("data-hraness-marketing-preset");
 });
 
@@ -54,4 +54,15 @@ test("scopes the editorial preset to the homepage header and real contract examp
   expect(elements).toEqual(["header", "proof"]);
   expect(html).toContain("The pane is a declaration, not a fork of the harness.");
   expect(html).toContain("Less activity. More signal.");
+});
+
+
+test("makes provider and tool limitations visible before installation", () => {
+  const html = renderToStaticMarkup(<Home />);
+  expect(html).toContain("not yet a daily-driver replacement");
+  expect(html).toContain("native execution unavailable");
+  expect(html).toContain("compatibility ACP adapter remains disabled pending qualification");
+  expect(html).toContain("Shell commands, tests, builds, and Git");
+  expect(html.indexOf('id="readiness"')).toBeLessThan(html.indexOf('id="install"'));
+  expect(html).toContain("./scripts/install-native.sh");
 });

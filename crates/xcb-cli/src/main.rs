@@ -441,13 +441,26 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                         print_json(account)?;
                     } else {
                         println!(
-                            "Added {} ({}) · {}\nNext: xcb accounts login {}",
-                            account.label, account.provider, account.id, account.id
+                            "Added {} ({}) · {}",
+                            account.label, account.provider, account.id
                         );
+                        if account.provider == Provider::Claude {
+                            println!("Next: xcb accounts login {}", account.id);
+                        } else {
+                            println!(
+                                "Native {} execution and sign-in are not yet available; this account is metadata only.",
+                                account.provider
+                            );
+                        }
                     }
                 }
                 Some(AccountCommand::Login { account }) => {
                     let account = store.resolve_account(&account)?;
+                    if account.provider != Provider::Claude {
+                        return Err(Error::Unavailable(
+                            "native sign-in and task execution are not yet available for this provider; use its official CLI",
+                        ));
+                    }
                     let pin = Pin::load(store.root(), account.provider)?;
                     eprintln!(
                         "Complete the provider's browser sign-in. Credential output is captured, not printed."

@@ -75,6 +75,33 @@ fn executable_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+fn repair_executable_mode(path: &Path) -> Result<bool> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file()
+        || meta.uid() != rustix::process::getuid().as_raw()
+        || meta.nlink() != 1
+        || meta.mode() & 0o7000 != 0
+        || meta.mode() & 0o111 == 0
+        || meta.mode() & 0o022 == 0
+        || meta.len() == 0
+        || meta.len() > 512 * 1024 * 1024
+    {
+        return Ok(false);
+    }
+    // Tighten writable bits without exposing a private executable to more users.
+    file.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o777 & !0o022))?;
+    Ok(true)
+}
+
 fn wrapper_file(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -137,6 +164,11 @@ pub fn discover(provider: Provider, explicit: Option<&Path>) -> Result<PathBuf> 
             return Err(Error::Unavailable("provider path must be absolute"));
         }
         let path = path.canonicalize()?;
+        if executable_file(&path).is_err() && !repair_executable_mode(&path)? {
+            return Err(Error::Unavailable(
+                "executable ownership, permissions, or size is invalid",
+            ));
+        }
         executable_file(&path)?;
         return Ok(path);
     }
@@ -144,7 +176,9 @@ pub fn discover(provider: Provider, explicit: Option<&Path>) -> Result<PathBuf> 
     {
         let candidate = directory.join(provider.as_str());
         if let Ok(path) = candidate.canonicalize()
-            && executable_file(&path).is_ok()
+            && (executable_file(&path).is_ok()
+                || (repair_executable_mode(&path).unwrap_or(false)
+                    && executable_file(&path).is_ok()))
         {
             return Ok(path);
         }
@@ -218,6 +252,36 @@ impl Pin {
     }
 }
 
+fn parse_version(provider: Provider, output: &str) -> Result<&str> {
+    let version = match provider {
+        Provider::Claude => output.strip_suffix(" (Claude Code)").unwrap_or(output),
+        Provider::Devin => output
+            .strip_prefix("devin ")
+            .and_then(|text| text.split_once(" (").map(|pair| pair.0))
+            .ok_or(Error::Protocol("Devin version"))?,
+        Provider::Codex => output
+            .strip_prefix("codex-cli ")
+            .ok_or(Error::Protocol("Codex version"))?,
+    };
+    // Metadata discovery accepts official prerelease Codex builds. This does
+    // not admit task execution: exact provider qualification remains separate.
+    let stable = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$";
+    let codex = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$";
+    let pattern = if provider == Provider::Codex {
+        codex
+    } else {
+        stable
+    };
+    if version.len() > 64
+        || !regex::Regex::new(pattern)
+            .expect("static version grammar")
+            .is_match(version)
+    {
+        return Err(Error::Protocol("version shape"));
+    }
+    Ok(version)
+}
+
 pub async fn inspect(provider: Provider, explicit: Option<&Path>, home: &Path) -> Result<Pin> {
     let executable = discover(provider, explicit)?;
     let sha256 = executable_digest(&executable)?;
@@ -231,24 +295,7 @@ pub async fn inspect(provider: Provider, explicit: Option<&Path>, home: &Path) -
     let output = std::str::from_utf8(&bytes)
         .map_err(|_| Error::Protocol("version encoding"))?
         .trim();
-    let version = match provider {
-        Provider::Claude => output.strip_suffix(" (Claude Code)").unwrap_or(output),
-        Provider::Devin => output
-            .strip_prefix("devin ")
-            .and_then(|text| text.split_once(" (").map(|pair| pair.0))
-            .ok_or(Error::Protocol("Devin version"))?,
-        Provider::Codex => output
-            .strip_prefix("codex-cli ")
-            .ok_or(Error::Protocol("Codex version"))?,
-    };
-    if version.len() > 64
-        || version.split('.').count() != 3
-        || !version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
-        return Err(Error::Protocol("version shape"));
-    }
+    let version = parse_version(provider, output)?;
     if executable_digest(&executable)? != sha256 {
         return Err(Error::Unavailable("runtime changed during inspection"));
     }
@@ -277,7 +324,7 @@ impl StreamProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         command.as_std_mut().process_group(0);
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().map_err(Error::LaunchNotStarted)?;
         let pid = child
             .id()
             .filter(|pid| *pid > 1)
@@ -528,6 +575,67 @@ mod tests {
         file.write_all(b"#!/bin/sh\necho ok\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         path
+    }
+
+    #[test]
+    fn provider_version_metadata_accepts_official_codex_prereleases() {
+        assert_eq!(
+            parse_version(Provider::Codex, "codex-cli 0.155.0-alpha.2.6").unwrap(),
+            "0.155.0-alpha.2.6"
+        );
+        assert_eq!(
+            parse_version(Provider::Claude, "2.1.274 (Claude Code)").unwrap(),
+            "2.1.274"
+        );
+        assert_eq!(
+            parse_version(Provider::Devin, "devin 3000.10.31 (b98cc431)").unwrap(),
+            "3000.10.31"
+        );
+        for text in [
+            "codex-cli 1..3",
+            "codex-cli 1.2.3-",
+            "codex-cli 1.2.3\ninjected",
+            "codex-cli 01.2.3",
+        ] {
+            assert!(parse_version(Provider::Codex, text).is_err());
+        }
+        assert!(parse_version(Provider::Claude, "2.1.274-beta").is_err());
+    }
+
+    #[test]
+    fn discovery_repairs_only_owned_single_link_ordinary_executables() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = write_executable(directory.path(), 0o777);
+        let canonical = path.canonicalize().unwrap();
+        assert_eq!(
+            discover(Provider::Claude, Some(&canonical)).unwrap(),
+            canonical
+        );
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o755);
+        for (mode, tightened) in [(0o702, 0o700), (0o720, 0o700), (0o775, 0o755)] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(repair_executable_mode(&path).unwrap());
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, tightened);
+        }
+        for mode in [0o666, 0o4777, 0o2777, 0o1777] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(!repair_executable_mode(&path).unwrap());
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, mode);
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::hard_link(&path, directory.path().join("other")).unwrap();
+        assert!(!repair_executable_mode(&path).unwrap());
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o777);
+    }
+
+    #[test]
+    fn failed_os_spawn_proves_that_no_child_started() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = Command::new(directory.path().join("absent-provider"));
+        assert!(matches!(
+            StreamProcess::spawn(command),
+            Err(Error::LaunchNotStarted(_))
+        ));
     }
 
     #[test]

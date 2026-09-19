@@ -1,36 +1,45 @@
 # Contributing
 
-xcb is early and the contract is deliberately narrow. Contributions are
-welcome; the bar is that the custody, qualification, and tool-surface
-invariants stay checkable.
+xcb is in development. Preserve checkable custody, qualification, and bounded
+tool contracts. Native xcb lives in `crates/`; the retained TypeScript library
+and compatibility CLI live in `src/`. The informational Next.js site is `site/`.
 
 ## Setup
 
-Requires Bun ≥ 1.3.14 (`bun install`). The site under `site/` has its own
-`bun install` and check suite.
+Install Rust 1.97.1 (see `rust-toolchain.toml`), Bun 1.3.14, and Node 22.13 or
+newer for compatibility checks; the site targets Node 24. Run
+`bun install --frozen-lockfile` in the root and separately in `site/`.
+Native tests that verify cross-runtime workspace locks need Bun and Node on PATH.
 
 ## Checks
 
+From the repository root:
+
 ```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all -- --check
 bun run check
 ```
 
-Runs the typechecker, the test suite, the dist build, and the packed-package
-smoke check. Site changes run `bun run check` inside `site/` — that covers the
-paper-theme snapshot verification, README sync, tests, lint, typecheck, and
-the production build.
+The compatibility check includes typechecking, tests, the dist build, and the
+packed-package install smoke check. For site changes, run `bun run check`
+inside `site/`; it verifies theme snapshots, synchronizes README documentation,
+runs tests, lint and typechecking, and builds and serves the production site.
+Follow the host scheduler rules in `AGENTS.md` where applicable. Synthetic
+checks do not qualify live providers; keep unqualified adapters disabled.
 
 ## Rules of the house
 
-- Parse every foreign value from `unknown`; reject unknown keys.
-- Keep broker inputs closed and bounded. No shell, executable, or arbitrary
-  RPC operation enters the tool surface.
-- Never treat a prompt, a working directory, a tool list, or an expired lease
-  as proof of OS isolation or process termination.
-- Preserve exclusive account custody after uncertain provider failures.
-- Qualification admits an exact runtime; it is not a portability promise.
+- Parse foreign values from `unknown`; reject unknown keys.
+- Keep broker inputs closed and bounded. No shell, executable, or arbitrary RPC
+  enters the model-facing tool surface.
+- Never treat a prompt, cwd, tool list, or expired lease as OS isolation or
+  proof of process termination. Retain account custody after uncertain failures.
+- Qualify the exact runtime, effective tool inventory, and confinement before
+  activation. Keep published release claims distinct from source version numbers.
+- Keep credentials, provider state, and qualification receipts out of workspaces
+  and commits. Do not include transcript text or secrets in bug reports.
 - Open a pull request; do not force-push.
 
-## Bugs and security
-
-Use GitHub issues for bugs. For security reports, see `SECURITY.md`.
+Use GitHub issues for bugs and [SECURITY.md](SECURITY.md) for vulnerabilities.

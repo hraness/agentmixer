@@ -33,6 +33,11 @@ if [ ! -f "$binary" ]; then
   echo "error: expected $binary after build" >&2
   exit 1
 fi
+reported_version=$("$binary" --version)
+if [ "$reported_version" != "xcb $version" ]; then
+  echo "error: native binary reports '$reported_version', expected 'xcb $version'" >&2
+  exit 1
+fi
 
 sha256_cmd=$(command -v sha256sum || command -v shasum || true)
 if [ -z "$sha256_cmd" ]; then

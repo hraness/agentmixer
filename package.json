@@ -43,7 +43,8 @@
     "test": "bun test ./src ./test ./scripts",
     "gobstopper-editor": "bun src/gobstopper-editor.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "check": "bun run typecheck && bun run test && bun run build:dist && bun run check:package",
+    "check:versions": "bun scripts/release-version-contract.ts",
+    "check": "bun run check:versions && bun run typecheck && bun run test && bun run build:dist && bun run check:package",
     "prepack": "bun run check"
   },
   "dependencies": {

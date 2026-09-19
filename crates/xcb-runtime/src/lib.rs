@@ -29,6 +29,10 @@ pub enum Error {
     Core(#[from] xcb_core::Error),
     #[error("local I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Command::spawn failed before a child existed. Post-spawn failures must
+    /// never use this variant: callers use it as explicit no-child evidence.
+    #[error("provider could not start: {0}")]
+    LaunchNotStarted(std::io::Error),
     #[error("local database operation failed: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("invalid local record")]

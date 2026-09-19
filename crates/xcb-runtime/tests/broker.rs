@@ -194,3 +194,32 @@ fn native_mcp_tool_calls_refuse_unknown_keys_and_tools() {
             .is_err()
     );
 }
+
+#[test]
+fn observed_workspace_effects_distinguish_rejection_from_publication() {
+    use serde_json::json;
+    use xcb_core::policy::EffectState;
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().canonicalize().unwrap();
+    let root = base.join("work");
+    fs::create_dir(&root).unwrap();
+    let workspace = Workspace::open_with_coordination(&root, &base.join("coordination")).unwrap();
+    let (created, effects) = workspace.call_observed(
+        "workspace_write",
+        &json!({"path":"file","text":"created","expectedRevision":null}),
+    );
+    assert!(created.is_ok());
+    assert_eq!(effects, EffectState::Settled);
+    for arguments in [
+        json!({"path":"file","text":"clobber","expectedRevision":null}),
+        json!({"path":"file","text":"clobber","expectedRevision":"stale"}),
+        json!({"path":"../escape","text":"bad","expectedRevision":null}),
+        json!({"path":"file","text":false,"expectedRevision":null}),
+    ] {
+        let (rejected, effects) = workspace.call_observed("workspace_write", &arguments);
+        assert!(rejected.is_err());
+        assert_eq!(effects, EffectState::None);
+    }
+    assert_eq!(fs::read_to_string(root.join("file")).unwrap(), "created");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}

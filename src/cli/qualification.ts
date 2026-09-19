@@ -104,7 +104,12 @@ export async function writeCliQualification(stateRoot: string, record: CliQualif
 export function toTaskQualification(record: CliQualificationRecord, expected: Readonly<{
   route: AgentTaskRoute; profile: CapabilityProfileIdentity; runtimeVersion: string; runtimeDigest: string;
 }>): TaskRuntimeQualification {
-  if (record.routeId !== expected.route.id || record.authentication !== expected.route.authentication
+  // Legacy doctor records contain only a binary identity, not the missing
+  // Devin tool-inventory and configuration-confinement evidence.
+  if (record.provider === "devin" || expected.route.provider === "devin") {
+    return Object.freeze({ status: "unqualified", reason: "Devin host qualification is not implemented; legacy binary-only admission is insufficient." });
+  }
+  if (record.provider !== expected.route.provider || record.routeId !== expected.route.id || record.authentication !== expected.route.authentication
     || record.profileDigest !== expected.profile.digest || record.runtimeVersion !== expected.runtimeVersion
     || record.runtimeDigest !== expected.runtimeDigest || record.expiresAtUnixMs <= Date.now()) {
     return Object.freeze({ status: "unqualified", reason: "Local admission record does not match this route, runtime and profile." });

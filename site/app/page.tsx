@@ -26,10 +26,10 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/xcb";
-const archiveUrl = releaseVersion === undefined ? null : `${repository}/releases/download/v${releaseVersion}/hraness-xcb-${releaseVersion}.tgz`;
+const archiveUrl = publishedRelease?.archiveUrl ?? null;
 
 const heading = "Your agents. Your terminal. Your edge.";
-const footnote = "Excalibur, for short. Local-first and MIT licensed. Native Rust interface in development; the @hraness/xcb compatibility package remains available.";
+const footnote = "Excalibur, for short. Local-first and MIT licensed. Source preview: Claude execution candidate; Codex and Devin execution unavailable.";
 
 const primitives = [
   {
@@ -98,7 +98,7 @@ const questions = [
   },
   {
     question: "What can I install today?",
-    answer: "The @hraness/xcb TypeScript package remains the verified compatibility release. Native xcb is being developed separately. A compatibility package release is not advertised as a native xcb binary.",
+    answer: "Build native xcb from source. No xcb binary release or @hraness/xcb npm package is published. The existing v0.3.0 archive is AgentMixer. xcb cannot yet replace the three provider CLIs for daily coding work.",
   },
   {
     question: "Who made it?",
@@ -107,6 +107,7 @@ const questions = [
 ] as const;
 
 const navigation = [
+  { href: "#readiness", label: "Readiness" },
   { href: "#model", label: "Building blocks" },
   { href: "#interfaces", label: "Make it yours" },
   { href: "#install", label: "Get started" },
@@ -193,7 +194,7 @@ Subagents    renderer: working · tests: complete
 ───────────────────────────────────────────────────
 › /pane focus
 ───────────────────────────────────────────────────
-Claude · Fable 5.1                 [ working ]`}</code></pre>
+Claude · selected observed model  [ working ]`}</code></pre>
               </MarketingProofFrame>
             )}
             heading={heading}
@@ -202,6 +203,22 @@ Claude · Fable 5.1                 [ working ]`}</code></pre>
             summary={readmeLead}
           />
           </div>
+
+          <MarketingSection
+            heading="A source preview, with clear limits."
+            headingId="readiness-title"
+            id="readiness"
+            label="Current readiness"
+            summary="xcb is not yet a daily-driver replacement for Codex, Claude Code, and Devin."
+          >
+            <ul>
+              <li><strong>Claude:</strong> native execution candidate on macOS and Linux after sign-in, binary admission, and per-run confinement checks.</li>
+              <li><strong>Codex:</strong> binary metadata only; native execution unavailable.</li>
+              <li><strong>Devin:</strong> read-only model catalog discovery; native execution unavailable. The compatibility ACP adapter remains disabled pending qualification.</li>
+              <li><strong>Workspace tools:</strong> list, read, search, and write files. Shell commands, tests, builds, and Git still run in your own terminal.</li>
+            </ul>
+            <p>A model in the catalog or a successful metadata probe does not qualify a provider. <a href="/docs#readiness">Read the current limits and source quick start</a>.</p>
+          </MarketingSection>
 
           <MarketingPrimitives
             heading="A small core. The parts you choose."
@@ -240,10 +257,10 @@ Claude · Fable 5.1                 [ working ]`}</code></pre>
                 example: (
                   <>
                     <TopicIcon slug="model-selection" />
-                    <pre tabIndex={0}><code>{`Devin       SWE-2 · Astra Max · Sol Max
-Modes       Adaptive · Fusion
-Claude      Fable 5.1 · Opus 5
-Codex       Astra Ultra · Sol Ultra`}</code></pre>
+                    <pre tabIndex={0}><code>{`Claude      observed models · execution candidate
+Devin       observed catalog · metadata only
+Modes       Adaptive · Fusion · catalog entries
+Codex       binary metadata · execution unavailable`}</code></pre>
                   </>
                 ),
               },
@@ -289,7 +306,12 @@ aiCharts upload off`}</code></pre>
             headingId="install-title"
             id="install"
           >
-            <p className="install-note">Native xcb is in development. The source tree keeps the Rust work separate from the published TypeScript compatibility package.</p>
+            <p className="install-note">Native xcb is a source preview. With Git, Rust 1.97.1, and platform build tools installed:</p>
+            <pre className="install-command" tabIndex={0}><code>{`git clone https://github.com/hraness/xcb.git
+cd xcb
+./scripts/install-native.sh
+export PATH="$HOME/.local/bin:$PATH"
+xcb --help`}</code></pre>
             <p><a href={repository}>Follow the native work</a> · <a href="/docs#native-xcb">Read the native interface guide</a></p>
             <h3>xcb compatibility package</h3>
             <p className="install-note">{releaseVersion === undefined ? "First xcb package release in preparation" : `Current verified compatibility release · v${releaseVersion}`}</p>
@@ -298,13 +320,13 @@ aiCharts upload off`}</code></pre>
                 <pre className="install-command" tabIndex={0}><code>{`bun add ${archiveUrl}`}</code></pre>
                 <p className="install-note">
                   <a href={publishedRelease.verificationRun}>Public release verification</a>.{" "}
-                  This installs <code>@hraness/xcb</code>, not a native xcb release.{" "}
+                  This verified archive installs the <code>@hraness/xcb</code> compatibility package.{" "}
                   <a href="/docs#standalone-package">Compatibility package reference</a>.
                 </p>
               </>
             ) : (
               <p className="install-note">
-                The first release is being prepared.{" "}
+                No xcb package or native binary release is published. Existing v0.3.0 assets belong to AgentMixer.{" "}
                 <a href={`${repository}/releases`}>Check published releases</a> or{" "}
                 <a href="/docs">read the documentation</a>.
               </p>

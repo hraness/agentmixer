@@ -73,9 +73,8 @@ impl Endpoint {
             _ => (authority, 443),
         };
         if host.is_empty()
-            || host.contains(|c: char| {
-                !c.is_ascii_alphanumeric() && !matches!(c, '-' | '.' | '[' | ']')
-            })
+            || host.contains(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '.'))
+            || ServerName::try_from(host.to_owned()).is_err()
         {
             return Err(xcb_core::Error::Invalid("judge endpoint host").into());
         }

@@ -41,6 +41,8 @@ fn endpoint_parsing_accepts_https_only() {
         "https://host/x#frag",
         "https://host/x y",
         "https://host:notaport/x",
+        "https://[::1]/x",
+        "https://bad_host/x",
         "",
     ] {
         assert!(Endpoint::parse(url).is_err(), "{url} must be rejected");

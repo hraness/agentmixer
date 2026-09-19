@@ -5,7 +5,7 @@ use crate::{
     broker::{self, Workspace},
     claude::{self, Event},
     config::Config,
-    context, digest, egress, new_id, now_ms, private,
+    context, digest, egress, judge, new_id, now_ms, private,
     process::{Pin, StreamProcess},
     sandbox,
     store::{Store, UsageObservation},
@@ -702,7 +702,44 @@ pub async fn run(
             .into_iter()
             .filter(|message| message.id != input.message.id)
             .collect::<Vec<_>>();
-        let projection = context::project(session, &history, &input.config.extensions.gobstopper)?;
+        let context_judge = if input.pane_generation {
+            None
+        } else {
+            match judge::resolve(store.root(), &input.config.extensions.judge) {
+                Ok(judge) => judge,
+                Err(error) => {
+                    observer(Progress::Notice(format!(
+                        "Judge compaction unavailable ({error}); using deterministic Gobstopper"
+                    )));
+                    None
+                }
+            }
+        };
+        let projection = match context::project(
+            session,
+            &history,
+            &input.message.text,
+            &input.config.extensions.gobstopper,
+            context_judge.as_deref(),
+        )
+        .await
+        {
+            Ok(projection) => projection,
+            Err(error) if context_judge.is_some() => {
+                observer(Progress::Notice(format!(
+                    "Judge compaction unavailable ({error}); using deterministic Gobstopper"
+                )));
+                context::project(
+                    session,
+                    &history,
+                    &input.message.text,
+                    &input.config.extensions.gobstopper,
+                    None,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
         if projection.elided > 0 {
             observer(Progress::Notice(format!(
                 "Gobstopper elided {} stale tool outputs in the prompt; history is retained.",

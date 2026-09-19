@@ -198,9 +198,9 @@ enum JudgeCommand {
     Logout,
     /// Report judge configuration without revealing the key.
     Status,
-    /// Allow the judge to rank routes and advise safe auto-continuation.
+    /// Allow judged routing, safe continuation advice, and Gobstopper vetoes.
     Enable,
-    /// Disable judge use; routing and continuation stay deterministic.
+    /// Disable judge use; routing, continuation, and compaction stay deterministic.
     Disable,
     /// Send one live noul question to verify the key and endpoint.
     Test,

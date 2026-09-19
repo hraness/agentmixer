@@ -234,6 +234,48 @@ fn print_json(value: impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
+/// The CLI account contract deliberately excludes storage/custody fields.
+/// Never serialize the runtime record itself: adding an internal field must
+/// not silently extend public command output.
+#[derive(serde::Serialize)]
+struct PublicAccount<'a> {
+    id: &'a Id,
+    provider: Provider,
+    label: &'a str,
+    subscription: &'a str,
+    enabled: bool,
+}
+impl<'a> From<&'a xcb_runtime::store::Account> for PublicAccount<'a> {
+    fn from(record: &'a xcb_runtime::store::Account) -> Self {
+        Self {
+            id: &record.id,
+            provider: record.provider,
+            label: &record.label,
+            subscription: &record.subscription,
+            enabled: record.enabled,
+        }
+    }
+}
+
+impl PublicAccount<'_> {
+    fn added_message(&self) -> String {
+        let added = format!(
+            "Added {} ({}) · {}",
+            xcb_core::display_text(self.label, 80),
+            self.provider,
+            self.id
+        );
+        if self.provider == Provider::Claude {
+            format!("{added}\nNext: xcb accounts login {}", self.id)
+        } else {
+            format!(
+                "{added}\nNative {} execution and sign-in are not yet available; this account is metadata only.",
+                self.provider
+            )
+        }
+    }
+}
+
 fn accounts(store: &Store, config: &Config, as_json: bool) -> Result<()> {
     let view = summary::snapshot(store, None, config, now_ms())?;
     if as_json {
@@ -437,21 +479,11 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                         config.default_account = Some(account.id.clone());
                         config.save(store.root(), revision.as_deref())?;
                     }
+                    let public = PublicAccount::from(&account);
                     if cli.json {
-                        print_json(account)?;
+                        print_json(public)?;
                     } else {
-                        println!(
-                            "Added {} ({}) · {}",
-                            account.label, account.provider, account.id
-                        );
-                        if account.provider == Provider::Claude {
-                            println!("Next: xcb accounts login {}", account.id);
-                        } else {
-                            println!(
-                                "Native {} execution and sign-in are not yet available; this account is metadata only.",
-                                account.provider
-                            );
-                        }
+                        println!("{}", public.added_message());
                     }
                 }
                 Some(AccountCommand::Login { account }) => {
@@ -511,14 +543,16 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     accounts(&store, &config, cli.json)?;
                 }
                 Some(AccountCommand::ImportAgentmixer { source, label }) => {
-                    let id = auth::import_agentmixer_token(&store, &source, &label)?;
+                    // This is a generated public routing ID, never a credential
+                    // or an internal account record.
+                    let id: Id = auth::import_agentmixer_token(&store, &source, &label)?;
                     if cli.json {
                         print_json(
                             json!({"version":1,"account":id,"sourcePreserved":true,"sessionsMigrated":false}),
                         )?;
                     } else {
                         println!(
-                            "Imported one Claude credential as {id}. Original state and sessions are unchanged."
+                            "Imported one Claude account as {id}. Original state and sessions are unchanged."
                         );
                     }
                 }
@@ -1120,6 +1154,64 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_account_output_has_only_the_documented_metadata_fields() {
+        let record = xcb_runtime::store::Account {
+            id: Id::new("a_0123456789abcdef0123456789abcdef").unwrap(),
+            provider: Provider::Claude,
+            label: "Personal".into(),
+            subscription: "Max".into(),
+            quota_pool: Id::new("private-custody-pool").unwrap(),
+            enabled: true,
+            created_at_ms: 987654321,
+        };
+        let output = serde_json::to_value(PublicAccount::from(&record)).unwrap();
+        assert_eq!(
+            output,
+            json!({
+                "id": "a_0123456789abcdef0123456789abcdef",
+                "provider": "claude",
+                "label": "Personal",
+                "subscription": "Max",
+                "enabled": true,
+            })
+        );
+        let text = output.to_string();
+        assert!(!text.contains("private-custody-pool"));
+        assert!(!text.contains("987654321"));
+    }
+
+    #[test]
+    fn duplicate_labels_keep_distinct_public_ids_and_copyable_login_commands() {
+        let first = xcb_runtime::store::Account {
+            id: Id::new("a_0123456789abcdef0123456789abcdef").unwrap(),
+            provider: Provider::Claude,
+            label: "Personal".into(),
+            subscription: "Max".into(),
+            quota_pool: Id::new("private-custody-pool").unwrap(),
+            enabled: true,
+            created_at_ms: 987654321,
+        };
+        let second = xcb_runtime::store::Account {
+            id: Id::new("a_fedcba9876543210fedcba9876543210").unwrap(),
+            ..first.clone()
+        };
+        let first_output = PublicAccount::from(&first).added_message();
+        let second_output = PublicAccount::from(&second).added_message();
+        assert!(
+            first_output.contains("Added Personal (claude) · a_0123456789abcdef0123456789abcdef")
+        );
+        assert!(
+            second_output.contains("Added Personal (claude) · a_fedcba9876543210fedcba9876543210")
+        );
+        assert!(first_output.ends_with("xcb accounts login a_0123456789abcdef0123456789abcdef"));
+        assert!(second_output.ends_with("xcb accounts login a_fedcba9876543210fedcba9876543210"));
+        for output in [first_output, second_output] {
+            assert!(!output.contains("private-custody-pool"));
+            assert!(!output.contains("987654321\n"));
+        }
+    }
 
     #[test]
     fn recover_cli_shape_accepts_optional_run_and_yes() {

@@ -907,21 +907,48 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                             criteria: None,
                         },
                     );
+                    questions.insert(
+                        "pick".to_owned(),
+                        judge::JudgeQuestion::Choice {
+                            instructions: "Which option names a color?".to_owned(),
+                            criteria: std::collections::BTreeMap::from([
+                                ("red".to_owned(), Some("a color".to_owned())),
+                                ("spoon".to_owned(), Some("not a color".to_owned())),
+                            ]),
+                        },
+                    );
+                    questions.insert(
+                        "rate".to_owned(),
+                        judge::JudgeQuestion::Score {
+                            instructions: "Rate the claim that water is wet.".to_owned(),
+                            criteria: vec!["factual accuracy".to_owned()],
+                        },
+                    );
                     let answers = backend
                         .ask(
                             &serde_json::json!({"context": "xcb judge connectivity test"}),
                             &questions,
                         )
                         .await?;
-                    match answers.answers.get("ping").and_then(|a| a.noul()) {
-                        Some(noul) => println!(
-                            "Judge reachable · model {} · noul {noul:.3}",
-                            answers.model.as_deref().unwrap_or("unknown")
-                        ),
-                        None => {
-                            return Err(Error::Unavailable("judge response missing noul answer"));
-                        }
-                    }
+                    let noul = answers
+                        .answers
+                        .get("ping")
+                        .and_then(|a| a.noul())
+                        .ok_or(Error::Unavailable("judge response missing noul answer"))?;
+                    let (pick, pick_confidence) = answers
+                        .answers
+                        .get("pick")
+                        .and_then(|a| a.choice())
+                        .ok_or(Error::Unavailable("judge response missing choice answer"))?;
+                    let (score, score_confidence) = answers
+                        .answers
+                        .get("rate")
+                        .and_then(|a| a.score())
+                        .ok_or(Error::Unavailable("judge response missing score answer"))?;
+                    println!(
+                        "Judge reachable · model {} · noul {noul:.3} · choice {pick}@{pick_confidence:.3} · score {score:.3}@{score_confidence:.3}",
+                        answers.model.as_deref().unwrap_or("unknown")
+                    );
                 }
                 None | Some(JudgeCommand::Status) => {
                     let source = judge::judge_token(store.root())?.map(|(_, source)| source);

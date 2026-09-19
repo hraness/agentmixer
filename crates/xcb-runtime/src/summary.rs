@@ -137,6 +137,15 @@ pub fn snapshot(store: &Store, current: Option<&Id>, config: &Config, now: u64) 
             .into(),
         ),
         (
+            "judge".into(),
+            if config.extensions.judge.enabled {
+                "on · advisory"
+            } else {
+                "off"
+            }
+            .into(),
+        ),
+        (
             "usage".into(),
             if config.extensions.usage {
                 "local"

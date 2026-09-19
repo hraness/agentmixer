@@ -28,6 +28,16 @@ impl Default for ContextPolicy {
     }
 }
 
+/// Judge (jev-style judgment API) policy. Disabled by default: routing asks
+/// send bounded prompt state to an external service, so use is opt-in.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JudgeConfig {
+    pub enabled: bool,
+    pub model: Option<Id>,
+    pub endpoint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Extensions {
@@ -37,6 +47,7 @@ pub struct Extensions {
     pub aicharts_upload: bool,
     pub aicharts_export: bool,
     pub hooks: bool,
+    pub judge: JudgeConfig,
 }
 impl Default for Extensions {
     fn default() -> Self {
@@ -47,6 +58,7 @@ impl Default for Extensions {
             aicharts_upload: false,
             aicharts_export: false,
             hooks: false,
+            judge: JudgeConfig::default(),
         }
     }
 }
@@ -88,6 +100,12 @@ impl Config {
             || !(1000..=3_600_000).contains(&context.min_interval_ms)
             || !(1..=16).contains(&continuation.max_consecutive)
             || !(1000..=3_600_000).contains(&continuation.max_elapsed_ms)
+            || self
+                .extensions
+                .judge
+                .endpoint
+                .as_deref()
+                .is_some_and(|endpoint| endpoint.len() > 1024 || endpoint.is_empty())
         {
             return Err(xcb_core::Error::Invalid("configuration").into());
         }

@@ -49,6 +49,13 @@ export { startDevinToolRelay, DEVIN_MCP_BRIDGE_SOURCE } from "./devin-mcp.ts";
 export type { DevinToolRelay, DevinToolRelayOptions } from "./devin-mcp.ts";
 export { browserSessionArgv, browserSessionEnvironment, createBrowserSession, purgeBrowserSession, recoverBrowserSession } from "./browser-session.ts";
 export type { BrowserSessionBinding, BrowserSessionCloseReceipt, BrowserSessionOptions, BrowserSessionPhase, BrowserSessionPort, BrowserSessionReceipt, BrowserSessionRuntimeAdmission, BrowserSessionSpawn, BrowserSessionSystem } from "./browser-session.ts";
+export { createSystemOneJudge, checkJudgeQuestions, checkJudgeState, parseJudgeEndpoint,
+  parseJudgeResponse, resolveJudge, resolveJudgeKey, storeJudgeKey, removeJudgeKey, hasJudgeKey,
+  SYSTEM_ONE_URL, DEFAULT_JUDGE_MODEL, JUDGE_TOKEN_FILE, JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV,
+  JUDGE_URL_ENV, JUDGE_MODEL_ENV, MAX_JUDGE_STATE_BYTES, MAX_JUDGE_QUESTIONS, MAX_JUDGE_INSTRUCTION_BYTES } from "./judge.ts";
+export type { Judge, JudgeAnswers, JudgeAnswer, JudgeQuestion, JudgeQuestions, JudgeState,
+  JudgeKeySource, NoulQuestion, ChoiceQuestion, ScoreQuestion, NoulAnswer, ChoiceAnswer,
+  ScoreAnswer, SystemOneOptions, ResolveJudgeOptions } from "./judge.ts";
 export { createManagedAccountController } from "./managed-account.ts";
 export type { ManagedAccountBinding, ManagedAccountCloseReceipt, ManagedAccountController, ManagedAccountEvent,
   ManagedAccountLoginChallenge, ManagedAccountLoginMethod, ManagedAccountOptions, ManagedAccountProjection,

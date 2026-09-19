@@ -8,6 +8,8 @@ mod coordination;
 pub mod egress;
 pub mod exports;
 pub mod hooks;
+pub mod jev;
+pub mod judge;
 pub mod kernel;
 pub mod panes;
 pub mod private;

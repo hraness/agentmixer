@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use xcb_runtime::{
+    config::JudgeConfig,
     jev::{Endpoint, SYSTEM_ONE_URL, parse_response},
     judge::{
         self, JudgeAnswer, JudgeKeySource, JudgeQuestion, JudgeQuestions, MAX_JUDGE_QUESTIONS,
@@ -47,6 +48,23 @@ fn endpoint_parsing_accepts_https_only() {
     ] {
         assert!(Endpoint::parse(url).is_err(), "{url} must be rejected");
     }
+}
+
+#[test]
+fn vaulted_keys_are_bound_to_the_canonical_system_one_endpoint() {
+    let canonical = JudgeConfig {
+        enabled: true,
+        model: None,
+        endpoint: Some("https://api.typesafe.ai:443/v1/systemone".to_owned()),
+    };
+    judge::check_key_target(JudgeKeySource::Vault, &canonical).unwrap();
+
+    let custom = JudgeConfig {
+        endpoint: Some("https://judge.example/v1/systemone".to_owned()),
+        ..canonical
+    };
+    assert!(judge::check_key_target(JudgeKeySource::Vault, &custom).is_err());
+    judge::check_key_target(JudgeKeySource::Env, &custom).unwrap();
 }
 
 #[test]

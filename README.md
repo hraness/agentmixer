@@ -262,7 +262,10 @@ xcb judge logout            # remove the vaulted key
 ```
 
 The key vaults mode-0600 under the private state root; `XCB_JEV_API_KEY` or
-the vendor name `TYPESAFE_API_KEY` override it without touching the file. The
+the vendor name `TYPESAFE_API_KEY` override it without touching the file. A
+vaulted key is bound to the canonical System One endpoint; a deliberate custom
+endpoint requires an environment-supplied key. Future judgment backends own
+separate credential custody rather than redirecting the TypeSafe vault. The
 native Rust build keeps the same contract under `extensions.judge` —
 `xcb judge enable` gates it there, `--model auto` routes account/model pairs
 with each description carrying the account's remaining quota, quota failover

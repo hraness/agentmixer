@@ -21,7 +21,9 @@
   already-admitted routes, may veto auto-continuation only after every
   deterministic safety gate passes, and may veto deterministic Gobstopper
   elision without receiving tool-result bodies; it never qualifies or activates
-  a provider.
+  a provider. Keep vaulted System One credentials bound to the canonical
+  endpoint; custom endpoints require an explicit environment key, and future
+  backends own separate credential custody.
   `src/index.ts` is the package's complete public surface.
 - `src/cli/` is the standalone `xcb` terminal surface (`cli.ts` entry,
   chat/run/resume/sessions/doctor/auth/judge/migrate commands) built on the same

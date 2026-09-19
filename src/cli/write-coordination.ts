@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { openAccountDatabase, type SqliteDatabase } from "../sqlite-port.ts";
 import { privateDirectory } from "./state.ts";
+import { assertPrivateStat, canonicalizePrivatePath, matchesPrivateStat, sameFileIdentity, writeFileOnce, PRIVATE_CONTROL_REJECT } from "../private-file.ts";
 
 const WAIT_MS = 5_000;
 const queues = new Map<string, { tail: Promise<void>; count: number }>();
@@ -20,8 +20,8 @@ export function workspaceCoordinationRoot(): string {
 }
 
 export async function withWorkspaceWriteLock<T>(workspace: string, directory: string, action: () => Promise<T>): Promise<T> {
-  if (!isAbsolute(directory) || resolve(directory) !== directory || /[\x00-\x1f\x7f]/u.test(directory)
-    || inside(directory, workspace) || inside(workspace, directory)) throw new Error("WORKSPACE_COORDINATION_LAYOUT_INVALID");
+  canonicalizePrivatePath(directory, { code: "WORKSPACE_COORDINATION_LAYOUT_INVALID", reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
+  if (inside(directory, workspace) || inside(workspace, directory)) throw new Error("WORKSPACE_COORDINATION_LAYOUT_INVALID");
   if (await realpath(workspace) !== workspace || !(await lstat(workspace)).isDirectory()) throw new Error("WORKSPACE_ROOT_CHANGED");
   const path = join(directory, `${createHash("sha256").update(workspace).digest("hex")}.sqlite`);
   const prior = queues.get(path);
@@ -41,14 +41,13 @@ export async function withWorkspaceWriteLock<T>(workspace: string, directory: st
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await privateDirectory(directory);
     try {
-      const created = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try { await created.sync(); } finally { await created.close(); }
+      await writeFileOnce(path, "", { syncFile: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     const before = await lstat(path, { bigint: true });
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.uid !== BigInt(process.getuid?.() ?? -1)
-      || (before.mode & 0o077n) !== 0n || before.size > 64n * 1024n) throw new Error("WORKSPACE_COORDINATION_NOT_PRIVATE");
+    assertPrivateStat(before, { kind: "file", noSymlink: true, links: "single", owner: "self",
+      mode: [{ mask: 0o077, equals: 0 }], size: { max: 64n * 1024n } }, "WORKSPACE_COORDINATION_NOT_PRIVATE");
     for (;;) {
       if (performance.now() >= deadline) throw new Error("WORKSPACE_WRITER_BUSY");
       try {
@@ -63,8 +62,8 @@ export async function withWorkspaceWriteLock<T>(workspace: string, directory: st
       }
     }
     const after = await lstat(path, { bigint: true });
-    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.uid !== before.uid
-      || after.nlink !== 1n || (after.mode & 0o077n) !== 0n) throw new Error("WORKSPACE_COORDINATION_CHANGED");
+    if (!matchesPrivateStat(after, { kind: "file", links: "single", mode: [{ mask: 0o077, equals: 0 }] })
+      || !sameFileIdentity(after, before, ["dev", "ino", "uid"])) throw new Error("WORKSPACE_COORDINATION_CHANGED");
     if (await realpath(workspace) !== workspace) throw new Error("WORKSPACE_ROOT_CHANGED");
     return await action();
   } finally {

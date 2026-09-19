@@ -1,5 +1,5 @@
-import { constants, statSync } from "node:fs";
-import { chmod, lstat, open, realpath } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { chmod, lstat, realpath } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -9,6 +9,7 @@ import { claudeCodeVersionAdmitted } from "../claude-sdk.ts";
 import { CODEX_NATIVE_SHA256, CODEX_NATIVE_VERSION } from "../codex-process.ts";
 import { devinCliVersionMatches } from "./devin.ts";
 import { boundedText } from "../validation.ts";
+import { assertPrivateStat, canonicalizePrivatePath, matchesPrivateStat, openPrivateRead, PRIVATE_CONTROL_REJECT } from "../private-file.ts";
 
 export const CLI_CODEX_ENV = "XCB_CODEX";
 export const CLI_CLAUDE_ENV = "XCB_CLAUDE";
@@ -33,14 +34,13 @@ const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
 
 /** Absolute, physical, user-owned executable file; bounded read for hashing. */
 export async function inspectCliExecutable(rawPath: unknown): Promise<{ executablePath: string; sha256: string; bytes: Uint8Array }> {
-  if (typeof rawPath !== "string" || !isAbsolute(rawPath) || /[\x00-\x1f\x7f]/u.test(rawPath)) throw new Error("XCB_EXECUTABLE_INVALID");
-  const executablePath = await realpath(rawPath);
+  const canonical = canonicalizePrivatePath(rawPath, { code: "XCB_EXECUTABLE_INVALID", resolved: false, reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
+  const executablePath = await realpath(canonical);
   const stat = await lstat(executablePath);
-  const uid = process.getuid?.();
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || ![0, uid].includes(stat.uid)
-    || (stat.mode & 0o022) !== 0 || (stat.mode & 0o111) === 0 || (stat.mode & 0o6000) !== 0
-    || stat.size < 1 || stat.size > MAX_EXECUTABLE_BYTES) throw new Error("XCB_EXECUTABLE_INVALID");
-  const handle = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  assertPrivateStat(stat, { kind: "file", noSymlink: true, links: "single", owner: "selfOrRoot",
+    mode: [{ mask: 0o022, equals: 0 }, { mask: 0o111, notEquals: 0 }, { mask: 0o6000, equals: 0 }],
+    size: { min: 1, max: MAX_EXECUTABLE_BYTES } }, "XCB_EXECUTABLE_INVALID");
+  const handle = await openPrivateRead(executablePath, { nonblock: false });
   try {
     const bytes = await handle.readFile();
     if (bytes.byteLength > MAX_EXECUTABLE_BYTES) throw new Error("XCB_EXECUTABLE_INVALID");
@@ -115,10 +115,9 @@ export async function repairCliExecutableMode(rawPath: unknown): Promise<boolean
   } catch {
     return false;
   }
-  const uid = process.getuid?.();
   try {
     const stat = await lstat(resolved);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== uid || (stat.mode & 0o6000) !== 0) return false;
+    if (!matchesPrivateStat(stat, { kind: "file", noSymlink: true, links: "single", owner: "self", mode: [{ mask: 0o6000, equals: 0 }] })) return false;
     if ((stat.mode & 0o022) === 0) return false;
     await chmod(resolved, 0o755);
     return true;

@@ -1,8 +1,9 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { constants, closeSync, fsyncSync, openSync, writeSync, type BigIntStats } from "node:fs";
-import { lstat, mkdir, open, realpath, rm, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { closeSync, fsyncSync, writeSync, type BigIntStats } from "node:fs";
+import { lstat, mkdir, realpath, rm, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { assertPrivateDirectory, assertPrivateStat, canonicalizePrivatePath, ensurePrivateDirectory, fsyncDirectory, openPrivateRead, openPrivateWrite, openPrivateWriteSync, readExactPrivateFile, readFdExact, sameFileIdentity, streamFdContent } from "./private-file.ts";
 import { boundedText, identifier, safeInteger } from "./validation.ts";
 
 /**
@@ -136,8 +137,7 @@ function object(value: unknown, keys: readonly string[]): Record<string, unknown
   return result;
 }
 function path(value: unknown): string {
-  assert(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "BROWSER_SESSION_PATH_INVALID");
-  return value as string;
+  return canonicalizePrivatePath(value, { code: "BROWSER_SESSION_PATH_INVALID" });
 }
 function bindingOf(value: unknown): BrowserSessionBinding {
   const raw = object(value, ["provider", "accountId", "owner", "leaseGeneration", "processGeneration"]);
@@ -159,36 +159,16 @@ function navigation(value: unknown): string | undefined {
   return parsed.toString();
 }
 async function directory(value: string): Promise<BigIntStats> {
-  const metadata = await lstat(value, { bigint: true });
-  assert(await realpath(value) === value && metadata.isDirectory() && metadata.uid === BigInt(process.getuid!()) && (metadata.mode & 0o7777n) === 0o700n, "BROWSER_SESSION_PRIVATE_DIRECTORY_REQUIRED");
-  return metadata;
+  return (await assertPrivateDirectory(value, { code: "BROWSER_SESSION_PRIVATE_DIRECTORY_REQUIRED", owner: "selfOrThrow" })).metadata;
 }
-async function syncDirectory(value: string): Promise<void> {
-  const fd = await open(value, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { await fd.sync(); } finally { await fd.close(); }
-}
+const syncDirectory = fsyncDirectory;
 async function ensureDirectory(value: string): Promise<void> {
-  try { await mkdir(value, { mode: 0o700 }); await syncDirectory(dirname(value)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  await directory(value);
-}
-async function durableFile(value: string, contents: string): Promise<void> {
-  const fd = await open(value, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await fd.writeFile(contents); await fd.sync(); } finally { await fd.close(); }
-  await syncDirectory(dirname(value));
+  await ensurePrivateDirectory(value, { code: "BROWSER_SESSION_PRIVATE_DIRECTORY_REQUIRED", owner: "selfOrThrow" });
 }
 async function fixedFile(value: string, contents: string, create: boolean): Promise<void> {
-  if (create) try { await durableFile(value, contents); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  const fd = await open(value, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && before.uid === BigInt(process.getuid!()) && before.nlink === 1n && (before.mode & 0o7777n) === 0o600n && before.size === BigInt(Buffer.byteLength(contents)), "BROWSER_SESSION_CONFIG_INVALID");
-    const read = Buffer.alloc(Buffer.byteLength(contents) + 1), result = await fd.read(read, 0, read.length, 0);
-    const after = await fd.stat({ bigint: true }), named = await lstat(value, { bigint: true });
-    assert(result.bytesRead === read.length - 1 && read.subarray(0, result.bytesRead).equals(Buffer.from(contents)) && sameFile(before, after) && sameFile(before, named), "BROWSER_SESSION_CONFIG_CHANGED");
-  } finally { await fd.close(); }
+  await readExactPrivateFile(value, contents, { invalidCode: "BROWSER_SESSION_CONFIG_INVALID", changedCode: "BROWSER_SESSION_CONFIG_CHANGED", create, statsEarly: true });
 }
-function sameFile(a: BigIntStats, b: BigIntStats): boolean { return ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(key => a[key as keyof BigIntStats] === b[key as keyof BigIntStats]); }
+const sameFile = sameFileIdentity;
 async function bounded<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
   const remaining = deadlineMs - Date.now(); if (remaining <= 0) return fail("BROWSER_SESSION_DEADLINE");
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -196,17 +176,12 @@ async function bounded<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
   finally { clearTimeout(timer); }
 }
 async function verifyExecutable(executablePath: string, sha256: string): Promise<void> {
-  const fd = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const fd = await openPrivateRead(executablePath);
   try {
     const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && before.uid === BigInt(process.getuid!()) && before.size > 0n && before.size <= 512n * 1024n * 1024n, "BROWSER_SESSION_EXECUTABLE_INVALID");
-    const fileHash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024); let read = 0;
-    while (read <= Number(before.size)) {
-      const count = (await fd.read(buffer, 0, Math.min(buffer.length, Number(before.size) + 1 - read), read)).bytesRead;
-      if (!count) break;
-      read += count; assert(read <= Number(before.size), "BROWSER_SESSION_EXECUTABLE_CHANGED");
-      fileHash.update(buffer.subarray(0, count));
-    }
+    assertPrivateStat(before, { kind: "file", owner: "selfOrThrow", size: { min: 1n, max: 512n * 1024n * 1024n } }, "BROWSER_SESSION_EXECUTABLE_INVALID");
+    const fileHash = createHash("sha256");
+    const read = await streamFdContent(fd, before.size, { code: "BROWSER_SESSION_EXECUTABLE_CHANGED", earlyGrowth: true, onChunk: chunk => { fileHash.update(chunk); } });
     const after = await fd.stat({ bigint: true });
     assert(read === Number(before.size) && sameFile(before, after) && sameFile(before, await lstat(executablePath, { bigint: true }))
       && await realpath(executablePath) === executablePath && fileHash.digest("hex") === sha256, "BROWSER_SESSION_EXECUTABLE_CHANGED");
@@ -214,16 +189,12 @@ async function verifyExecutable(executablePath: string, sha256: string): Promise
 }
 /** Reads a marker only as exact expected bytes; any drift refuses. */
 async function readJsonMarker(value: string, keys: readonly string[]): Promise<Record<string, unknown> | null> {
-  const fd = await open(value, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
+  const fd = await openPrivateRead(value, { missingOk: true });
   if (fd === null) return null;
   try {
     const metadata = await fd.stat({ bigint: true });
-    assert(metadata.isFile() && metadata.uid === BigInt(process.getuid!()) && (metadata.mode & 0o7777n) === 0o600n && metadata.size > 0n && metadata.size <= 8192n, "BROWSER_SESSION_MARKER_INVALID");
-    const buffer = Buffer.alloc(Number(metadata.size)); const result = await fd.read(buffer, 0, buffer.length, 0);
-    assert(result.bytesRead === buffer.length, "BROWSER_SESSION_MARKER_CHANGED");
+    assertPrivateStat(metadata, { kind: "file", owner: "selfOrThrow", mode: [{ mask: 0o7777, equals: 0o600 }], size: { min: 1n, max: 8192n } }, "BROWSER_SESSION_MARKER_INVALID");
+    const buffer = await readFdExact(fd, metadata.size, { code: "BROWSER_SESSION_MARKER_CHANGED" });
     const parsed: unknown = JSON.parse(buffer.toString("utf8"));
     return object(parsed, keys);
   } finally { await fd.close(); }
@@ -392,11 +363,11 @@ export function createBrowserSession(options: BrowserSessionOptions, trustedSyst
     root = join(sessionDir, "runs", `${owned.owner}-${owned.processGeneration}-${randomBytes(12).toString("hex")}`);
     await mkdir(dirname(root), { mode: 0o700, recursive: true }); await mkdir(root, { mode: 0o700 }); await syncDirectory(dirname(root));
     state.journalPath = join(root, "custody.jsonl");
-    journalFd = openSync(state.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    journalFd = openPrivateWriteSync(state.journalPath);
     fsyncSync(journalFd); await syncDirectory(root);
     lockPath = join(sessionDir, "lock.json");
     lockContents = JSON.stringify({ schema: "xcb.browser-session-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
-    const lock = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); lockOwned = true;
+    const lock = await openPrivateWrite(lockPath); lockOwned = true;
     try { await lock.writeFile(lockContents); await lock.sync(); } finally { await lock.close(); }
     await syncDirectory(sessionDir);
     persist();

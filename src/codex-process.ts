@@ -1,14 +1,15 @@
 import type { ProviderProcessWriteResult } from "./process-port.ts";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, closeSync, fsyncSync, openSync, writeSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { closeSync, fsyncSync, writeSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { Transform, type Readable, type Writable } from "node:stream";
 import { identifier, object, safeInteger } from "./validation.ts";
 import { inspectCodexHostRuntime, type CodexParentRuntimeBinding } from "./codex-host.ts";
 import { inspectCodexScratch } from "./codex-scratch.ts";
 import { createSeatbeltOsSandbox } from "./os-sandbox.ts";
+import { assertAbsolutePrivatePath, assertPrivateDirectory, assertPrivateStat, canonicalizePrivatePath, openPrivateRead, openPrivateWriteSync, readFdBounded, sameFileIdentity, writeFileOnce } from "./private-file.ts";
 
 export const CODEX_NATIVE_VERSION = "0.153.4";
 export const CODEX_NATIVE_SHA256 = "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3";
@@ -71,29 +72,23 @@ export function parseCodexCustodyJournal(text: string): { snapshot: Readonly<Rec
 }
 
 async function privateDirectory(path: string): Promise<string> {
-  if (!isAbsolute(path)) throw new Error("CODEX_ABSOLUTE_STATE_REQUIRED");
-  const physical = await realpath(path), metadata = await lstat(path);
-  if (physical !== resolve(path) || !metadata.isDirectory() || metadata.isSymbolicLink()
-    || metadata.uid !== process.getuid!() || (metadata.mode & 0o777) !== 0o700) throw new Error("CODEX_PRIVATE_STATE_REQUIRED");
-  return physical;
+  assertAbsolutePrivatePath(path, "CODEX_ABSOLUTE_STATE_REQUIRED");
+  return (await assertPrivateDirectory(path, { code: "CODEX_PRIVATE_STATE_REQUIRED", owner: "selfOrThrow",
+    mode: "perms", canonical: "resolved", statOrder: "realpathFirst", stats: "number" })).physical;
 }
 
 /** Inspect through one no-follow descriptor before copying any executable bytes. */
 export async function inspectCodexExecutable(path: string): Promise<Buffer> {
-  if (!isAbsolute(path)) throw new Error("CODEX_ABSOLUTE_EXECUTABLE_REQUIRED");
-  const descriptor = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  assertAbsolutePrivatePath(path, "CODEX_ABSOLUTE_EXECUTABLE_REQUIRED");
+  const descriptor = await openPrivateRead(path);
   try {
     const before = await descriptor.stat();
-    if (!before.isFile() || before.nlink !== 1 || ![0, process.getuid!()].includes(before.uid)
-      || (before.mode & 0o022) !== 0 || (before.mode & 0o111) === 0 || before.size < 1 || before.size > 256 * 1024 * 1024) throw new Error("CODEX_EXECUTABLE_IDENTITY_INVALID");
-    const bytes = Buffer.alloc(before.size + 1); let length = 0;
-    while (length < bytes.length) {
-      const next = await descriptor.read(bytes, length, Math.min(1024 * 1024, bytes.length - length), length);
-      if (!next.bytesRead) break; length += next.bytesRead;
-    }
-    const after = await descriptor.stat(), result = bytes.subarray(0, length);
-    if (length !== before.size || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || hash(result) !== CODEX_NATIVE_SHA256) throw new Error("CODEX_EXECUTABLE_CHANGED_OR_UNREVIEWED");
+    assertPrivateStat(before, { kind: "file", links: "single", owner: "selfOrRootOrThrow",
+      mode: [{ mask: 0o022, equals: 0 }, { mask: 0o111, notEquals: 0 }], size: { min: 1, max: 256 * 1024 * 1024 } }, "CODEX_EXECUTABLE_IDENTITY_INVALID");
+    const read = await readFdBounded(descriptor, before.size, { growth: true, loop: true });
+    const after = await descriptor.stat(), result = read.buffer.subarray(0, read.bytesRead);
+    if (read.bytesRead !== before.size || !sameFileIdentity(before, after, ["dev", "ino", "size", "mtime", "ctime"])
+      || hash(result) !== CODEX_NATIVE_SHA256) throw new Error("CODEX_EXECUTABLE_CHANGED_OR_UNREVIEWED");
     return result;
   } finally { await descriptor.close(); }
 }
@@ -101,10 +96,8 @@ export async function inspectCodexExecutable(path: string): Promise<Buffer> {
 /** Experimental runtime policy; the launcher never issues a qualification. */
 export function codexMacSandbox(input: { executable: string; scratch: string; relayPort: number }): string {
   if (!Number.isSafeInteger(input.relayPort) || input.relayPort < 1 || input.relayPort > 65535) throw new Error("CODEX_RELAY_PORT_INVALID");
-  const literal = (path: string) => {
-    if (!isAbsolute(path) || /[\x00-\x1f"\\]/u.test(path)) throw new Error("CODEX_SANDBOX_PATH_INVALID");
-    return JSON.stringify(path);
-  };
+  const literal = (path: string) => JSON.stringify(canonicalizePrivatePath(path,
+    { code: "CODEX_SANDBOX_PATH_INVALID", resolved: false, reject: /[\x00-\x1f"\\]/u, maxLength: Infinity }));
   if (resolve(input.executable).startsWith(`${resolve(input.scratch)}/`) || resolve(input.executable) === resolve(input.scratch)) throw new Error("CODEX_RUNTIME_MUST_BE_OUTSIDE_SCRATCH");
   const executable = literal(input.executable), scratch = literal(input.scratch);
   return `(version 1)
@@ -192,20 +185,20 @@ export function createCodexProcessLauncher(options: { executablePath: string; st
     const runtimeFailure = (operation: string) => { if (!runtimeErrors.includes(operation) && runtimeErrors.length < 32) runtimeErrors.push(operation); };
     try {
       for (const path of [scratch, runtime, ...["home", "state", "tmp", "work"].map(name => join(scratch, name))]) await mkdir(path, { mode: 0o700 });
-      await writeFile(executable, bytes, { mode: 0o500, flag: "wx" });
+      await writeFileOnce(executable, bytes, { mode: 0o500, nofollow: false, truncate: true });
       value.runtimeSnapshotSha256 = hash(await inspectCodexExecutable(executable));
-      await writeFile(join(scratch, "state", "config.toml"), input.configuration, { mode: 0o600, flag: "wx" });
+      await writeFileOnce(join(scratch, "state", "config.toml"), input.configuration, { mode: 0o600, nofollow: false, truncate: true });
       const policyPath = join(root, "sandbox.sb");
       const sandboxPlan = await createSeatbeltOsSandbox({ generateProfile: spec =>
         codexMacSandbox({ executable: spec.executable, scratch: spec.scratch, relayPort: input.relayPort }) })
         .plan({ platform: "darwin", executable, scratch, network: "loopback", policyPath });
       value.profileSha256 = sandboxPlan.policySha256;
-      await writeFile(policyPath, sandboxPlan.policy, { mode: 0o600, flag: "wx" });
+      await writeFileOnce(policyPath, sandboxPlan.policy, { mode: 0o600, nofollow: false, truncate: true });
       const inspectedScratch = await inspectCodexScratch({ scratch, configuration: input.configuration });
       if (inspectedScratch.configurationSha256 !== value.configSha256) throw new Error("CODEX_SCRATCH_CONFIGURATION_MISMATCH");
       value.scratchContentSha256 = inspectedScratch.contentSha256;
       value.scratchIdentitySha256 = inspectedScratch.identitySha256;
-      custodyFd = openSync(custodyPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); persist();
+      custodyFd = openPrivateWriteSync(custodyPath, { append: true }); persist();
       input.signal.throwIfAborted();
       const wrapped = sandboxPlan.wrap({ args: Object.freeze(["app-server", "--strict-config", "--listen", "stdio://"]), cwd: join(scratch, "work"),
         // Exact pinned CLI consumes this before runtime startup, selecting

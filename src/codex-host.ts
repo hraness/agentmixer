@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { type BigIntStats } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
+import { assertFileStable, assertPrivateStat, canonicalizePrivatePath, openPrivateRead, streamFdContent, PRIVATE_CONTROL_REJECT } from "./private-file.ts";
 
 export const CODEX_HOST_BUN_VERSION = "1.3.14";
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
@@ -42,51 +42,39 @@ export function assertCodexHostRuntimeFacts(facts: RuntimeFacts): void {
 }
 
 function executableMetadata(value: BigIntStats, uid: number): void {
-  if (!value.isFile() || value.isSymbolicLink() || value.nlink !== 1n || ![0n, BigInt(uid)].includes(value.uid)
-    || (value.mode & 0o022n) !== 0n || (value.mode & 0o111n) === 0n || (value.mode & 0o6000n) !== 0n
-    || value.size < 1n || value.size > BigInt(MAX_EXECUTABLE_BYTES)) throw new Error("CODEX_HOST_EXECUTABLE_INVALID");
+  assertPrivateStat(value, { kind: "file", noSymlink: true, links: "single", owner: [0n, BigInt(uid)],
+    mode: [{ mask: 0o022, equals: 0 }, { mask: 0o111, notEquals: 0 }, { mask: 0o6000, equals: 0 }],
+    size: { min: 1n, max: BigInt(MAX_EXECUTABLE_BYTES) } }, "CODEX_HOST_EXECUTABLE_INVALID");
 }
 
 /** Internal file-race predicate; alone this never admits a runtime or a digest. */
 export function assertCodexHostFileStable(before: BigIntStats, ...observed: readonly BigIntStats[]): void {
-  const fields = ["dev", "ino", "size", "mode", "uid", "gid", "nlink", "mtimeNs", "ctimeNs"] as const;
-  for (const value of observed) {
-    if (!value.isFile() || value.isSymbolicLink()
-      || fields.some(field => value[field] !== before[field])) throw new Error("CODEX_HOST_EXECUTABLE_CHANGED");
-  }
+  assertFileStable(before, observed, { code: "CODEX_HOST_EXECUTABLE_CHANGED", requirePlainFile: true,
+    fields: ["dev", "ino", "size", "mode", "uid", "gid", "nlink", "mtime", "ctime"] });
 }
 
 /** File-only verification for synthetic fixtures; no runtime identity or qualification is asserted. */
 export async function inspectCodexHostExecutable(executablePath: string, expectedSha256: string): Promise<Readonly<{ executablePath: string; sha256: string }>> {
   const pin = admittedDigest(expectedSha256), uid = process.getuid?.();
-  if (typeof executablePath !== "string" || !isAbsolute(executablePath) || resolve(executablePath) !== executablePath
-    || Buffer.byteLength(executablePath) > 4096 || /[\x00-\x1f\x7f]/u.test(executablePath)) throw new Error("CODEX_HOST_PATH_INVALID");
+  canonicalizePrivatePath(executablePath, { code: "CODEX_HOST_PATH_INVALID", measureBytes: true, reject: PRIVATE_CONTROL_REJECT });
   if (!Number.isSafeInteger(uid) || Number(uid) < 0) throw new Error("CODEX_HOST_RUNTIME_UNSUPPORTED");
   try {
     if (await realpath(executablePath) !== executablePath) throw new Error("CODEX_HOST_PATH_INVALID");
     const initial = await lstat(executablePath, { bigint: true });
     executableMetadata(initial, uid!);
-    const handle = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const handle = await openPrivateRead(executablePath);
     try {
       const before = await handle.stat({ bigint: true });
       executableMetadata(before, uid!);
       assertCodexHostFileStable(initial, before);
-      const digest = createHash("sha256"), buffer = Buffer.alloc(64 * 1024), size = Number(before.size);
-      let readBytes = 0;
+      const digest = createHash("sha256");
       // One extra byte detects growth; the fixed buffer avoids allocating from unchecked file metadata.
-      while (readBytes <= size) {
-        const limit = Math.min(buffer.length, size + 1 - readBytes);
-        const read = await handle.read(buffer, 0, limit, readBytes);
-        if (!Number.isSafeInteger(read.bytesRead) || read.bytesRead < 0 || read.bytesRead > limit) throw new Error("CODEX_HOST_EXECUTABLE_CHANGED");
-        if (!read.bytesRead) break;
-        readBytes += read.bytesRead;
-        digest.update(buffer.subarray(0, read.bytesRead));
-      }
+      const readBytes = await streamFdContent(handle, before.size, { code: "CODEX_HOST_EXECUTABLE_CHANGED", onChunk: chunk => { digest.update(chunk); } });
       const after = await handle.stat({ bigint: true });
       if (await realpath(executablePath) !== executablePath) throw new Error("CODEX_HOST_EXECUTABLE_CHANGED");
       const current = await lstat(executablePath, { bigint: true }), final = await handle.stat({ bigint: true });
       assertCodexHostFileStable(before, after, current, final);
-      if (readBytes !== size) throw new Error("CODEX_HOST_EXECUTABLE_CHANGED");
+      if (readBytes !== Number(before.size)) throw new Error("CODEX_HOST_EXECUTABLE_CHANGED");
       const sha256 = digest.digest("hex");
       if (sha256 !== pin) throw new Error("CODEX_HOST_PIN_MISMATCH");
       return Object.freeze({ executablePath, sha256 });

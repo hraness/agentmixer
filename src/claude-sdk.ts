@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
-import { constants } from "node:fs";
+import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -9,6 +8,7 @@ import { literalClaudePrompt, restrictedClaudeOptions } from "./claude-options.t
 import { spawnBoundedProvider, type BoundedProviderProcess, type BoundedProviderProcessFactory } from "./provider-process.ts";
 import { type BrokerToolName, type ToolBroker } from "./broker.ts";
 import { assertQualified, AgentStoppedError, type AgentAdapter, type AgentRunRequest, type RuntimeQualification } from "./runtime.ts";
+import { assertAbsolutePrivatePath, assertPrivateDirectory, assertPrivateStat, openPrivateRead, readFdBounded, sameFileIdentity, writeFileOnce } from "./private-file.ts";
 
 export const CLAUDE_SDK_VERSION = "0.3.268";
 /** The CLI release the bundled SDK package declares as its build pair — the
@@ -80,31 +80,22 @@ export async function inspectClaudeSdkRuntime(runtime: ClaudeSdkAdapterOptions["
 }
 
 async function readPinnedExecutable(path: string): Promise<Buffer> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const handle = await openPrivateRead(path);
   try {
     const info = await handle.stat();
-    if (!info.isFile() || (info.uid !== process.getuid?.() && info.uid !== 0) || info.nlink !== 1
-      || (info.mode & 0o022) !== 0 || (info.mode & 0o111) === 0 || info.size > 512 * 1024 * 1024) throw new Error("CLAUDE_RUNTIME_INVALID");
-    const bytes = Buffer.alloc(info.size + 1);
-    let received = 0;
-    while (received < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, received, bytes.byteLength - received, received);
-      if (bytesRead === 0) break;
-      received += bytesRead;
-    }
+    assertPrivateStat(info, { kind: "file", owner: "selfOrRoot", links: "single",
+      mode: [{ mask: 0o022, equals: 0 }, { mask: 0o111, notEquals: 0 }], size: { max: 512 * 1024 * 1024 } }, "CLAUDE_RUNTIME_INVALID");
+    const read = await readFdBounded(handle, info.size, { growth: true, loop: true });
     const after = await handle.stat();
-    if (received !== info.size || after.size !== info.size || after.dev !== info.dev || after.ino !== info.ino
-      || after.uid !== info.uid || after.mode !== info.mode || after.nlink !== info.nlink
-      || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) throw new Error("CLAUDE_RUNTIME_CHANGED");
-    return bytes.subarray(0, received);
+    if (read.bytesRead !== info.size || !sameFileIdentity(info, after, ["size", "dev", "ino", "uid", "mode", "nlink", "mtime", "ctime"])) throw new Error("CLAUDE_RUNTIME_CHANGED");
+    return read.buffer.subarray(0, read.bytesRead);
   } finally { await handle.close(); }
 }
 
 async function snapshotExecutable(source: string, expectedDigest: string, destination: string): Promise<void> {
   const bytes = await readPinnedExecutable(source);
   if (hash(bytes) !== expectedDigest) throw new Error("CLAUDE_RUNTIME_DIGEST_MISMATCH");
-  const handle = await open(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o500);
-  try { await handle.writeFile(bytes); } finally { await handle.close(); }
+  await writeFileOnce(destination, bytes, { mode: 0o500 });
 }
 
 function schemas(): Record<BrokerToolName, z.ZodRawShape> {
@@ -141,12 +132,9 @@ export function assertClaudeInitialization(value: SDKSystemMessage, request: Age
 }
 
 async function physicalPrivateDirectory(path: string): Promise<string> {
-  if (!isAbsolute(path)) throw new Error("CLAUDE_STATE_ROOT_INVALID");
-  const actual = await realpath(path), stat = await lstat(path);
-  if (actual !== path || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
-    throw new Error("CLAUDE_STATE_ROOT_INVALID");
-  }
-  return actual;
+  assertAbsolutePrivatePath(path, "CLAUDE_STATE_ROOT_INVALID");
+  return (await assertPrivateDirectory(path, { code: "CLAUDE_STATE_ROOT_INVALID", owner: "self",
+    mode: "ownerOnly", canonical: "self", statOrder: "realpathFirst", stats: "number" })).physical;
 }
 function boundedInteger(value: number, minimum: number, maximum: number) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error("CLAUDE_LIMIT_INVALID");

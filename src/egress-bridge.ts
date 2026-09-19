@@ -1,8 +1,9 @@
-import { chmod, lstat, realpath, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { chmod, lstat, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import { connect as netConnect, createServer, type Server, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { object } from "./validation.ts";
+import { assertPrivateDirectory, canonicalizePrivatePath } from "./private-file.ts";
 
 /** Host-side unix-socket CONNECT bridge for a sandboxed provider process.
  * The kernel boundary never sees sandboxed DNS or TCP: a bwrap plan keeps the
@@ -46,9 +47,7 @@ export interface EgressBridge {
 function fail(code: string): never { throw new Error(code); }
 function assert(value: unknown, code: string): asserts value { if (!value) fail(code); }
 function path(value: unknown): string {
-  assert(typeof value === "string" && isAbsolute(value) && resolve(value) === value
-    && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "EGRESS_BRIDGE_PATH_INVALID");
-  return value;
+  return canonicalizePrivatePath(value, { code: "EGRESS_BRIDGE_PATH_INVALID" });
 }
 function hostname(value: unknown): string {
   assert(typeof value === "string", "EGRESS_BRIDGE_HOST_INVALID");
@@ -58,9 +57,7 @@ function hostname(value: unknown): string {
   return lowered;
 }
 async function privateDirectory(value: string): Promise<void> {
-  const metadata = await lstat(value, { bigint: true });
-  assert(metadata.isDirectory() && metadata.uid === BigInt(process.getuid!()) && (metadata.mode & 0o777n) === 0o700n
-    && await realpath(value) === value, "EGRESS_BRIDGE_DIRECTORY_PRIVATE");
+  await assertPrivateDirectory(value, { code: "EGRESS_BRIDGE_DIRECTORY_PRIVATE", owner: "selfOrThrow", mode: "perms", metadataFirst: true });
 }
 
 /** Default dialer for the real host seam: a bounded plain TCP connect whose

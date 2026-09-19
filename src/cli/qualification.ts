@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { lstat, open, rename } from "node:fs/promises";
+import { lstat, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
@@ -7,6 +6,7 @@ import type { CapabilityProfileIdentity } from "../capabilities.ts";
 import type { AgentTaskRoute, TaskRuntimeQualification } from "../task-runtime.ts";
 import { boundedText, identifier, safeInteger } from "../validation.ts";
 import { privateDirectory } from "./state.ts";
+import { assertPrivateStat, openPrivateRead, writeFileOnce } from "../private-file.ts";
 
 const MAX_QUALIFICATION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECORD_VERSION = "xcb.cli-qualification.v1";
@@ -67,10 +67,9 @@ export async function readCliQualification(stateRoot: string, provider: string):
   const path = recordPath(root, provider);
   try {
     const stat = await lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size > 8192) {
-      fail("QUALIFICATION_RECORD_INVALID");
-    }
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    assertPrivateStat(stat, { kind: "file", noSymlink: true, owner: "self",
+      mode: [{ mask: 0o077, equals: 0 }], size: { max: 8192 } }, "QUALIFICATION_RECORD_INVALID");
+    const handle = await openPrivateRead(path, { nonblock: false });
     try {
       const text = await handle.readFile("utf8");
       const record = parseRecord(JSON.parse(text));
@@ -94,13 +93,7 @@ export async function writeCliQualification(stateRoot: string, record: CliQualif
   const parsed = parseRecord(JSON.parse(JSON.stringify(record)));
   const path = recordPath(root, parsed.provider);
   const temp = `${path}.tmp-${process.pid}`;
-  const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(parsed, null, 2) + "\n");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await writeFileOnce(temp, JSON.stringify(parsed, null, 2) + "\n", { exclusive: false, truncate: true, syncFile: true });
   await rename(temp, path);
   return parsed;
 }

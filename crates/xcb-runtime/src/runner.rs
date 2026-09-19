@@ -456,7 +456,15 @@ pub fn validate_init(value: &Value, cwd: &Path, model: &ModelChoice, tools: bool
         .and_then(Value::as_str)
         .is_none_or(|version| !claude::version_admitted(version))
         || value.get("cwd").and_then(Value::as_str) != cwd.to_str()
-        || value.get("model").and_then(Value::as_str) != Some(model.id.as_str())
+        || match value.get("model").and_then(Value::as_str) {
+            // Alias choices (`value` ≠ `resolvedModel`, e.g. `default`) are
+            // resolved provider-side and can vary by effort — `default/low`
+            // was observed serving `claude-sonnet-5` while the catalog says
+            // `claude-opus-5[1m]`. The bound intent is the alias itself, so
+            // any well-formed reported model is within contract.
+            Some(reported) if model.resolved.is_some() => Id::new(reported).is_err(),
+            reported => reported != Some(model.id.as_str()),
+        }
         || value.get("apiKeySource").and_then(Value::as_str) != Some("none")
         || value.get("permissionMode").and_then(Value::as_str) != Some("dontAsk")
         || actual != expected
@@ -1206,5 +1214,47 @@ mod tests {
             ]
         );
         assert_eq!(policy["egress"]["protocol"], "connect-tcp443");
+    }
+
+    /// Alias model choices (catalog `value` ≠ `resolvedModel`, e.g. `default`)
+    /// launch with the alias but the provider reports its own resolution at
+    /// init — which can vary by effort. The boundary assertion must accept
+    /// any well-formed reported model for aliases while concrete choices
+    /// still require an exact match.
+    #[test]
+    fn init_boundary_accepts_resolved_alias_model() {
+        let cwd = Path::new("/workspace");
+        let init = |model: &str| {
+            json!({
+                "claude_code_version": "2.1.274",
+                "cwd": "/workspace",
+                "model": model,
+                "apiKeySource": "none",
+                "permissionMode": "dontAsk",
+                "tools": [],
+                "skills": [],
+                "plugins": [],
+                "mcp_servers": []
+            })
+        };
+        let choice = |id: &str, resolved: Option<&str>| ModelChoice {
+            provider: Provider::Claude,
+            id: Id::new(id).unwrap(),
+            label: id.into(),
+            mode: Mode::Fixed,
+            resolved: resolved.map(|value| Id::new(value).unwrap()),
+            effort: None,
+            observed_at_ms: 0,
+        };
+        let alias = choice("default", Some("claude-opus-5[1m]"));
+        validate_init(&init("claude-opus-5[1m]"), cwd, &alias, false).unwrap();
+        validate_init(&init("default"), cwd, &alias, false).unwrap();
+        validate_init(&init("claude-sonnet-5"), cwd, &alias, false).unwrap();
+        assert!(validate_init(&init("not a model!"), cwd, &alias, false).is_err());
+        assert!(validate_init(&init(""), cwd, &alias, false).is_err());
+
+        let concrete = choice("claude-fable-5-1", None);
+        validate_init(&init("claude-fable-5-1"), cwd, &concrete, false).unwrap();
+        assert!(validate_init(&init("claude-sonnet-5"), cwd, &concrete, false).is_err());
     }
 }

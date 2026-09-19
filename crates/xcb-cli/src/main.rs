@@ -920,8 +920,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     questions.insert(
                         "rate".to_owned(),
                         judge::JudgeQuestion::Score {
-                            instructions: "Rate the claim that water is wet.".to_owned(),
-                            criteria: vec!["factual accuracy".to_owned()],
+                            instructions: "How true is the claim that water is wet? Rate on the ordered criteria scale.".to_owned(),
+                            criteria: vec![
+                                "false".to_owned(),
+                                "partly true".to_owned(),
+                                "true".to_owned(),
+                            ],
                         },
                     );
                     let answers = backend

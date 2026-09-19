@@ -24,11 +24,13 @@ fn endpoint_parsing_accepts_https_only() {
     assert_eq!(endpoint.host, "api.typesafe.ai");
     assert_eq!(endpoint.port, 443);
     assert_eq!(endpoint.path, "/v1/systemone");
+    assert_eq!(endpoint.authority(), "api.typesafe.ai");
 
     let with_port = Endpoint::parse("https://judge.internal:8443/ask").unwrap();
     assert_eq!(with_port.host, "judge.internal");
     assert_eq!(with_port.port, 8443);
     assert_eq!(with_port.path, "/ask");
+    assert_eq!(with_port.authority(), "judge.internal:8443");
 
     for url in [
         "http://api.typesafe.ai/v1/systemone",

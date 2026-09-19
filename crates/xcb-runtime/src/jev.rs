@@ -44,6 +44,14 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    pub fn authority(&self) -> String {
+        if self.port == 443 {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
     pub fn parse(url: &str) -> Result<Self> {
         bounded_text(url, 1024)?;
         let rest = url
@@ -201,7 +209,7 @@ impl SystemOne {
         let request = format!(
             "POST {} HTTP/1.1\r\nhost: {}\r\nauthorization: Bearer {}\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             self.endpoint.path,
-            self.endpoint.host,
+            self.endpoint.authority(),
             self.token.as_str(),
             body.len(),
         );

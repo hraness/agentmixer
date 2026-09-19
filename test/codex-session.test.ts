@@ -136,7 +136,8 @@ function peer(options: PeerOptions = {}) {
       purpose: options.classify ? "classify" : "respond", model: MODEL, prompt: PROMPT, signal: controller.signal },
       limits: { deadlineMs: options.deadlineMs ?? 2000, ioMs: options.ioMs ?? 500, cleanupMs: 100, ...(options.maxRequests ? { maxRequests: options.maxRequests } : {}) } });
   }
-  return { run, invocations, submitted, count: () => upstreamRequests, revoked: () => revoked, stopped: () => stopped };
+  return { run, invocations, submitted, count: () => upstreamRequests, revoked: () => revoked, stopped: () => stopped,
+    abort: () => controller.abort(new Error("synthetic user cancellation")) };
 }
 async function failure(run: () => Promise<unknown>): Promise<CodexSessionReceipt> {
   try { await run(); throw new Error("Expected session rejection"); }
@@ -389,11 +390,17 @@ describe("Codex closed driver", () => {
     const receipt = await failure(fixture.run); expect(receipt.relay?.joined).toBe(false); expect(receipt.processStopped).toBe(false);
   });
   test("abort cancellation rejection of a stalled successful response remains latched", async () => {
-    let cancellations = 0;
-    const fixture = peer({ deadlineMs: 40, response: async () => new Response(new ReadableStream({
+    let reads = 0, cancellations = 0;
+    const fixture = peer({ response: async () => new Response(new ReadableStream({
+      // With no read-ahead buffer, pull proves the relay owns a reader and
+      // has requested body data. Abort at that boundary, not at a deadline
+      // that can expire before startup/handshake reaches the upstream.
+      pull() { reads++; fixture.abort(); },
       cancel() { cancellations++; return Promise.reject(new Error("synthetic cancellation fault")); },
-    }), { headers: { "content-type": "text/event-stream" } }) });
-    const receipt = await failure(fixture.run); expect(cancellations).toBe(1);
+    }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } }) });
+    const receipt = await failure(fixture.run);
+    expect(fixture.count()).toBe(1); expect(reads).toBe(1); expect(cancellations).toBe(1);
+    expect(receipt.failures).toContain("CODEX_CANCELLED"); expect(receipt.failures).not.toContain("CODEX_SESSION_DEADLINE");
     expect(receipt.relay?.joined).toBe(false); expect(receipt.processStopped).toBe(false);
   });
   test("an already locked upstream body cannot disappear from cleanup custody", async () => {

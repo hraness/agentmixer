@@ -18,7 +18,8 @@
   egress through the socket — plus `judge.ts`, the provider-neutral jev-style
   judgment port (`ask(state, questions)` → typed answers) with the System One
   backend and the cross-platform local key vault. A judge orders
-  already-admitted routes; it never qualifies or activates a provider.
+  already-admitted routes and may veto auto-continuation only after every
+  deterministic safety gate passes; it never qualifies or activates a provider.
   `src/index.ts` is the package's complete public surface.
 - `src/cli/` is the standalone `xcb` terminal surface (`cli.ts` entry,
   chat/run/resume/sessions/doctor/auth/judge/migrate commands) built on the same

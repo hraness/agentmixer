@@ -81,7 +81,7 @@ pub async fn auto_route(
     )?;
     let view = summary::snapshot(store, None, config, now_ms())?;
     let claude_admitted = Pin::load(store.root(), Provider::Claude).is_ok();
-    let mut candidates: Vec<(Id, ModelChoice)> = Vec::new();
+    let mut candidates: Vec<(Id, ModelChoice, Option<f64>)> = Vec::new();
     for model in &view.models {
         for view_account in &view.accounts {
             if view_account.provider != model.provider
@@ -96,7 +96,11 @@ pub async fn auto_route(
             if !admitted || !auth::has_token(store, &view_account.id)? {
                 continue;
             }
-            candidates.push((view_account.id.clone(), model.clone()));
+            candidates.push((
+                view_account.id.clone(),
+                model.clone(),
+                view_account.remaining_percent,
+            ));
         }
     }
     pick_route(
@@ -114,10 +118,11 @@ async fn pick_route(
     judge: &dyn judge::Judge,
     context: &str,
     task: &str,
-    candidates: Vec<(Id, ModelChoice)>,
+    candidates: Vec<(Id, ModelChoice, Option<f64>)>,
 ) -> Result<(Id, ModelChoice)> {
     if candidates.len() == 1 {
-        return Ok(candidates.into_iter().next().expect("one candidate"));
+        let (account, model, _) = candidates.into_iter().next().expect("one candidate");
+        return Ok((account, model));
     }
     if candidates.is_empty() || candidates.len() > 64 {
         return Err(Error::Unavailable(
@@ -125,11 +130,12 @@ async fn pick_route(
         ));
     }
     let mut criteria = std::collections::BTreeMap::new();
-    for (rank, (_, model)) in candidates.iter().enumerate() {
-        criteria.insert(
-            format!("route_{rank}"),
-            Some(format!("{} · {}", model.provider, model.label)),
-        );
+    for (rank, (_, model, quota)) in candidates.iter().enumerate() {
+        let mut description = format!("{} · {}", model.provider, model.label);
+        if let Some(remaining) = quota {
+            description.push_str(&format!(" · {remaining:.0}% quota remaining"));
+        }
+        criteria.insert(format!("route_{rank}"), Some(description));
     }
     let state = serde_json::json!({
         "context": context,
@@ -139,7 +145,7 @@ async fn pick_route(
     questions.insert(
         "route".to_owned(),
         judge::JudgeQuestion::Choice {
-            instructions: "Pick the route most likely to complete the task well.".to_owned(),
+            instructions: "Pick the route most likely to complete the task well; descriptions include the account's remaining quota.".to_owned(),
             criteria,
         },
     );
@@ -156,6 +162,7 @@ async fn pick_route(
     candidates
         .into_iter()
         .nth(rank)
+        .map(|(account, model, _)| (account, model))
         .ok_or(Error::Unavailable("judge route out of range"))
 }
 
@@ -1047,7 +1054,17 @@ mod tests {
             Box<dyn std::future::Future<Output = Result<judge::JudgeAnswers>> + Send + 'a>,
         > {
             let pick = self.0.clone();
-            let checked = questions.contains_key("route");
+            let checked = questions.contains_key("route")
+                && questions.iter().all(|(_, question)| match question {
+                    judge::JudgeQuestion::Choice { criteria, .. } => {
+                        criteria.values().all(|description| {
+                            description
+                                .as_ref()
+                                .is_some_and(|d| d.contains("% quota remaining"))
+                        })
+                    }
+                    _ => false,
+                });
             Box::pin(async move {
                 if !checked {
                     return Err(Error::Unavailable("missing route question"));
@@ -1099,7 +1116,7 @@ mod tests {
         }
     }
 
-    fn route_candidate(index: usize) -> (Id, ModelChoice) {
+    fn route_candidate(index: usize) -> (Id, ModelChoice, Option<f64>) {
         (
             Id::new(format!("a{index}")).unwrap(),
             ModelChoice {
@@ -1111,6 +1128,7 @@ mod tests {
                 effort: None,
                 observed_at_ms: 1,
             },
+            Some(42.0),
         )
     }
 

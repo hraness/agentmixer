@@ -840,6 +840,14 @@ pub async fn run(
                     }
                     validate_init(&value, &launch.cwd, &session.model, tools)?;
                     admitted = true;
+                    if let Some(reported) = value.get("model").and_then(Value::as_str)
+                        && reported != session.model.id.as_str()
+                        && Id::new(reported).is_ok()
+                    {
+                        observer(Progress::Notice(format!(
+                            "provider resolved the model to {reported}"
+                        )));
+                    }
                 }
                 Event::Delta {
                     thinking: is_thinking,

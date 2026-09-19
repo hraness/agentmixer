@@ -563,16 +563,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 Some(judge::JudgeKeySource::Vault) => "vault",
                 None => "none",
             };
-            let judge_endpoint = config
-                .extensions
-                .judge
-                .endpoint
-                .as_deref()
-                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL);
+            let (judge_model, judge_endpoint) =
+                xcb_runtime::jev::effective_target(&config.extensions.judge);
             let judge_status = json!({
                 "enabled": config.extensions.judge.enabled,
                 "key": judge_key_name,
-                "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
+                "model": judge_model,
                 "endpoint": judge_endpoint,
             });
             if cli.json {
@@ -907,24 +903,57 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                             criteria: None,
                         },
                     );
+                    questions.insert(
+                        "pick".to_owned(),
+                        judge::JudgeQuestion::Choice {
+                            instructions: "Which option names a color?".to_owned(),
+                            criteria: std::collections::BTreeMap::from([
+                                ("red".to_owned(), Some("a color".to_owned())),
+                                ("spoon".to_owned(), Some("not a color".to_owned())),
+                            ]),
+                        },
+                    );
+                    questions.insert(
+                        "rate".to_owned(),
+                        judge::JudgeQuestion::Score {
+                            instructions: "How true is the claim that water is wet? Rate on the ordered criteria scale.".to_owned(),
+                            criteria: vec![
+                                "false".to_owned(),
+                                "partly true".to_owned(),
+                                "true".to_owned(),
+                            ],
+                        },
+                    );
                     let answers = backend
                         .ask(
                             &serde_json::json!({"context": "xcb judge connectivity test"}),
                             &questions,
                         )
                         .await?;
-                    match answers.answers.get("ping").and_then(|a| a.noul()) {
-                        Some(noul) => println!(
-                            "Judge reachable · model {} · noul {noul:.3}",
-                            answers.model.as_deref().unwrap_or("unknown")
-                        ),
-                        None => {
-                            return Err(Error::Unavailable("judge response missing noul answer"));
-                        }
-                    }
+                    let noul = answers
+                        .answers
+                        .get("ping")
+                        .and_then(|a| a.noul())
+                        .ok_or(Error::Unavailable("judge response missing noul answer"))?;
+                    let (pick, pick_confidence) = answers
+                        .answers
+                        .get("pick")
+                        .and_then(|a| a.choice())
+                        .ok_or(Error::Unavailable("judge response missing choice answer"))?;
+                    let (score, score_confidence) = answers
+                        .answers
+                        .get("rate")
+                        .and_then(|a| a.score())
+                        .ok_or(Error::Unavailable("judge response missing score answer"))?;
+                    println!(
+                        "Judge reachable · model {} · noul {noul:.3} · choice {pick}@{pick_confidence:.3} · score {score:.3}@{score_confidence:.3}",
+                        answers.model.as_deref().unwrap_or("unknown")
+                    );
                 }
                 None | Some(JudgeCommand::Status) => {
                     let source = judge::judge_token(store.root())?.map(|(_, source)| source);
+                    let (judge_model, judge_endpoint) =
+                        xcb_runtime::jev::effective_target(&config.extensions.judge);
                     if cli.json {
                         print_json(json!({
                             "version": 1,
@@ -934,8 +963,8 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                                 Some(judge::JudgeKeySource::Vault) => "vault",
                                 None => "none",
                             },
-                            "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
-                            "endpoint": config.extensions.judge.endpoint.as_deref().unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
+                            "model": judge_model,
+                            "endpoint": judge_endpoint,
                         }))?;
                     } else {
                         let key = match source {
@@ -944,25 +973,12 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                             None => "none",
                         };
                         println!(
-                            "judge: {} · key {key} · model {} · {}",
+                            "judge: {} · key {key} · model {judge_model} · {judge_endpoint}",
                             if config.extensions.judge.enabled {
                                 "enabled"
                             } else {
                                 "disabled"
                             },
-                            config
-                                .extensions
-                                .judge
-                                .model
-                                .as_ref()
-                                .map(|m| m.as_str())
-                                .unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
-                            config
-                                .extensions
-                                .judge
-                                .endpoint
-                                .as_deref()
-                                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
                         );
                     }
                 }

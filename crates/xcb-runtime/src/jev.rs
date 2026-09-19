@@ -83,6 +83,25 @@ impl Endpoint {
     }
 }
 
+/// The model and endpoint a `SystemOne` backend resolves for this config:
+/// config fields first, then the environment overrides, then the built-in
+/// defaults. Status output reports this so it shows what the backend would
+/// actually use, not just the stored config.
+pub fn effective_target(config: &crate::config::JudgeConfig) -> (String, String) {
+    let model = config
+        .model
+        .as_ref()
+        .map(|id| id.as_str().to_owned())
+        .or_else(|| std::env::var(JUDGE_MODEL_ENV).ok())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+    let endpoint = config
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var(JUDGE_URL_ENV).ok())
+        .unwrap_or_else(|| SYSTEM_ONE_URL.to_owned());
+    (model, endpoint)
+}
+
 /// The System One backend: a `Judge` over one bounded HTTPS POST per ask.
 pub struct SystemOne {
     endpoint: Endpoint,
@@ -97,14 +116,12 @@ impl SystemOne {
         model: Option<Id>,
         endpoint: Option<String>,
     ) -> Result<Self> {
-        let url = endpoint
-            .or_else(|| std::env::var(JUDGE_URL_ENV).ok())
-            .unwrap_or_else(|| SYSTEM_ONE_URL.to_owned());
+        let (model, url) = effective_target(&crate::config::JudgeConfig {
+            enabled: true,
+            model,
+            endpoint,
+        });
         let endpoint = Endpoint::parse(url.trim())?;
-        let model = model
-            .map(|id| id.as_str().to_owned())
-            .or_else(|| std::env::var(JUDGE_MODEL_ENV).ok())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         bounded_text(&model, 128)?;
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

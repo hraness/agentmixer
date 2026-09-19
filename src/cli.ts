@@ -44,7 +44,7 @@ Usage:
   xcb judge [status]    show judgment-provider (jev) state
   xcb judge token       store the jev API key read from stdin (piped, never echoed)
   xcb judge logout      remove the stored jev API key
-  xcb judge test        ask the judge one bounded question (live call)
+  xcb judge test        ask the judge a bounded question batch (live call)
   xcb migrate           copy legacy AgentMixer state into ~/.xcb (keeps the original)
   xcb --version
 
@@ -257,11 +257,15 @@ async function commandJudge(sub: string | undefined, stateRoot: string): Promise
     }
     const started = Date.now();
     const answers = await judge.ask("xcb judge connectivity probe", {
-      probe: { type: "noul", instructions: "Is this a connectivity test that should answer yes?" },
+      probe: { type: "noul", instructions: "Is the sky blue on a clear day?" },
+      pick: { type: "choice", instructions: "Which option names a color?", criteria: { red: "a color", spoon: "not a color" } },
+      rate: { type: "score", instructions: "How true is the claim that water is wet? Rate on the ordered criteria scale.", criteria: ["false", "partly true", "true"] },
     });
-    const probe = answers.answers.probe;
-    if (probe?.type !== "noul") return fail("judge returned a malformed answer shape.");
-    process.stdout.write(`${green("✓")} judge answered in ${Date.now() - started}ms ${dim(`(model ${answers.model ?? "unknown"}, p=${probe.noul.toFixed(3)})`)}\n`);
+    const probe = answers.answers.probe, pick = answers.answers.pick, rate = answers.answers.rate;
+    if (probe?.type !== "noul" || pick?.type !== "choice" || rate?.type !== "score") {
+      return fail("judge returned a malformed answer shape.");
+    }
+    process.stdout.write(`${green("✓")} judge answered in ${Date.now() - started}ms ${dim(`(model ${answers.model ?? "unknown"}, p=${probe.noul.toFixed(3)}, choice=${pick.choice}@${pick.confidence.toFixed(3)}, score=${rate.score.toFixed(3)}@${rate.confidence.toFixed(3)})`)}\n`);
     return 0;
   }
   if (sub !== undefined && sub !== "status") return fail("usage: xcb judge [status|token|logout|test]");

@@ -15,10 +15,13 @@
   network namespace — plus its two consumers: the public `egress-client.ts`
   for cooperative runtimes and `sandbox/loopback-forwarder.cjs`, the shipped
   in-namespace forwarder that gives stock binaries standard `HTTPS_PROXY`
-  egress through the socket.
+  egress through the socket — plus `judge.ts`, the provider-neutral jev-style
+  judgment port (`ask(state, questions)` → typed answers) with the System One
+  backend and the cross-platform local key vault. A judge orders
+  already-admitted routes; it never qualifies or activates a provider.
   `src/index.ts` is the package's complete public surface.
 - `src/cli/` is the standalone `xcb` terminal surface (`cli.ts` entry,
-  chat/run/resume/sessions/doctor/auth/migrate commands) built on the same
+  chat/run/resume/sessions/doctor/auth/judge/migrate commands) built on the same
   task runtime; `claude-task-adapter.ts` and `cli/sandbox.ts` own the
   seatbelted subscription route it drives. `cli/state.ts` resolves `~/.xcb`
   (env `XCB_STATE`) and owns the explicit `migrate` copy from legacy

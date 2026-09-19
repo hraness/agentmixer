@@ -1,7 +1,7 @@
 use crate::{
     Error, Result, attachments, auth,
     config::Config,
-    digest, exports, hooks, new_id, now_ms, panes,
+    digest, exports, hooks, judge, new_id, now_ms, panes,
     process::Pin,
     runner::{self, Observer, Outcome, Progress, RunInput},
     store::Store,
@@ -63,6 +63,100 @@ pub fn choose_model(
     choices.into_iter().next().ok_or(Error::Unavailable(
         "no observed models; run xcb models refresh for this provider",
     ))
+}
+
+/// Picks an account/model route for `--model auto` through the judge: asks a
+/// `choice` question over admitted, signable routes. Fails honestly when the
+/// extension is off, no key is configured, or the judge rejects the batch —
+/// `auto` never silently degrades to a deterministic pick, and an explicit
+/// `--model` bypasses the judge entirely.
+pub async fn auto_route(
+    store: &Store,
+    config: &Config,
+    prompt: &str,
+    account: Option<&Id>,
+) -> Result<(Id, ModelChoice)> {
+    let judge = judge::resolve(store.root(), &config.extensions.judge)?.ok_or(
+        Error::Unavailable("--model auto needs the judge: xcb judge token && xcb judge enable"),
+    )?;
+    let view = summary::snapshot(store, None, config, now_ms())?;
+    let claude_admitted = Pin::load(store.root(), Provider::Claude).is_ok();
+    let mut candidates: Vec<(Id, ModelChoice)> = Vec::new();
+    for model in &view.models {
+        for view_account in &view.accounts {
+            if view_account.provider != model.provider
+                || view_account.busy
+                || !view_account.enabled
+                || account.is_some_and(|id| id != &view_account.id)
+                || candidates.len() >= 16
+            {
+                continue;
+            }
+            let admitted = model.provider == Provider::Claude && claude_admitted;
+            if !admitted || !auth::has_token(store, &view_account.id)? {
+                continue;
+            }
+            candidates.push((view_account.id.clone(), model.clone()));
+        }
+    }
+    pick_route(
+        judge.as_ref(),
+        "Choose the model route for a new coding task.",
+        prompt,
+        candidates,
+    )
+    .await
+}
+
+/// Asks the judge to pick one route out of the given candidates. Zero
+/// candidates is an honest error; one skips the call entirely.
+async fn pick_route(
+    judge: &dyn judge::Judge,
+    context: &str,
+    task: &str,
+    candidates: Vec<(Id, ModelChoice)>,
+) -> Result<(Id, ModelChoice)> {
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next().expect("one candidate"));
+    }
+    if candidates.is_empty() || candidates.len() > 64 {
+        return Err(Error::Unavailable(
+            "no admitted routes; add an account and sign in",
+        ));
+    }
+    let mut criteria = std::collections::BTreeMap::new();
+    for (rank, (_, model)) in candidates.iter().enumerate() {
+        criteria.insert(
+            format!("route_{rank}"),
+            Some(format!("{} · {}", model.provider, model.label)),
+        );
+    }
+    let state = serde_json::json!({
+        "context": context,
+        "task": xcb_core::display_text(task, 8192),
+    });
+    let mut questions = judge::JudgeQuestions::new();
+    questions.insert(
+        "route".to_owned(),
+        judge::JudgeQuestion::Choice {
+            instructions: "Pick the route most likely to complete the task well.".to_owned(),
+            criteria,
+        },
+    );
+    let answers = judge.ask(&state, &questions).await?;
+    let rank = answers
+        .answers
+        .get("route")
+        .and_then(|answer| answer.choice())
+        .and_then(|(pick, _)| {
+            pick.strip_prefix("route_")
+                .and_then(|rest| rest.parse::<usize>().ok())
+        })
+        .ok_or(Error::Unavailable("judge returned no route"))?;
+    candidates
+        .into_iter()
+        .nth(rank)
+        .ok_or(Error::Unavailable("judge route out of range"))
 }
 
 pub fn new_session(
@@ -215,6 +309,7 @@ async fn execute_inner(
     let mut consecutive = 0u32;
     let mut previous_output = None;
     let mut tried = BTreeSet::new();
+    let original_task = text.clone();
     let mut text = text;
     let mut attachments = attachments;
     let mut role = Role::User;
@@ -337,6 +432,86 @@ async fn execute_inner(
                             .remaining_percent
                             .is_some_and(|remaining| remaining > 0.0),
                     });
+                }
+            }
+            // Ask the judge to rank the routes `next_route` could pick; on any
+            // failure — no key, unreadable vault, bad endpoint — the
+            // deterministic order stands and the run keeps its contract.
+            let failover_judge =
+                match judge::resolve(store.root(), &current_config.extensions.judge) {
+                    Ok(judge) => judge,
+                    Err(error) => {
+                        observer(Progress::Notice(format!(
+                            "Judge unavailable ({error}); deterministic route order"
+                        )));
+                        None
+                    }
+                };
+            if let Some(judge) = failover_judge {
+                let eligible: Vec<usize> = candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| {
+                        let key = format!("{}/{}", candidate.account, candidate.model.key());
+                        candidate.admitted
+                            && candidate.quota_fresh
+                            && candidate.available
+                            && !tried.contains(&key)
+                            && !(candidate.account == source.account
+                                && candidate.model == source.model)
+                    })
+                    .map(|(index, _)| index)
+                    .take(16)
+                    .collect();
+                if eligible.len() > 1 {
+                    let mut criteria = std::collections::BTreeMap::new();
+                    for (rank, index) in eligible.iter().enumerate() {
+                        let candidate = &candidates[*index];
+                        criteria.insert(
+                            format!("route_{rank}"),
+                            Some(format!(
+                                "{} · {} · {}",
+                                candidate.model.provider, candidate.model.label, candidate.account
+                            )),
+                        );
+                    }
+                    let state = serde_json::json!({
+                        "context": "A coding task lost its current route to a provider usage limit. Choose the best remaining route for the task; all listed routes are admitted and have quota.",
+                        "task": xcb_core::display_text(&original_task, 8192),
+                        "failure": format!("{:?}", outcome.facts.failure),
+                    });
+                    let mut questions = judge::JudgeQuestions::new();
+                    questions.insert(
+                        "route".to_owned(),
+                        judge::JudgeQuestion::Choice {
+                            instructions: "Pick the route most likely to complete the task well."
+                                .to_owned(),
+                            criteria,
+                        },
+                    );
+                    match judge.ask(&state, &questions).await {
+                        Ok(answers) => {
+                            if let Some((pick, _)) = answers
+                                .answers
+                                .get("route")
+                                .and_then(|answer| answer.choice())
+                                && let Some(index) = pick
+                                    .strip_prefix("route_")
+                                    .and_then(|rest| rest.parse::<usize>().ok())
+                                    .and_then(|rank| eligible.get(rank))
+                            {
+                                let chosen = candidates.remove(*index);
+                                observer(Progress::Notice(format!(
+                                    "Judge route: {} · {}",
+                                    chosen.model.provider, chosen.model.label
+                                )));
+                                candidates.insert(0, chosen);
+                            }
+                        }
+                        Err(error) => observer(Progress::Notice(format!(
+                            "Judge routing unavailable ({error}); deterministic order"
+                        ))),
+                    }
                 }
             }
             if let Some(target) = next_route(
@@ -759,5 +934,92 @@ mod tests {
         flush(&outbox, &tx);
         let queued = outbox.lock().unwrap();
         assert!(queued.updates.is_empty());
+    }
+
+    struct PickJudge(String);
+    impl judge::Judge for PickJudge {
+        fn ask<'a>(
+            &'a self,
+            _state: &'a serde_json::Value,
+            questions: &'a judge::JudgeQuestions,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<judge::JudgeAnswers>> + Send + 'a>,
+        > {
+            let pick = self.0.clone();
+            let checked = questions.contains_key("route");
+            Box::pin(async move {
+                if !checked {
+                    return Err(Error::Unavailable("missing route question"));
+                }
+                let mut answers = std::collections::BTreeMap::new();
+                answers.insert(
+                    "route".to_owned(),
+                    judge::JudgeAnswer::Choice {
+                        choice: pick,
+                        confidence: 0.9,
+                        probabilities: std::collections::BTreeMap::new(),
+                    },
+                );
+                Ok(judge::JudgeAnswers {
+                    answers,
+                    model: None,
+                })
+            })
+        }
+    }
+
+    fn route_candidate(index: usize) -> (Id, ModelChoice) {
+        (
+            Id::new(format!("a{index}")).unwrap(),
+            ModelChoice {
+                provider: Provider::Claude,
+                id: Id::new(format!("model-{index}")).unwrap(),
+                label: format!("Model {index}"),
+                mode: xcb_core::models::Mode::Fixed,
+                resolved: None,
+                effort: None,
+                observed_at_ms: 1,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn pick_route_maps_the_choice_back_to_a_candidate() {
+        let candidates = vec![route_candidate(0), route_candidate(1), route_candidate(2)];
+        let (account, model) =
+            pick_route(&PickJudge("route_1".to_owned()), "ctx", "task", candidates)
+                .await
+                .unwrap();
+        assert_eq!(account.as_str(), "a1");
+        assert_eq!(model.id.as_str(), "model-1");
+    }
+
+    #[tokio::test]
+    async fn pick_route_skips_the_call_for_a_single_candidate() {
+        let (account, _) = pick_route(
+            &PickJudge("route_9".to_owned()),
+            "ctx",
+            "task",
+            vec![route_candidate(0)],
+        )
+        .await
+        .unwrap();
+        assert_eq!(account.as_str(), "a0");
+        assert!(
+            pick_route(&PickJudge("route_0".into()), "ctx", "task", vec![])
+                .await
+                .is_err()
+        );
+        assert!(
+            pick_route(
+                &PickJudge("route_7".into()),
+                "ctx",
+                "task",
+                vec![route_candidate(0), route_candidate(1)],
+            )
+            .await
+            .is_err(),
+            "out-of-range judge answers are rejected"
+        );
     }
 }

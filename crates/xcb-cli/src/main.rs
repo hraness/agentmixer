@@ -15,7 +15,7 @@ use xcb_core::{
 use xcb_runtime::{
     Error, Result, auth,
     config::Config,
-    exports, hooks, kernel, now_ms, panes, private,
+    exports, hooks, judge, kernel, now_ms, panes, private,
     process::{self, Pin},
     runner::{self, Observer, Progress},
     store::Store,
@@ -78,6 +78,10 @@ enum Commands {
     Hooks {
         #[command(subcommand)]
         command: Option<HookCommand>,
+    },
+    Judge {
+        #[command(subcommand)]
+        command: Option<JudgeCommand>,
     },
     Doctor {
         #[arg(long)]
@@ -185,6 +189,21 @@ enum PaneCommand {
 enum PluginCommand {
     Enable { name: String },
     Disable { name: String },
+}
+#[derive(Subcommand)]
+enum JudgeCommand {
+    /// Store a judge API key piped on stdin; never an argument or terminal echo.
+    Token,
+    /// Remove the vaulted judge key.
+    Logout,
+    /// Report judge configuration without revealing the key.
+    Status,
+    /// Allow the judge to rank routes (--model auto and failover ordering).
+    Enable,
+    /// Disable judge use; routing stays deterministic.
+    Disable,
+    /// Send one live noul question to verify the key and endpoint.
+    Test,
 }
 #[derive(Subcommand)]
 enum HookCommand {
@@ -351,9 +370,20 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 .iter()
                 .map(|path| xcb_runtime::attachments::from_path(store.root(), path))
                 .collect::<Result<Vec<_>>>()?;
-            let account = account
+            let mut account = account
                 .map(|name| store.resolve_account(&name).map(|account| account.id))
                 .transpose()?;
+            let mut model = model;
+            if model.as_deref() == Some("auto") {
+                let (routed_account, choice) =
+                    kernel::auto_route(&store, &config, &prompt, account.as_ref()).await?;
+                eprintln!(
+                    "xcb: judge routed to {} · {}",
+                    choice.provider, choice.label
+                );
+                account = Some(routed_account);
+                model = Some(choice.key());
+            }
             let session = kernel::new_session(
                 &store,
                 &cli.cwd.canonicalize()?,
@@ -530,8 +560,27 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     }
                 }
             }
+            let judge_key = judge::judge_token(store.root())?.map(|(_, source)| source);
+            let judge_key_name = match judge_key {
+                Some(judge::JudgeKeySource::Env) => "env",
+                Some(judge::JudgeKeySource::Vault) => "vault",
+                None => "none",
+            };
+            let judge_endpoint = config
+                .extensions
+                .judge
+                .endpoint
+                .as_deref()
+                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL);
+            let judge_status = json!({
+                "enabled": config.extensions.judge.enabled,
+                "key": judge_key_name,
+                "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
+                "endpoint": judge_endpoint,
+            });
             if cli.json {
                 let mut report = json!({"version":1,"providers":reports,"unsettledRuns":store.unsettled_runs()?});
+                report["judge"] = judge_status;
                 if cfg!(target_os = "linux") {
                     let status = xcb_runtime::sandbox::linux_sandbox(&root);
                     report["sandbox"] = json!({"backend":"bwrap","candidate":status.candidate,"admitted":status.admitted,"unprivilegedUsernsClone":status.unprivileged_userns_clone,"maxUserNamespaces":status.max_user_namespaces,"qualified":status.qualified});
@@ -561,6 +610,14 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                     };
                     println!("sandbox: {detail}{userns} · {qual}");
                 }
+                println!(
+                    "judge: {} · key {judge_key_name} · {judge_endpoint}",
+                    if config.extensions.judge.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                );
                 for run in store.unsettled_runs()? {
                     println!("Unsettled run {} · custody retained", run.id);
                 }
@@ -805,6 +862,112 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
                 Some(HookCommand::Disable { id }) => {
                     print_json(hooks::set_enabled(store.root(), &id, false)?)?
+                }
+            }
+            Ok(0)
+        }
+        Some(Commands::Judge { command }) => {
+            match command {
+                Some(JudgeCommand::Token) => {
+                    if io::stdin().is_terminal() {
+                        return Err(Error::Unavailable(
+                            "key input is accepted only through a pipe, never an argument or terminal echo",
+                        ));
+                    }
+                    judge::store_judge_token(store.root(), &stdin(2048)?)?;
+                    println!("Judge key stored.");
+                }
+                Some(JudgeCommand::Logout) => {
+                    if judge::remove_judge_token(store.root())? {
+                        println!("Judge key removed.");
+                    } else {
+                        println!("No vaulted judge key.");
+                    }
+                }
+                Some(JudgeCommand::Enable) => {
+                    let (mut fresh, revision) = Config::load(store.root())?;
+                    fresh.extensions.judge.enabled = true;
+                    fresh.save(store.root(), revision.as_deref())?;
+                    println!("Judge enabled.");
+                }
+                Some(JudgeCommand::Disable) => {
+                    let (mut fresh, revision) = Config::load(store.root())?;
+                    fresh.extensions.judge.enabled = false;
+                    fresh.save(store.root(), revision.as_deref())?;
+                    println!("Judge disabled.");
+                }
+                Some(JudgeCommand::Test) => {
+                    let backend = judge::resolve(store.root(), &config.extensions.judge)?.ok_or(
+                        Error::Unavailable(
+                            "judge not configured: store a key with xcb judge token and xcb judge enable",
+                        ),
+                    )?;
+                    let mut questions = judge::JudgeQuestions::new();
+                    questions.insert(
+                        "ping".to_owned(),
+                        judge::JudgeQuestion::Noul {
+                            instructions: "Is the sky blue on a clear day?".to_owned(),
+                            criteria: None,
+                        },
+                    );
+                    let answers = backend
+                        .ask(
+                            &serde_json::json!({"context": "xcb judge connectivity test"}),
+                            &questions,
+                        )
+                        .await?;
+                    match answers.answers.get("ping").and_then(|a| a.noul()) {
+                        Some(noul) => println!(
+                            "Judge reachable · model {} · noul {noul:.3}",
+                            answers.model.as_deref().unwrap_or("unknown")
+                        ),
+                        None => {
+                            return Err(Error::Unavailable("judge response missing noul answer"));
+                        }
+                    }
+                }
+                None | Some(JudgeCommand::Status) => {
+                    let source = judge::judge_token(store.root())?.map(|(_, source)| source);
+                    if cli.json {
+                        print_json(json!({
+                            "version": 1,
+                            "enabled": config.extensions.judge.enabled,
+                            "key": match source {
+                                Some(judge::JudgeKeySource::Env) => "env",
+                                Some(judge::JudgeKeySource::Vault) => "vault",
+                                None => "none",
+                            },
+                            "model": config.extensions.judge.model.as_ref().map(|m| m.as_str()).unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
+                            "endpoint": config.extensions.judge.endpoint.as_deref().unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
+                        }))?;
+                    } else {
+                        let key = match source {
+                            Some(judge::JudgeKeySource::Env) => "env",
+                            Some(judge::JudgeKeySource::Vault) => "vault",
+                            None => "none",
+                        };
+                        println!(
+                            "judge: {} · key {key} · model {} · {}",
+                            if config.extensions.judge.enabled {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            },
+                            config
+                                .extensions
+                                .judge
+                                .model
+                                .as_ref()
+                                .map(|m| m.as_str())
+                                .unwrap_or(xcb_runtime::jev::DEFAULT_MODEL),
+                            config
+                                .extensions
+                                .judge
+                                .endpoint
+                                .as_deref()
+                                .unwrap_or(xcb_runtime::jev::SYSTEM_ONE_URL),
+                        );
+                    }
                 }
             }
             Ok(0)

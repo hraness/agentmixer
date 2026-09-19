@@ -12,6 +12,9 @@ import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, CLI_DEVIN_ENV, type Cl
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
 import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
 import { CLI_DEVIN_MIN_VERSION, devinAuthStatus, devinLogin, devinLogout } from "./cli/devin.ts";
+import { resolveJudge, resolveJudgeKey, storeJudgeKey, removeJudgeKey, hasJudgeKey,
+  JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, type JudgeAnswers } from "./judge.ts";
+import { readCliQualification } from "./cli/qualification.ts";
 import { seatbeltAvailable } from "./cli/sandbox.ts";
 import type { ClaudeTaskEvents } from "./claude-task-adapter.ts";
 import { admitCliProvider, openCliProvider, CLI_CLAUDE_DEFAULT_MODEL, CLI_CODEX_DEFAULT_MODEL, CLI_DEVIN_DEFAULT_MODEL } from "./cli/provider.ts";
@@ -38,11 +41,15 @@ Usage:
   xcb sessions prune    remove sessions idle over 30 days (or N days)
   xcb resume [id]       continue a session (default: most recent)
   xcb run [-p text]     run one task headlessly (or pipe the task on stdin)
+  xcb judge [status]    show judgment-provider (jev) state
+  xcb judge token       store the jev API key read from stdin (piped, never echoed)
+  xcb judge logout      remove the stored jev API key
+  xcb judge test        ask the judge one bounded question (live call)
   xcb migrate           copy legacy AgentMixer state into ~/.xcb (keeps the original)
   xcb --version
 
 Options:
-  --provider <claude|codex|devin>  pick the provider for run/chat/resume (default claude)
+  --provider <claude|codex|devin|auto>  pick the provider for run/chat/resume (default claude)
   --model <id>                 model for this run or session
   --cwd <path>                 workspace for run (default: current directory)
 
@@ -50,20 +57,23 @@ Environment:
   ${CLI_CLAUDE_ENV}    pin an exact claude executable path
   ${CLI_CODEX_ENV}     pin an exact codex executable path
   ${CLI_DEVIN_ENV}     pin an exact devin executable path
+  ${JUDGE_KEY_ENV}   jev API key (also ${JUDGE_KEY_VENDOR_ENV}); overrides the vaulted key
   XCB_STATE     override the state root (default ~/.xcb)
 `;
 
-function parseFlags(args: readonly string[]): { provider: CliProviderName; model: string | undefined; positional: string[]; prompt: string | undefined; cwd: string | undefined } {
+function parseFlags(args: readonly string[]): { provider: CliProviderName | "auto"; model: string | undefined; positional: string[]; prompt: string | undefined; cwd: string | undefined } {
   const positional: string[] = [];
-  let provider: CliProviderName = "claude", model: string | undefined, prompt: string | undefined, cwd: string | undefined;
+  let provider: CliProviderName | "auto" = "claude", model: string | undefined, prompt: string | undefined, cwd: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     if (arg === "--provider" || arg === "--model" || arg === "-p" || arg === "--cwd") {
       const value = args[++i];
       if (value === undefined) fail(`option ${arg} requires a value`);
       if (arg === "--provider") {
-        if (value !== "claude" && value !== "codex" && value !== "devin") fail(`unknown provider ${value} — supported: claude, codex, devin`);
-        provider = value as CliProviderName;
+        if (value !== "claude" && value !== "codex" && value !== "devin" && value !== "auto") {
+          fail(`unknown provider ${value} — supported: claude, codex, devin, auto`);
+        }
+        provider = value as CliProviderName | "auto";
       } else if (arg === "--model") model = boundedText(value, 160);
       else if (arg === "--cwd") cwd = value;
       else prompt = boundedText(value, 512 * 1024);
@@ -113,6 +123,10 @@ async function commandDoctor(stateRoot: string): Promise<number> {
     const seatbelt = await seatbeltAvailable();
     process.stdout.write(`${seatbelt ? green("✓") : yellow("!")} sandbox: seatbelt ${seatbelt ? "available" : "unavailable"} ${dim("(claude runs confined; availability is not attestation)")}\n`);
   }
+  const judgeKey = await resolveJudgeKey(stateRoot).catch(() => null);
+  process.stdout.write(`${judgeKey === null ? dim("○") : green("✓")} judge: ${judgeKey === null
+    ? `no jev key — ${dim(`--provider auto\` needs one; pipe it into \`xcb judge token\``)}`
+    : `key from ${judgeKey.source} — ${dim("\`--provider auto\` can route")}`}\n`);
   // Doctor succeeds when at least one provider is admitted; an absent optional
   // provider is a diagnostic line, not a failure.
   return admitted > 0 ? 0 : 1;
@@ -211,6 +225,55 @@ async function commandAuthLogout(provider: string | undefined, stateRoot: string
   return 0;
 }
 
+/** `xcb judge` — the judgment-provider vault and a live connectivity probe.
+ * The key resolves environment-first; the file lives in the private state
+ * root like every other credential. Nothing here ever prints the key. */
+async function commandJudge(sub: string | undefined, stateRoot: string): Promise<number> {
+  if (sub === "token") {
+    if (process.stdin.isTTY) fail("usage: pipe the jev API key on stdin — e.g. `pbpaste | xcb judge token` (never a command argument).");
+    const key = (await readStdin()).trim();
+    if (key === "") fail("empty input — pipe the jev API key on stdin.");
+    await storeJudgeKey(stateRoot, key).catch((error) => {
+      if (error instanceof Error && error.message === "JUDGE_KEY_EXISTS") {
+        fail("a jev key is already stored — run `xcb judge logout` first to replace it.");
+      }
+      if (error instanceof Error && error.message === "JUDGE_KEY_INVALID") {
+        fail("that does not look like a jev API key — check the copied value.");
+      }
+      throw error;
+    });
+    process.stdout.write(`${green("✓")} judge key stored in ${join(stateRoot, JUDGE_TOKEN_FILE)} (mode 0600)\n`);
+    return 0;
+  }
+  if (sub === "logout") {
+    const removed = await removeJudgeKey(stateRoot);
+    process.stdout.write(removed ? `judge key removed\n` : `no stored judge key\n`);
+    return 0;
+  }
+  if (sub === "test") {
+    const judge = await resolveJudge({ stateRoot, enabled: true });
+    if (judge === null) {
+      return fail(`no jev API key — pipe one into \`xcb judge token\` or set ${JUDGE_KEY_ENV}.`);
+    }
+    const started = Date.now();
+    const answers = await judge.ask("xcb judge connectivity probe", {
+      probe: { type: "noul", instructions: "Is this a connectivity test that should answer yes?" },
+    });
+    const probe = answers.answers.probe;
+    if (probe?.type !== "noul") return fail("judge returned a malformed answer shape.");
+    process.stdout.write(`${green("✓")} judge answered in ${Date.now() - started}ms ${dim(`(model ${answers.model ?? "unknown"}, p=${probe.noul.toFixed(3)})`)}\n`);
+    return 0;
+  }
+  if (sub !== undefined && sub !== "status") return fail("usage: xcb judge [status|token|logout|test]");
+  const key = await resolveJudgeKey(stateRoot).catch(() => null);
+  const vaulted = await hasJudgeKey(stateRoot);
+  const source = key === null ? "none" : key.source === "env" ? "environment" : "vault";
+  process.stdout.write(`judge: ${key === null ? "no key configured" : `key from ${source}`}${vaulted && key?.source !== "vault" ? dim(" (vault file also present)") : ""}\n`);
+  process.stdout.write(`${dim("  env: ")}${JUDGE_KEY_ENV} or ${JUDGE_KEY_VENDOR_ENV}${dim("  vault: ")}${join(stateRoot, JUDGE_TOKEN_FILE)}\n`);
+  process.stdout.write(`${dim("  use --provider auto on \`xcb run\` to route a task through the judge")}\n`);
+  return key === null ? 1 : 0;
+}
+
 async function latestSessionId(stateRoot: string): Promise<string | undefined> {
   const sessions = await CliSessionStore.open(join(stateRoot, "sessions"));
   try {
@@ -250,10 +313,63 @@ async function commandSessions(stateRoot: string, rest: readonly string[]): Prom
   }
 }
 
-async function commandRun(prompt: string, workspace: string, stateRoot: string, provider: CliProviderName, model: string | undefined): Promise<number> {
+/** Providers a judgment call may pick among: admitted binary, matching
+ * qualification record, signed-in credentials. The judge only orders this
+ * list — `openCliProvider` re-verifies the winner before anything runs. */
+async function autoProviderCandidates(stateRoot: string): Promise<Readonly<{ provider: CliProviderName; label: string }>[]> {
+  const candidates: { provider: CliProviderName; label: string }[] = [];
+  for (const provider of ["claude", "devin", "codex"] as const) {
+    const inspection = await inspectCliBinary(provider);
+    if (inspection === null || !inspection.versionMatches) continue;
+    const record = await readCliQualification(stateRoot, provider);
+    if (record === null || record.executableSha256 !== inspection.sha256 || record.executablePath !== inspection.executablePath) continue;
+    const authed = provider === "claude" ? (await claudeAuthStatus(stateRoot)).loggedIn
+      : provider === "devin" ? (await devinAuthStatus(stateRoot, inspection)).loggedIn
+      : (await codexAuthStatus(stateRoot, inspection)).loggedIn;
+    if (authed) candidates.push({ provider, label: `${provider} ${inspection.version}` });
+  }
+  return candidates;
+}
+
+/** `--provider auto`: judge a `choice` over eligible providers; the flag is
+ * the opt-in — one candidate skips the network call entirely. */
+async function routeAutoProvider(stateRoot: string, prompt: string): Promise<CliProviderName> {
+  const candidates = await autoProviderCandidates(stateRoot);
+  if (candidates.length === 0) fail("no admitted, signed-in providers — run `xcb doctor` and `xcb auth <provider>` first.");
+  if (candidates.length === 1) return candidates[0]!.provider;
+  const judge = await resolveJudge({ stateRoot, enabled: true });
+  if (judge === null) {
+    return fail(`--provider auto needs a jev API key — pipe one into \`xcb judge token\` or set ${JUDGE_KEY_ENV}.`);
+  }
+  const criteria: Record<string, string> = {};
+  candidates.forEach((candidate, index) => { criteria[`route_${index}`] = candidate.label; });
+  let answers: JudgeAnswers;
+  try {
+    answers = await judge.ask({ task: boundedText(prompt, 32 * 1024) }, {
+      route: {
+        type: "choice",
+        instructions: "Choose the best coding-agent provider for this task. " +
+          "Consider reliability for the task's apparent complexity. Return exactly one option key.",
+        criteria,
+      },
+    });
+  } catch (error) {
+    return fail(`judge routing failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+  const answer = answers.answers.route;
+  if (answer === undefined || answer.type !== "choice" || !(answer.choice in criteria)) {
+    return fail("judge routing failed: the judge returned no usable choice — pick a provider explicitly.");
+  }
+  const winner = candidates[Number(answer.choice.slice("route_".length))]!;
+  process.stderr.write(`${dim(`judge routed to ${winner.provider} (${winner.label})`)}\n`);
+  return winner.provider;
+}
+
+async function commandRun(prompt: string, workspace: string, stateRoot: string, provider: CliProviderName | "auto", model: string | undefined): Promise<number> {
   const prepared = await cliProfileFor(workspace);
   assertWorkspaceStateSeparation(prepared.workspace.root, stateRoot);
   const { profile, workspace: ws } = prepared;
+  if (provider === "auto") provider = await routeAutoProvider(stateRoot, prompt);
   const events: ClaudeTaskEvents = {};
   const opened = await openCliProvider(stateRoot, provider, profile, events, { workspaceRoot: ws.root });
   if (opened.status !== "ready") return fail(`provider not admitted — run \`xcb doctor\` and \`xcb auth ${provider}\` first.`);
@@ -344,6 +460,10 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (rest.length > 1) return fail("usage: xcb auth <claude|codex|status|logout [provider]>");
     return await commandAuth(sub, stateRoot);
   }
+  if (command === "judge") {
+    if (rest.length > 1) return fail("usage: xcb judge [status|token|logout|test]");
+    return await commandJudge(rest[0], stateRoot);
+  }
   if (command === "sessions") return await commandSessions(stateRoot, rest);
   if (command === "run") {
     const flags = parseFlags(rest);
@@ -356,19 +476,25 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (command === "resume") {
     const flags = parseFlags(rest);
+    const provider: CliProviderName = flags.provider === "auto"
+      ? fail("--provider auto routes a known task — use it with `xcb run`; a chat session binds one provider up front.")
+      : flags.provider;
     if (flags.positional.length > 1) return fail("usage: xcb resume [session-id]");
     const id = flags.positional[0] ?? await latestSessionId(stateRoot);
     if (id === undefined) return fail("no sessions yet — start one with `xcb`");
-    return await runCliChat({ workspace: process.cwd(), sessionId: id, provider: flags.provider, ...(flags.model === undefined ? {} : { model: flags.model }) });
+    return await runCliChat({ workspace: process.cwd(), sessionId: id, provider, ...(flags.model === undefined ? {} : { model: flags.model }) });
   }
   // Default surface is the chat: `xcb`, `xcb chat [path]`,
   // `xcb <path>` or flags first like `xcb --provider claude`.
   const chatArgv = command === "chat" ? rest : argv;
   const flags = parseFlags(chatArgv);
+  const provider: CliProviderName = flags.provider === "auto"
+    ? fail("--provider auto routes a known task — use it with `xcb run`; a chat session binds one provider up front.")
+    : flags.provider;
   if (flags.prompt !== undefined) return fail("-p is only valid with `xcb run`");
   const workspace = flags.positional[0] ?? ".";
   if (flags.positional.length > 1) return fail("usage: xcb [path]");
-  return await runCliChat({ workspace, provider: flags.provider, ...(flags.model === undefined ? {} : { model: flags.model }) });
+  return await runCliChat({ workspace, provider, ...(flags.model === undefined ? {} : { model: flags.model }) });
 }
 
 main(process.argv.slice(2)).then((code) => process.exit(code), (error) => {

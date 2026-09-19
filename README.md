@@ -235,6 +235,39 @@ protocol manifest and pinned parent runtime described in
 [MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot
 self-produce. `--provider codex` fails closed until that evidence exists.
 
+### Judged routing (optional)
+
+`xcb` can ask a judgment service — the jev interface — to pick among routes
+that are already admitted and signed in. The port is provider-neutral:
+`ask(state, questions)` returns typed answers (`noul`, `choice`, `score`), so
+other decision services can implement the same contract. TypeSafe's System
+One endpoint (`api.typesafe.ai`, model `jev-latest`) is the shipped backend.
+
+Opting in is deliberate: routing a task sends a bounded copy of the task text
+(≤ 32 KiB state, ≤ 64 questions, ≤ 256 KiB response, one 15-second HTTPS POST)
+to that service. `xcb run --provider auto` is itself the opt-in on this
+surface — the flag names the behavior, and it needs a key:
+
+```sh
+pbpaste | xcb judge token   # pipe the key on stdin — never an argument
+xcb judge status            # where the key resolves from (never prints it)
+xcb judge test              # one live bounded call
+xcb judge logout            # remove the vaulted key
+```
+
+The key vaults mode-0600 under the private state root; `XCB_JEV_API_KEY` or
+the vendor name `TYPESAFE_API_KEY` override it without touching the file. The
+native Rust build keeps the same contract under `extensions.judge` —
+`xcb judge enable` gates it there, `--model auto` routes account/model
+pairs, and quota failover asks the judge to order already-eligible routes
+before falling back to your order on any error.
+
+The judge only *orders*. Eligible candidates pass the same admission record,
+binary SHA-256, version, and sign-in checks `doctor` enforces — a judgment
+can never qualify or activate a provider. One candidate skips the call
+entirely; malformed or out-of-range answers fail the route honestly instead
+of guessing.
+
 ## Migrating from AgentMixer
 
 Release 0.4.0 renamed the compatibility package's public identifiers from

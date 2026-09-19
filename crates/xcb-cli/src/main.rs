@@ -377,10 +377,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             if model.as_deref() == Some("auto") {
                 let (routed_account, choice) =
                     kernel::auto_route(&store, &config, &prompt, account.as_ref()).await?;
-                eprintln!(
-                    "xcb: judge routed to {} · {}",
-                    choice.provider, choice.label
-                );
+                eprintln!("xcb: judge selected an admitted route");
                 account = Some(routed_account);
                 model = Some(choice.key());
             }

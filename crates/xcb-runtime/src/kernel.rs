@@ -501,10 +501,9 @@ async fn execute_inner(
                                     .and_then(|rank| eligible.get(rank))
                             {
                                 let chosen = candidates.remove(*index);
-                                observer(Progress::Notice(format!(
-                                    "Judge route: {} · {}",
-                                    chosen.model.provider, chosen.model.label
-                                )));
+                                observer(Progress::Notice(
+                                    "Judge selected an admitted failover route".to_owned(),
+                                ));
                                 candidates.insert(0, chosen);
                             }
                         }

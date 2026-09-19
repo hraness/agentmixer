@@ -558,6 +558,9 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
             }
             let judge_key = judge::judge_token(store.root())?.map(|(_, source)| source);
+            if let Some(source) = judge_key {
+                judge::check_key_target(source, &config.extensions.judge)?;
+            }
             let judge_key_name = match judge_key {
                 Some(judge::JudgeKeySource::Env) => "env",
                 Some(judge::JudgeKeySource::Vault) => "vault",
@@ -952,6 +955,9 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 }
                 None | Some(JudgeCommand::Status) => {
                     let source = judge::judge_token(store.root())?.map(|(_, source)| source);
+                    if let Some(source) = source {
+                        judge::check_key_target(source, &config.extensions.judge)?;
+                    }
                     let (judge_model, judge_endpoint) =
                         xcb_runtime::jev::effective_target(&config.extensions.judge)?;
                     if cli.json {

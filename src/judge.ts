@@ -471,6 +471,14 @@ export interface ResolveJudgeOptions {
   fetch?: typeof fetch;
 }
 
+/** Prevents the vaulted System One key from being redirected to another origin. */
+export function checkJudgeKeyTarget(source: JudgeKeySource, endpoint?: string): void {
+  if (source === "vault"
+    && parseJudgeEndpoint(endpoint ?? SYSTEM_ONE_URL).toString() !== parseJudgeEndpoint(SYSTEM_ONE_URL).toString()) {
+    fail("JUDGE_VAULT_ENDPOINT_MISMATCH");
+  }
+}
+
 /** Resolves a ready judge when enabled and keyed; null for either absence. */
 export async function resolveJudge(options: ResolveJudgeOptions): Promise<Judge | null> {
   if (!options.enabled) return null;
@@ -479,6 +487,7 @@ export async function resolveJudge(options: ResolveJudgeOptions): Promise<Judge 
   if (key === null) return null;
   const model = options.model ?? env(JUDGE_MODEL_ENV);
   const endpoint = options.endpoint ?? env(JUDGE_URL_ENV);
+  checkJudgeKeyTarget(key.source, endpoint);
   return createSystemOneJudge({
     token: key.token,
     ...(model === undefined ? {} : { model }),

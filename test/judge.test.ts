@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { checkJudgeAnswers, checkJudgeQuestions, checkJudgeState, createSystemOneJudge, hasJudgeKey, parseJudgeEndpoint,
   parseJudgeResponse, removeJudgeKey, resolveJudge, resolveJudgeKey, storeJudgeKey,
-  JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, MAX_JUDGE_QUESTIONS, SYSTEM_ONE_URL } from "../src/judge.ts";
+  JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, JUDGE_URL_ENV, MAX_JUDGE_QUESTIONS, SYSTEM_ONE_URL } from "../src/judge.ts";
 
 const TOKEN = "jev-test-key_synthetic.fixture+token=1";
 const cleanEnv = () => undefined;
@@ -169,6 +169,15 @@ test("resolveJudge stays null when disabled or unkeyed and never leaks the token
     const judge = await resolveJudge({ stateRoot: root, enabled: true, env: envWith({ [JUDGE_KEY_ENV]: TOKEN }) });
     expect(judge).not.toBe(null);
     expect(JSON.stringify(judge).includes(TOKEN)).toBe(false);
+
+    await storeJudgeKey(root, TOKEN);
+    await expect(resolveJudge({ stateRoot: root, enabled: true, endpoint: "https://judge.example/v1/systemone", env: cleanEnv }))
+      .rejects.toThrow("JUDGE_VAULT_ENDPOINT_MISMATCH");
+    expect(await resolveJudge({
+      stateRoot: root,
+      enabled: true,
+      env: envWith({ [JUDGE_KEY_ENV]: TOKEN, [JUDGE_URL_ENV]: "https://judge.example/v1/systemone" }),
+    })).not.toBe(null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

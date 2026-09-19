@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { constants, writeFileSync } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { writeFileSync } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import { spawnBoundedProvider, type BoundedProviderProcessFactory, type BoundedProviderProcessInput } from "./provider-process.ts";
+import { assertPrivateStat, canonicalizePrivatePath, openPrivateRead, sameFileIdentity, streamFdContent, PRIVATE_CONTROL_REJECT } from "./private-file.ts";
 
 /**
  * OS-confinement port for provider processes. A backend turns a closed launch
@@ -141,8 +141,7 @@ function object(value: unknown, keys: readonly string[]): Record<string, unknown
   return result;
 }
 function path(value: unknown): string {
-  assert(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "OS_SANDBOX_PATH_INVALID");
-  return value;
+  return canonicalizePrivatePath(value, { code: "OS_SANDBOX_PATH_INVALID" });
 }
 function digest(value: unknown): string {
   assert(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value), "OS_SANDBOX_PIN_INVALID"); return value;
@@ -150,7 +149,7 @@ function digest(value: unknown): string {
 function arg(value: string, code: string): string {
   // argv elements are byte strings, not shell text: reject control bytes and
   // embedded NUL; everything else reaches execve verbatim.
-  assert(!/[\x00-\x1f\x7f]/u.test(value) && value.length <= 4096, code);
+  assert(!PRIVATE_CONTROL_REJECT.test(value) && value.length <= 4096, code);
   return value;
 }
 function specOf(value: unknown): OsSandboxSpec {
@@ -310,20 +309,14 @@ function writeForwarderEnv(envFile: string, env: Readonly<Record<string, string>
  * Any mutation or relabel is `OS_SANDBOX_EXECUTABLE_CHANGED`; a missing or
  * non-file path is `OS_SANDBOX_EXECUTABLE_INVALID`. */
 export async function verifyOsSandboxExecutable(executablePath: string, sha256: string, sizeLimit: bigint): Promise<void> {
-  const fd = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => fail("OS_SANDBOX_EXECUTABLE_INVALID"));
+  const fd = await openPrivateRead(executablePath, { openErrorCode: "OS_SANDBOX_EXECUTABLE_INVALID" });
   try {
     const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && [0n, BigInt(process.getuid!())].includes(before.uid) && before.size > 0n && before.size <= sizeLimit, "OS_SANDBOX_EXECUTABLE_INVALID");
-    const fileHash = createHash("sha256"), buffer = Buffer.alloc(64 * 1024); let read = 0;
-    while (read <= Number(before.size)) {
-      const count = (await fd.read(buffer, 0, Math.min(buffer.length, Number(before.size) + 1 - read), read)).bytesRead;
-      if (!count) break;
-      read += count; assert(read <= Number(before.size), "OS_SANDBOX_EXECUTABLE_CHANGED");
-      fileHash.update(buffer.subarray(0, count));
-    }
+    assertPrivateStat(before, { kind: "file", owner: "selfOrRootOrThrow", size: { min: 1n, max: sizeLimit } }, "OS_SANDBOX_EXECUTABLE_INVALID");
+    const fileHash = createHash("sha256");
+    const read = await streamFdContent(fd, before.size, { code: "OS_SANDBOX_EXECUTABLE_CHANGED", earlyGrowth: true, onChunk: chunk => { fileHash.update(chunk); } });
     const after = await fd.stat({ bigint: true }), named = await lstat(executablePath, { bigint: true });
-    const stable = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(key => before[key as keyof typeof before] === after[key as keyof typeof after] && before[key as keyof typeof before] === named[key as keyof typeof named]);
-    assert(read === Number(before.size) && stable && await realpath(executablePath) === executablePath && fileHash.digest("hex") === sha256, "OS_SANDBOX_EXECUTABLE_CHANGED");
+    assert(read === Number(before.size) && sameFileIdentity(before, after) && sameFileIdentity(before, named) && await realpath(executablePath) === executablePath && fileHash.digest("hex") === sha256, "OS_SANDBOX_EXECUTABLE_CHANGED");
   } finally { await fd.close(); }
 }
 

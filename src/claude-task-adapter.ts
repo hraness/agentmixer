@@ -1,7 +1,6 @@
-import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 import { query, createSdkMcpServer, tool, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -21,6 +20,7 @@ import {
   type TaskRuntimeQualification,
 } from "./task-runtime.ts";
 import { boundedText, identifier, safeInteger } from "./validation.ts";
+import { assertPrivateDirectory, canonicalizePrivatePath, openPrivateRead, writeFileOnce } from "./private-file.ts";
 
 const SERVER = "xcb";
 const fail = (code: string): never => { throw new Error(code); };
@@ -141,12 +141,9 @@ function assertTaskInitialization(value: SDKSystemMessage, request: AgentTaskExe
 }
 
 async function privateDirectory(path: string): Promise<string> {
-  if (!isAbsolute(path) || resolve(path) !== path) throw new Error("CLAUDE_STATE_ROOT_INVALID");
-  const actual = await realpath(path), stat = await lstat(path);
-  if (actual !== path || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
-    throw new Error("CLAUDE_STATE_ROOT_INVALID");
-  }
-  return actual;
+  canonicalizePrivatePath(path, { code: "CLAUDE_STATE_ROOT_INVALID", reject: null, maxLength: Infinity });
+  return (await assertPrivateDirectory(path, { code: "CLAUDE_STATE_ROOT_INVALID", owner: "self",
+    mode: "ownerOnly", canonical: "self", statOrder: "realpathFirst", stats: "number" })).physical;
 }
 
 function freezeCopy<T>(value: T): T {
@@ -312,11 +309,10 @@ export function createClaudeTaskAdapter(options: ClaudeTaskAdapterOptions): Agen
       const cwd = join(scratch, "work"), home = join(scratch, "home"), temp = join(scratch, "tmp");
       for (const path of [cwd, home, temp]) await mkdir(path, { mode: 0o700, recursive: true });
       const executable = join(directory, "provider");
-      const source = await open(runtime.executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const source = await openPrivateRead(runtime.executablePath);
       try {
         const bytes = await source.readFile();
-        const out = await open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o500);
-        try { await out.writeFile(bytes); } finally { await out.close(); }
+        await writeFileOnce(executable, bytes, { mode: 0o500 });
       } finally { await source.close(); }
       const invoke = async (env: Record<string, string>): Promise<string> => {
         let child: BoundedProviderProcess | undefined;

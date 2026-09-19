@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants, lstatSync, readdirSync, realpathSync } from "node:fs";
-import { link, lstat, open, readdir, rename, unlink } from "node:fs/promises";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { link, lstat, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createCapabilityProfile, type CapabilityContext, type CapabilityJson, type CapabilityObject, type CapabilityProfile } from "../capabilities.ts";
 import { boundedText } from "../validation.ts";
 import { withWorkspaceWriteLock, workspaceCoordinationRoot } from "./write-coordination.ts";
+import { assertPrivateStat, canonicalizePrivatePath, fsyncDirectory, matchesPrivateStat, openPrivateRead, openPrivateWrite, PRIVATE_CONTROL_REJECT } from "../private-file.ts";
 
 export const CLI_WORKSPACE_PROFILE_ID = "xcb.workspace";
 export const CLI_WORKSPACE_PROFILE_VERSION = 1;
@@ -56,10 +57,8 @@ function revisionOf(stat: { size: number | bigint; mtimeNs?: bigint; mtimeMs?: n
  * read (or an explicit null for a new file), preserving the broker's
  * read-before-write contract. */
 export function createCliWorkspace(rootInput: string, options: Readonly<{ coordinationRoot?: string }> = {}) {
-  if (typeof rootInput !== "string" || !isAbsolute(rootInput) || resolve(rootInput) !== rootInput || /[\x00-\x1f\x7f]/u.test(rootInput)) {
-    throw new Error("WORKSPACE_ROOT_INVALID");
-  }
-  const root = rootInput, identity = lstatSync(root, { bigint: true });
+  const root = canonicalizePrivatePath(rootInput, { code: "WORKSPACE_ROOT_INVALID", reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
+  const identity = lstatSync(root, { bigint: true });
   if (!identity.isDirectory() || identity.isSymbolicLink() || realpathSync(root) !== root) throw new Error("WORKSPACE_ROOT_INVALID");
   const coordinationRoot = options.coordinationRoot ?? workspaceCoordinationRoot();
   const checkRoot = () => {
@@ -79,11 +78,11 @@ export function createCliWorkspace(rootInput: string, options: Readonly<{ coordi
     confined(target);
     assertNoLinks(root, target);
     const stat = await lstat(target);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE_BYTES) fail("WORKSPACE_FILE_INVALID");
-    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    assertPrivateStat(stat, { kind: "file", links: "single", size: { max: MAX_FILE_BYTES } }, "WORKSPACE_FILE_INVALID");
+    const handle = await openPrivateRead(target, { nonblock: false });
     try {
       const stable = await handle.stat();
-      if (!stable.isFile() || stable.size > MAX_FILE_BYTES) fail("WORKSPACE_FILE_INVALID");
+      assertPrivateStat(stable, { kind: "file", size: { max: MAX_FILE_BYTES } }, "WORKSPACE_FILE_INVALID");
       const bytes = await handle.readFile();
       const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       return { text, revision: revisionOf(stable) };
@@ -102,7 +101,7 @@ export function createCliWorkspace(rootInput: string, options: Readonly<{ coordi
         let stat;
         try { stat = await lstat(target); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        if (stat !== undefined && (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE_BYTES)) fail("WORKSPACE_FILE_INVALID");
+        if (stat !== undefined && !matchesPrivateStat(stat, { kind: "file", links: "single", size: { max: MAX_FILE_BYTES } })) fail("WORKSPACE_FILE_INVALID");
         if (expectedRevision === null && stat !== undefined) fail("WORKSPACE_REVISION_REQUIRED");
         if (expectedRevision !== null) {
           if (stat === undefined) fail("WORKSPACE_FILE_MISSING");
@@ -113,7 +112,7 @@ export function createCliWorkspace(rootInput: string, options: Readonly<{ coordi
       const current = await check();
       const directory = dirname(target);
       const temp = join(directory, `.xcb-write-${randomBytes(16).toString("hex")}.tmp`);
-      const staged = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      const staged = await openPrivateWrite(temp);
       try {
         await staged.writeFile(text);
         await staged.chmod(current === undefined ? 0o600 : current.mode & 0o777);
@@ -123,8 +122,7 @@ export function createCliWorkspace(rootInput: string, options: Readonly<{ coordi
           await link(temp, target);
           await unlink(temp);
         } else await rename(temp, target);
-        const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-        try { await parent.sync(); } finally { await parent.close(); }
+        await fsyncDirectory(directory);
         return { revision: revisionOf(await lstat(target)) };
       } finally {
         await staged.close();
@@ -173,7 +171,7 @@ export function createCliWorkspace(rootInput: string, options: Readonly<{ coordi
         } catch {
           continue;
         }
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+        if (!matchesPrivateStat(stat, { kind: "file", size: { max: MAX_FILE_BYTES } })) continue;
         let text: string;
         try {
           text = (await readRevision(path)).text;

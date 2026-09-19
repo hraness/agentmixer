@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
-import { appendFile, lstat, mkdir, open, rm } from "node:fs/promises";
+import { appendFile, lstat, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { SqliteDatabase } from "../sqlite-port.ts";
 import { openAccountDatabase } from "../sqlite-port.ts";
 import { boundedText, identifier, safeInteger } from "../validation.ts";
 import { privateDirectory } from "./state.ts";
+import { assertPrivateStat, openPrivateRead } from "../private-file.ts";
 
 export type CliProvider = "codex" | "claude" | "devin";
 export type CliSession = Readonly<{
@@ -126,7 +126,7 @@ export class CliSessionStore {
     const line = entries.map((item) => `${JSON.stringify(entry(item))}\n`).join("");
     await appendFile(path, line, { mode: 0o600 });
     const stat = await lstat(path);
-    if (!stat.isFile() || stat.size > MAX_TRANSCRIPT_BYTES) fail("TRANSCRIPT_LIMIT");
+    assertPrivateStat(stat, { kind: "file", size: { max: MAX_TRANSCRIPT_BYTES } }, "TRANSCRIPT_LIMIT");
     const firstUser = entries.find((item) => item.role === "user");
     const title = current.title === "" && firstUser !== undefined
       ? boundedText(firstUser.text.split("\n")[0]!.slice(0, 80), MAX_TITLE_BYTES, true)
@@ -163,8 +163,8 @@ export class CliSessionStore {
     let text: string;
     try {
       const stat = await lstat(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > limitBytes) fail("TRANSCRIPT_LIMIT");
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      assertPrivateStat(stat, { kind: "file", noSymlink: true, size: { max: limitBytes } }, "TRANSCRIPT_LIMIT");
+      const handle = await openPrivateRead(path, { nonblock: false });
       try {
         text = await handle.readFile("utf8");
       } finally {

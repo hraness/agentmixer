@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import { boundedText } from "../validation.ts";
+import { assertPrivateDirectory, canonicalizePrivatePath, PRIVATE_CONTROL_REJECT } from "../private-file.ts";
 
 export const CLI_STATE_ENV = "XCB_STATE";
 const STATE_DIRNAME = ".xcb";
@@ -18,10 +19,7 @@ const MAX_MIGRATION_BYTES = 4 * 1024 * 1024 * 1024;
 export function cliStateRootPath(env: (name: string) => string | undefined = (name) => process.env[name]): string {
   const override = env(CLI_STATE_ENV);
   if (override !== undefined) {
-    if (typeof override !== "string" || !isAbsolute(override) || resolve(override) !== override || /[\x00-\x1f\x7f]/u.test(override)) {
-      throw new Error("XCB_STATE_INVALID");
-    }
-    return override;
+    return canonicalizePrivatePath(override, { code: "XCB_STATE_INVALID", reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
   }
   const home = homedir();
   if (typeof home !== "string" || !isAbsolute(home)) throw new Error("XCB_HOME_UNAVAILABLE");
@@ -30,15 +28,9 @@ export function cliStateRootPath(env: (name: string) => string | undefined = (na
 
 /** Open an existing physical directory owned by this user with mode 0700. */
 export async function privateDirectory(path: string): Promise<string> {
-  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || /[\x00-\x1f\x7f]/u.test(path)) {
-    throw new Error("XCB_DIRECTORY_INVALID");
-  }
-  const actual = await realpath(path);
-  const stat = await lstat(path);
-  if (actual !== path || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
-    throw new Error("XCB_DIRECTORY_NOT_PRIVATE");
-  }
-  return actual;
+  canonicalizePrivatePath(path, { code: "XCB_DIRECTORY_INVALID", reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
+  return (await assertPrivateDirectory(path, { code: "XCB_DIRECTORY_NOT_PRIVATE", owner: "self",
+    mode: "ownerOnly", canonical: "self", statOrder: "realpathFirst", stats: "number" })).physical;
 }
 
 /** Create the state root and the named child, both physical and mode 0700. */
@@ -71,10 +63,7 @@ export async function legacyStateRootPath(env: (name: string) => string | undefi
   const override = env(LEGACY_STATE_ENV);
   let candidate = join(homedir(), LEGACY_STATE_DIRNAME);
   if (override !== undefined) {
-    if (typeof override !== "string" || !isAbsolute(override) || resolve(override) !== override || /[\x00-\x1f\x7f]/u.test(override)) {
-      throw new Error("AGENTMIXER_STATE_INVALID");
-    }
-    candidate = override;
+    candidate = canonicalizePrivatePath(override, { code: "AGENTMIXER_STATE_INVALID", reject: PRIVATE_CONTROL_REJECT, maxLength: Infinity });
   }
   const stat = await lstat(candidate).catch(() => null);
   if (stat === null) return null;

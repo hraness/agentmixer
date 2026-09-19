@@ -2,17 +2,17 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync, mkdirSync, copyFileSync, chmodSync, constants } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { planSeatbeltPolicy, planBwrapPolicy, createSandboxedProviderProcessFactory, verifyOsSandboxExecutable, type OsSandboxPlan } from "../os-sandbox.ts";
 import { createEgressBridge, egressBridgeDialer, type EgressBridgeReceipt } from "../egress-bridge.ts";
 import type { BoundedProviderProcessFactory } from "../provider-process.ts";
+import { canonicalizePrivatePath } from "../private-file.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
 function path(value: unknown): string {
-  return typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096
-    && !/[\x00-\x1f\x7f"\\]/u.test(value) ? value : fail("CLI_SANDBOX_PATH_INVALID");
+  return canonicalizePrivatePath(value, { code: "CLI_SANDBOX_PATH_INVALID" });
 }
 
 /** Reviewed SBPL profile for one CLI Claude run, verified against Claude Code

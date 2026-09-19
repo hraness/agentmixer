@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { assertPrivateStat, canonicalizePrivatePath, openPrivateRead, sameFileIdentity, streamFdContent } from "./private-file.ts";
 import { VERSION as sdkVersion } from "@anthropic-ai/sdk/version";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
 import type { ClaudeApiKeyResolver } from "./claude-sdk.ts";
@@ -61,22 +60,22 @@ export async function createClaudeApiAdapter(options: ClaudeApiAdapterOptions): 
 
 async function verifyArtifact(artifact: ClaudeApiAdapterOptions["runtimeArtifact"]): Promise<string> {
   const path = artifact.entrypoint;
-  if (!isAbsolute(path) || resolve(path) !== path || !/^[a-f0-9]{64}$/u.test(artifact.sha256) || await realpath(path) !== path) throw new Error("CLAUDE_API_ARTIFACT_INVALID");
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  canonicalizePrivatePath(path, { code: "CLAUDE_API_ARTIFACT_INVALID", reject: null, maxLength: Infinity });
+  if (!/^[a-f0-9]{64}$/u.test(artifact.sha256) || await realpath(path) !== path) throw new Error("CLAUDE_API_ARTIFACT_INVALID");
+  const handle = await openPrivateRead(path);
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1 || (before.uid !== process.getuid?.() && before.uid !== 0)
-      || (before.mode & 0o022) !== 0 || before.size > 64 * 1024 * 1024) throw new Error("CLAUDE_API_ARTIFACT_INVALID");
-    const digest = createHash("sha256"), bytes = Buffer.alloc(64 * 1024); let size = 0;
-    while (size <= before.size) {
-      const read = await handle.read(bytes, 0, Math.min(bytes.length, before.size + 1 - size), size);
-      if (!read.bytesRead) break;
-      size += read.bytesRead; digest.update(bytes.subarray(0, read.bytesRead));
-    }
+    assertPrivateStat(before, { kind: "file", links: "single", owner: "selfOrRoot",
+      mode: [{ mask: 0o022, equals: 0 }], size: { max: 64 * 1024 * 1024 } }, "CLAUDE_API_ARTIFACT_INVALID");
+    const digest = createHash("sha256");
+    // The size verdict is deferred past the stat snapshots: this site collected
+    // them before its combined check, so a raw path failure still wins exactly
+    // as it did when the loop lived here.
+    const size = await streamFdContent(handle, before.size, { code: "CLAUDE_API_ARTIFACT_CHANGED", onChunk: chunk => { digest.update(chunk); } });
     const after = await handle.stat(), current = await lstat(path);
-    if (size !== before.size || current.dev !== before.dev || current.ino !== before.ino || current.isSymbolicLink()
-      || after.size !== before.size || after.uid !== before.uid || after.mode !== before.mode || after.nlink !== before.nlink
-      || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || digest.digest("hex") !== artifact.sha256) throw new Error("CLAUDE_API_ARTIFACT_CHANGED");
+    if (size !== before.size || !sameFileIdentity(current, before, ["dev", "ino"]) || current.isSymbolicLink()
+      || !sameFileIdentity(after, before, ["size", "uid", "mode", "nlink", "mtime", "ctime"])
+      || digest.digest("hex") !== artifact.sha256) throw new Error("CLAUDE_API_ARTIFACT_CHANGED");
     return artifact.sha256;
   } finally { await handle.close(); }
 }

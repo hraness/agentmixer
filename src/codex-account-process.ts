@@ -1,8 +1,8 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { constants, closeSync, fsyncSync, openSync, writeSync, type BigIntStats } from "node:fs";
-import { lstat, mkdir, open, realpath, rm, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { closeSync, fsyncSync, writeSync, type BigIntStats } from "node:fs";
+import { lstat, mkdir, realpath, rm, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 import type { CodexAccountBinding } from "./codex-account.ts";
 import type { CodexAccountProcessCloseReceipt, CodexAccountProcessPort } from "./codex-account-transport.ts";
@@ -12,6 +12,7 @@ import { providerProcessWriteResult, sameProviderProcessBinding, snapshotProvide
 import { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
 import { createSeatbeltOsSandbox, createBwrapOsSandbox } from "./os-sandbox.ts";
 import { createEgressBridge, egressBridgeDialer, type EgressBridge } from "./egress-bridge.ts";
+import { assertPrivateDirectory, assertPrivateStat, canonicalizePrivatePath, ensurePrivateDirectory, fsyncDirectory, openPrivateRead, openPrivateWrite, openPrivateWriteSync, readExactPrivateFile, sameFileIdentity, streamFdContent, writeFileOnce } from "./private-file.ts";
 export { codexManagedAccountConfiguration as codexAccountOfflineConfiguration } from "./codex-managed-baseline.ts";
 
 /** Trusted distribution inputs. A supplied hash is checked, never self-admitted
@@ -85,8 +86,7 @@ function object(value: unknown, keys: readonly string[]): Record<string, unknown
   return result;
 }
 function path(value: unknown): string {
-  assert(typeof value === "string" && isAbsolute(value) && resolve(value) === value && value.length <= 4096 && !/[\x00-\x1f\x7f"\\]/u.test(value), "CODEX_ACCOUNT_PROCESS_PATH_INVALID");
-  return value as string;
+  return canonicalizePrivatePath(value, { code: "CODEX_ACCOUNT_PROCESS_PATH_INVALID" });
 }
 /** Lowercase hostname grammar matching the egress bridge's CONNECT target
  * normalization, so an admitted allowlist entry can never silently mismatch. */
@@ -149,32 +149,17 @@ export function codexAccountDeviceCodeV3Sandbox(input: { executable: string; scr
   return codexAccountDeviceCodeV2Sandbox(input) + '(allow file-read* (literal "/private/etc/ssl/cert.pem"))\n';
 }
 async function directory(value: string): Promise<BigIntStats> {
-  const metadata = await lstat(value, { bigint: true });
-  assert(await realpath(value) === value && metadata.isDirectory() && metadata.uid === BigInt(process.getuid!()) && (metadata.mode & 0o7777n) === 0o700n, "CODEX_ACCOUNT_PROCESS_PRIVATE_DIRECTORY_REQUIRED");
-  return metadata;
+  return (await assertPrivateDirectory(value, { code: "CODEX_ACCOUNT_PROCESS_PRIVATE_DIRECTORY_REQUIRED", owner: "selfOrThrow" })).metadata;
 }
-async function syncDirectory(value: string): Promise<void> {
-  const fd = await open(value, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { await fd.sync(); } finally { await fd.close(); }
-}
-async function ensureDirectory(value: string): Promise<void> { try { await mkdir(value, { mode: 0o700 }); await syncDirectory(dirname(value)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } await directory(value); }
+const syncDirectory = fsyncDirectory;
+async function ensureDirectory(value: string): Promise<void> { await ensurePrivateDirectory(value, { code: "CODEX_ACCOUNT_PROCESS_PRIVATE_DIRECTORY_REQUIRED", owner: "selfOrThrow" }); }
 async function durableFile(value: string, contents: string): Promise<void> {
-  const fd = await open(value, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await fd.writeFile(contents); await fd.sync(); } finally { await fd.close(); }
-  await syncDirectory(dirname(value));
+  await writeFileOnce(value, contents, { syncFile: true, syncParent: true });
 }
 async function fixedFile(value: string, contents: string, create: boolean): Promise<void> {
-  if (create) try { await durableFile(value, contents); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  const fd = await open(value, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = await fd.stat({ bigint: true });
-    assert(before.isFile() && before.uid === BigInt(process.getuid!()) && before.nlink === 1n && (before.mode & 0o7777n) === 0o600n && before.size === BigInt(Buffer.byteLength(contents)), "CODEX_ACCOUNT_PROCESS_CONFIG_INVALID");
-    const read = Buffer.alloc(Buffer.byteLength(contents) + 1), result = await fd.read(read, 0, read.length, 0);
-    const after = await fd.stat({ bigint: true }), named = await lstat(value, { bigint: true });
-    assert(result.bytesRead === read.length - 1 && read.subarray(0, result.bytesRead).equals(Buffer.from(contents)) && sameFile(before, after) && sameFile(before, named), "CODEX_ACCOUNT_PROCESS_CONFIG_CHANGED");
-  } finally { await fd.close(); }
+  await readExactPrivateFile(value, contents, { invalidCode: "CODEX_ACCOUNT_PROCESS_CONFIG_INVALID", changedCode: "CODEX_ACCOUNT_PROCESS_CONFIG_CHANGED", create, statsEarly: true });
 }
-function sameFile(a: BigIntStats, b: BigIntStats): boolean { return ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(key => a[key as keyof BigIntStats] === b[key as keyof BigIntStats]); }
+const sameFile = sameFileIdentity;
 async function bounded<T>(promise: Promise<T>, deadlineMs: number): Promise<T> {
   const remaining = deadlineMs - Date.now(); if (remaining <= 0) return fail("CODEX_ACCOUNT_PROCESS_DEADLINE");
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -262,12 +247,12 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     await fixedFile(join(accountRoot, "owner.json"), JSON.stringify({ schema: "xcb.codex-account-home.v1", accountId: owned.accountId }) + "\n", created);
     root = join(runs, `${owned.owner}-${owned.processGeneration}-${randomBytes(12).toString("hex")}`); await mkdir(root, { mode: 0o700 });
     await syncDirectory(runs);
-    state.journalPath = join(root, "custody.jsonl"); journalFd = openSync(state.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    state.journalPath = join(root, "custody.jsonl"); journalFd = openPrivateWriteSync(state.journalPath);
     fsyncSync(journalFd); await syncDirectory(root);
     lockPath = join(accountRoot, "active.json"); lockContents = JSON.stringify({ schema: "xcb.codex-account-lock.v1", binding: owned, journalPath: state.journalPath }) + "\n";
     // Mark ownership as soon as the exclusive create succeeds, including a
     // failed fsync: that uncertainty must never erase somebody else's lock.
-    const lock = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); lockOwned = true;
+    const lock = await openPrivateWrite(lockPath); lockOwned = true;
     try { await lock.writeFile(lockContents); await lock.sync(); } finally { await lock.close(); }
     await syncDirectory(accountRoot);
     persist();
@@ -280,17 +265,13 @@ export function createCodexAccountProcess(options: CodexAccountProcessOptions, t
     const executable = join(runtimeRoot, "codex");
     // Copy through one no-follow descriptor, then independently verify the exact
     // immutable destination bytes before it can be executed.
-    const source = await open(runtime.executablePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try { const before = await source.stat({ bigint: true }); assert(before.isFile() && before.size > 0n && before.size <= 256n * 1024n * 1024n, "CODEX_ACCOUNT_PROCESS_EXECUTABLE_INVALID");
-      const target = await open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o500);
+    const source = await openPrivateRead(runtime.executablePath);
+    try { const before = await source.stat({ bigint: true }); assertPrivateStat(before, { kind: "file", size: { min: 1n, max: 256n * 1024n * 1024n } }, "CODEX_ACCOUNT_PROCESS_EXECUTABLE_INVALID");
+      const target = await openPrivateWrite(executable, { mode: 0o500 });
       try {
-        const buffer = Buffer.alloc(64 * 1024), copiedHash = createHash("sha256"); let copied = 0;
-        while (copied <= Number(before.size)) {
-          const count = (await source.read(buffer, 0, Math.min(buffer.length, Number(before.size) + 1 - copied), copied)).bytesRead;
-          if (!count) break;
-          copied += count; assert(copied <= Number(before.size), "CODEX_ACCOUNT_PROCESS_EXECUTABLE_CHANGED");
-          copiedHash.update(buffer.subarray(0, count)); await target.writeFile(buffer.subarray(0, count));
-        }
+        const copiedHash = createHash("sha256");
+        const copied = await streamFdContent(source, before.size, { code: "CODEX_ACCOUNT_PROCESS_EXECUTABLE_CHANGED", earlyGrowth: true,
+          onChunk: async chunk => { copiedHash.update(chunk); await target.writeFile(chunk); } });
         assert(copied === Number(before.size) && sameFile(before, await source.stat({ bigint: true })) && sameFile(before, await lstat(runtime.executablePath, { bigint: true })) && await realpath(runtime.executablePath) === runtime.executablePath && copiedHash.digest("hex") === runtime.sha256, "CODEX_ACCOUNT_PROCESS_EXECUTABLE_CHANGED");
         await target.sync();
       } finally { await target.close(); }

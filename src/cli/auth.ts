@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { privateDirectory } from "./state.ts";
 import type { CliBinaryInspection } from "./binaries.ts";
+import { writeFileOnce } from "../private-file.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
 
@@ -71,8 +72,7 @@ function loginOutput(write: (text: string) => void, hidden: () => boolean, hide:
  * provider only as CLAUDE_CODE_OAUTH_TOKEN env inside its sandbox. */
 async function storeToken(stateRoot: string, token: string): Promise<void> {
   await privateDirectory(stateRoot);
-  const file = await open(TOKEN_PATH(stateRoot), "w", 0o600);
-  try { await file.writeFile(token + "\n"); } finally { await file.close(); }
+  await writeFileOnce(TOKEN_PATH(stateRoot), token + "\n", { exclusive: false, nofollow: false, truncate: true });
 }
 
 /** Read the stored subscription token, or null when absent/malformed. */

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, open, opendir, realpath, type FileHandle } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { type BigIntStats } from "node:fs";
+import { lstat, opendir, realpath, type FileHandle } from "node:fs/promises";
+import { join } from "node:path";
+import { assertPrivateStat, canonicalizePrivatePath, openPrivateRead, readFdExact, sameFileIdentity, PRIVATE_C0_REJECT } from "./private-file.ts";
 
 const MAX_CONFIGURATION_BYTES = 256 * 1024;
 const directories = ["", "home", "state", "tmp", "work"] as const;
@@ -24,13 +25,10 @@ export type CodexScratchInspection = Readonly<{
 }>;
 
 function check(value: unknown, code: string): asserts value { if (!value) throw new Error(code); }
-function sameIdentity(before: BigIntStats, after: BigIntStats): boolean {
-  return ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
-    .every(key => before[key as keyof BigIntStats] === after[key as keyof BigIntStats]);
-}
+const sameIdentity = sameFileIdentity;
 function privateEntry(metadata: BigIntStats, directory: boolean, uid: number) {
-  check(metadata.uid === BigInt(uid) && (metadata.mode & 0o7777n) === (directory ? 0o700n : 0o600n)
-    && (directory ? metadata.isDirectory() : metadata.isFile() && metadata.nlink === 1n), "CODEX_SCRATCH_ENTRY_UNSAFE");
+  assertPrivateStat(metadata, { kind: directory ? "directory" : "file", owner: uid,
+    mode: [{ mask: 0o7777, equals: directory ? 0o700 : 0o600 }], ...(directory ? {} : { links: "single" as const }) }, "CODEX_SCRATCH_ENTRY_UNSAFE");
 }
 function entry(path: EntryPath, metadata: BigIntStats): CodexScratchEntry {
   check(metadata.uid <= BigInt(Number.MAX_SAFE_INTEGER) && metadata.nlink <= BigInt(Number.MAX_SAFE_INTEGER), "CODEX_SCRATCH_METADATA_BOUND");
@@ -60,7 +58,7 @@ async function checkNames(path: string, relative: Directory) {
 export async function inspectCodexScratch(input: { scratch: string; configuration: string | Uint8Array }): Promise<CodexScratchInspection> {
   // Copy caller-owned bytes and primitive input before the first await.
   const scratch = input.scratch, configuration = input.configuration;
-  check(typeof scratch === "string" && isAbsolute(scratch) && resolve(scratch) === scratch && !/[\x00-\x1f]/u.test(scratch), "CODEX_SCRATCH_ABSOLUTE_PHYSICAL_PATH_REQUIRED");
+  canonicalizePrivatePath(scratch, { code: "CODEX_SCRATCH_ABSOLUTE_PHYSICAL_PATH_REQUIRED", reject: PRIVATE_C0_REJECT, maxLength: Infinity });
   check(typeof configuration === "string" || configuration instanceof Uint8Array, "CODEX_SCRATCH_CONFIGURATION_REQUIRED");
   const bytes = typeof configuration === "string" ? Buffer.byteLength(configuration, "utf8") : configuration.byteLength;
   check(bytes > 0 && bytes <= MAX_CONFIGURATION_BYTES, "CODEX_SCRATCH_CONFIGURATION_BOUND");
@@ -74,23 +72,18 @@ export async function inspectCodexScratch(input: { scratch: string; configuratio
     for (const relative of directories) {
       const path = relative ? join(scratch, relative) : scratch;
       check(await realpath(path) === path, "CODEX_SCRATCH_ABSOLUTE_PHYSICAL_PATH_REQUIRED");
-      const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK); handles.push(handle);
+      const handle = await openPrivateRead(path, { directory: true }); handles.push(handle);
       const metadata = await handle.stat({ bigint: true }); privateEntry(metadata, true, uid);
       check(sameIdentity(metadata, await lstat(path, { bigint: true })), "CODEX_SCRATCH_IDENTITY_CHANGED");
       inspected.push({ relative, path, handle, metadata });
       await checkNames(path, relative);
     }
     const path = join(scratch, "state", "config.toml");
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); handles.push(handle);
+    const handle = await openPrivateRead(path); handles.push(handle);
     const metadata = await handle.stat({ bigint: true }); privateEntry(metadata, false, uid);
     check(metadata.size === BigInt(expected.length) && metadata.size <= BigInt(MAX_CONFIGURATION_BYTES), "CODEX_SCRATCH_CONFIGURATION_MISMATCH");
     // The extra byte detects growth without an unbounded readFile allocation.
-    const actual = Buffer.alloc(expected.length + 1); let length = 0;
-    while (length < actual.length) {
-      const part = await handle.read(actual, length, actual.length - length, length);
-      if (!part.bytesRead) break; length += part.bytesRead;
-    }
-    check(length === expected.length && actual.subarray(0, length).equals(expected), "CODEX_SCRATCH_CONFIGURATION_MISMATCH");
+    await readFdExact(handle, expected.length, { code: "CODEX_SCRATCH_CONFIGURATION_MISMATCH", contents: expected, growth: true, loop: true });
     inspected.push({ relative: "state/config.toml", path, handle, metadata });
 
     // All directory/config FDs remain open while names and path identities are

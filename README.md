@@ -235,21 +235,24 @@ protocol manifest and pinned parent runtime described in
 [MANAGED-CODEX.md](MANAGED-CODEX.md), which a local install cannot
 self-produce. `--provider codex` fails closed until that evidence exists.
 
-### Judged routing and continuation (optional)
+### Judged routing, continuation, and compaction (optional)
 
-`xcb` can ask a judgment service — the jev interface — to pick among routes
-that are already admitted and signed in, or to advise whether a safely stopped
-turn remains unfinished. The port is provider-neutral: `ask(state, questions)`
-returns typed answers (`noul`, `choice`, `score`), so other decision services
-can implement the same contract. TypeSafe's System One endpoint
-(`api.typesafe.ai`, model `jev-latest`) is the shipped backend.
+`xcb` can ask a judgment service — the jev interface — to pick among admitted
+routes, advise whether a safely stopped turn remains unfinished, or veto
+Gobstopper elision of stale tool results that remain important. The port is
+provider-neutral: `ask(state, questions)` returns typed answers (`noul`,
+`choice`, `score`), so other decision services can implement the same contract.
+TypeSafe's System One endpoint (`api.typesafe.ai`, model `jev-latest`) is the
+shipped backend.
 
-Opting in is deliberate: routing sends a bounded copy of task text; native
-continuation advice sends at most 8 KiB each of the original task and last
-response. Every call allows ≤ 128 KiB total state, ≤ 64 questions, a ≤ 256 KiB
-response, and one 15-second HTTPS POST. `xcb run --provider auto` is itself
-the opt-in on the compatibility surface — the flag names the behavior, and it
-needs a key:
+Opting in is deliberate: routing sends bounded task text; native continuation
+advice sends at most 8 KiB each of the original task and last response. Judged
+compaction sends the current task, an ≤ 88 KiB fitted view of recent non-tool
+messages, and up to 64 old tool names and byte counts — never the tool-result
+bodies themselves. Every call allows ≤ 128 KiB total state, ≤ 64 questions, a
+≤ 256 KiB response, and one 15-second HTTPS POST. `xcb run --provider auto` is
+itself the opt-in on the compatibility surface — the flag names the behavior,
+and it needs a key:
 
 ```sh
 pbpaste | xcb judge token   # pipe the key on stdin — never an argument
@@ -262,19 +265,22 @@ The key vaults mode-0600 under the private state root; `XCB_JEV_API_KEY` or
 the vendor name `TYPESAFE_API_KEY` override it without touching the file. The
 native Rust build keeps the same contract under `extensions.judge` —
 `xcb judge enable` gates it there, `--model auto` routes account/model pairs,
-quota failover asks the judge to order already-eligible routes before falling
-back to your order on any error, and auto-continuation asks one `noul` question
-after every deterministic continuation safety gate passes.
+quota failover asks the judge to order already-eligible routes, auto-continuation
+asks one `noul` question after every deterministic continuation safety gate
+passes, and Gobstopper asks whether each deterministic stale-tool candidate
+must remain verbatim.
 
-The judge only *advises*. Eligible candidates pass the same admission record,
-binary SHA-256, version, and sign-in checks `doctor` enforces — a judgment can
-never qualify or activate a provider. It cannot bypass the continuation gates
-for joined custody, settled effects, no pending attention or failure, bounded
+The judge only *advises*. Eligible routes pass the same admission record, binary
+SHA-256, version, and sign-in checks `doctor` enforces — a judgment can never
+qualify or activate a provider. It cannot bypass the continuation gates for
+joined custody, settled effects, no pending attention or failure, bounded
 attempts/time, token/turn-limit terminal state, and non-repeated output; it may
-only veto continuation, and continuing requires probability ≥ 0.70. One route
-skips the call entirely; malformed or
-out-of-range routing answers fail honestly instead of guessing, while missing
-or failed continuation advice stops rather than continuing automatically.
+only veto continuation, and continuing requires probability ≥ 0.70. Gobstopper
+still selects candidates deterministically, preserves the recent tail, never
+rewrites user or assistant text, re-checks minimum savings, and retains every
+original in local history. Missing or malformed compaction advice falls back
+to the deterministic Gobstopper plan; unasked candidates beyond the 64-question
+bound remain verbatim.
 
 ## Migrating from AgentMixer
 

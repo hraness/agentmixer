@@ -159,6 +159,69 @@ async fn pick_route(
         .ok_or(Error::Unavailable("judge route out of range"))
 }
 
+const JUDGE_CONTINUE_THRESHOLD: f64 = 0.7;
+
+struct ContinuationInput<'a> {
+    policy: &'a xcb_core::policy::AutoContinue,
+    original_task: &'a str,
+    last_response: &'a str,
+    facts: &'a xcb_core::policy::TurnFacts,
+    consecutive: u32,
+    elapsed_ms: u64,
+    repeated: bool,
+}
+
+async fn judge_continuation(
+    judge: &dyn judge::Judge,
+    input: ContinuationInput<'_>,
+) -> Result<bool> {
+    if !should_continue(
+        input.policy,
+        input.facts,
+        input.consecutive,
+        input.elapsed_ms,
+        input.repeated,
+    ) {
+        return Ok(false);
+    }
+    let state = serde_json::json!({
+        "context": "All deterministic continuation safety checks passed. Decide only whether the same task remains unfinished and can proceed without user input.",
+        "original_task": xcb_core::display_text(input.original_task, 8192),
+        "last_response": xcb_core::display_text(input.last_response, 8192),
+        "turn": {
+            "terminal": input.facts.terminal,
+            "consecutive_continuations": input.consecutive,
+            "elapsed_ms": input.elapsed_ms,
+        },
+    });
+    let mut questions = judge::JudgeQuestions::new();
+    questions.insert(
+        "continue_task".to_owned(),
+        judge::JudgeQuestion::Noul {
+            instructions: "Should xcb automatically continue this exact coding task from the last confirmed checkpoint? Answer true only when the response plainly leaves unfinished work that can proceed without approval, clarification, missing input, repeated effects, or task expansion.".to_owned(),
+            criteria: Some(judge::NoulCriteria {
+                r#true: Some("The same task is clearly unfinished and safe to resume now.".to_owned()),
+                r#false: Some("The task is complete, ambiguous, blocked, repetitive, or needs the user.".to_owned()),
+            }),
+        },
+    );
+    let answers = judge.ask(&state, &questions).await?;
+    Ok(answers
+        .answers
+        .get("continue_task")
+        .and_then(judge::JudgeAnswer::noul)
+        .is_some_and(|probability| probability >= JUDGE_CONTINUE_THRESHOLD))
+}
+
+async fn configured_judge_continuation(
+    root: &Path,
+    config: &crate::config::JudgeConfig,
+    input: ContinuationInput<'_>,
+) -> Result<bool> {
+    let judge = judge::resolve(root, config)?.ok_or(Error::Unavailable("judge key missing"))?;
+    judge_continuation(judge.as_ref(), input).await
+}
+
 pub fn new_session(
     store: &Store,
     workspace: &Path,
@@ -382,13 +445,52 @@ async fn execute_inner(
         let current_config = Config::load(store.root())?.0;
         let output_digest = digest(&outcome.text);
         let repeat = previous_output.as_ref() == Some(&output_digest);
-        if should_continue(
+        let elapsed_ms = now_ms().saturating_sub(started);
+        let deterministic_continue = should_continue(
             &current_config.extensions.auto_continue,
             &outcome.facts,
             consecutive,
-            now_ms().saturating_sub(started),
+            elapsed_ms,
             repeat,
-        ) {
+        );
+        let continue_turn = if deterministic_continue && current_config.extensions.judge.enabled {
+            match configured_judge_continuation(
+                store.root(),
+                &current_config.extensions.judge,
+                ContinuationInput {
+                    policy: &current_config.extensions.auto_continue,
+                    original_task: &original_task,
+                    last_response: &outcome.text,
+                    facts: &outcome.facts,
+                    consecutive,
+                    elapsed_ms,
+                    repeated: repeat,
+                },
+            )
+            .await
+            {
+                Ok(decision) => {
+                    observer(Progress::Notice(
+                        if decision {
+                            "Judge advised continuing the same task"
+                        } else {
+                            "Judge stopped automatic continuation"
+                        }
+                        .to_owned(),
+                    ));
+                    decision
+                }
+                Err(error) => {
+                    observer(Progress::Notice(format!(
+                        "Judge continuation unavailable ({error}); stopping"
+                    )));
+                    false
+                }
+            }
+        } else {
+            deterministic_continue
+        };
+        if continue_turn {
             consecutive += 1;
             previous_output = Some(output_digest);
             observer(Progress::Notice(format!(
@@ -967,6 +1069,36 @@ mod tests {
         }
     }
 
+    struct ContinueJudge(f64);
+    impl judge::Judge for ContinueJudge {
+        fn ask<'a>(
+            &'a self,
+            state: &'a serde_json::Value,
+            questions: &'a judge::JudgeQuestions,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<judge::JudgeAnswers>> + Send + 'a>,
+        > {
+            let probability = self.0;
+            let checked = judge::check_state(state).is_ok()
+                && judge::check_questions(questions).is_ok()
+                && questions.contains_key("continue_task");
+            Box::pin(async move {
+                if !checked {
+                    return Err(Error::Unavailable("invalid continuation question"));
+                }
+                let mut answers = std::collections::BTreeMap::new();
+                answers.insert(
+                    "continue_task".to_owned(),
+                    judge::JudgeAnswer::Noul(probability),
+                );
+                Ok(judge::JudgeAnswers {
+                    answers,
+                    model: None,
+                })
+            })
+        }
+    }
+
     fn route_candidate(index: usize) -> (Id, ModelChoice) {
         (
             Id::new(format!("a{index}")).unwrap(),
@@ -1019,6 +1151,69 @@ mod tests {
             .await
             .is_err(),
             "out-of-range judge answers are rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuation_judgment_is_bounded_and_cannot_bypass_safety() {
+        let policy = xcb_core::policy::AutoContinue::default();
+        let facts = xcb_core::policy::TurnFacts {
+            terminal: Terminal::TokenLimit,
+            joined: true,
+            effects: xcb_core::policy::EffectState::Settled,
+            pending_attention: false,
+            failure: None,
+        };
+        assert!(
+            judge_continuation(
+                &ContinueJudge(JUDGE_CONTINUE_THRESHOLD),
+                ContinuationInput {
+                    policy: &policy,
+                    original_task: &"task".repeat(100_000),
+                    last_response: &"response".repeat(100_000),
+                    facts: &facts,
+                    consecutive: 0,
+                    elapsed_ms: 1_000,
+                    repeated: false,
+                },
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !judge_continuation(
+                &ContinueJudge(JUDGE_CONTINUE_THRESHOLD - 0.01),
+                ContinuationInput {
+                    policy: &policy,
+                    original_task: "task",
+                    last_response: "response",
+                    facts: &facts,
+                    consecutive: 0,
+                    elapsed_ms: 1_000,
+                    repeated: false,
+                },
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !judge_continuation(
+                &ContinueJudge(1.0),
+                ContinuationInput {
+                    policy: &policy,
+                    original_task: "task",
+                    last_response: "response",
+                    facts: &xcb_core::policy::TurnFacts {
+                        pending_attention: true,
+                        ..facts
+                    },
+                    consecutive: 0,
+                    elapsed_ms: 1_000,
+                    repeated: false,
+                },
+            )
+            .await
+            .unwrap()
         );
     }
 }

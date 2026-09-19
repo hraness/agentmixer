@@ -564,7 +564,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 None => "none",
             };
             let (judge_model, judge_endpoint) =
-                xcb_runtime::jev::effective_target(&config.extensions.judge);
+                xcb_runtime::jev::effective_target(&config.extensions.judge)?;
             let judge_status = json!({
                 "enabled": config.extensions.judge.enabled,
                 "key": judge_key_name,
@@ -953,7 +953,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
                 None | Some(JudgeCommand::Status) => {
                     let source = judge::judge_token(store.root())?.map(|(_, source)| source);
                     let (judge_model, judge_endpoint) =
-                        xcb_runtime::jev::effective_target(&config.extensions.judge);
+                        xcb_runtime::jev::effective_target(&config.extensions.judge)?;
                     if cli.json {
                         print_json(json!({
                             "version": 1,

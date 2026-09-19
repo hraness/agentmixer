@@ -84,7 +84,7 @@ fn question_batches_are_bounded() {
 fn response_parsing_validates_each_answer_shape() {
     let answers = parse_response(
         200,
-        br#"{"model":"jev-latest","answers":{"k":{"noul":0.7},"r":{"choice":"route_1","confidence":0.9,"probabilities":{"route_1":0.9,"route_0":0.1}},"s":{"score":4.0,"confidence":0.8,"probabilities":{"a":0.5}}}}"#,
+        br#"{"model":"jev-latest","answers":{"k":{"noul":0.7},"r":{"choice":"route_1","confidence":0.9,"probabilities":{"route_1":0.9,"route_0":0.1}},"s":{"score":4.0,"confidence":0.8,"probabilities":{"4":0.5}}}}"#,
     )
     .unwrap();
     assert_eq!(answers.model.as_deref(), Some("jev-latest"));
@@ -93,6 +93,48 @@ fn response_parsing_validates_each_answer_shape() {
     assert_eq!(answers.answers["s"].score(), Some((4.0, 0.8)));
 
     assert!(matches!(answers.answers["k"], JudgeAnswer::Noul(_)));
+    let questions = BTreeMap::from([
+        ("k".to_owned(), noul("yes?")),
+        (
+            "r".to_owned(),
+            JudgeQuestion::Choice {
+                instructions: "route".to_owned(),
+                criteria: BTreeMap::from([
+                    ("route_0".to_owned(), None),
+                    ("route_1".to_owned(), None),
+                ]),
+            },
+        ),
+        (
+            "s".to_owned(),
+            JudgeQuestion::Score {
+                instructions: "score".to_owned(),
+                criteria: (0..5).map(|index| index.to_string()).collect(),
+            },
+        ),
+    ]);
+    judge::check_answers(&questions, &answers).unwrap();
+    let mut incomplete = answers.clone();
+    incomplete.answers.remove("k");
+    assert!(judge::check_answers(&questions, &incomplete).is_err());
+    let mut wrong_options = questions.clone();
+    if let JudgeQuestion::Choice { criteria, .. } = wrong_options.get_mut("r").unwrap() {
+        criteria.remove("route_1");
+    }
+    assert!(judge::check_answers(&wrong_options, &answers).is_err());
+    let mut missing_selected_probability = answers.clone();
+    if let JudgeAnswer::Choice { probabilities, .. } =
+        missing_selected_probability.answers.get_mut("r").unwrap()
+    {
+        probabilities.remove("route_1");
+    }
+    assert!(judge::check_answers(&questions, &missing_selected_probability).is_err());
+    let mut short_scale = questions.clone();
+    if let JudgeQuestion::Score { criteria, .. } = short_scale.get_mut("s").unwrap() {
+        criteria.pop();
+    }
+    assert!(judge::check_answers(&short_scale, &answers).is_err());
+
     for body in [
         br#"not json"#.as_slice(),
         br#"{"answers":{}}"#.as_slice(),
@@ -100,6 +142,11 @@ fn response_parsing_validates_each_answer_shape() {
         br#"{"answers":{"k":{"noul":"x"}}}"#.as_slice(),
         br#"{"answers":{"k":{}}}"#.as_slice(),
         br#"{"answers":{"k":{"choice":"r"}}}"#.as_slice(),
+        br#"{"model":"jev-latest\nforged","answers":{"k":{"noul":0.5}}}"#.as_slice(),
+        br#"{"answers":{"k":{"choice":"route_0\nforged","confidence":0.5,"probabilities":{"route_0":1.0}}}}"#.as_slice(),
+        br#"{"answers":{"k":{"choice":"route_0","confidence":1.1,"probabilities":{"route_0":1.0}}}}"#.as_slice(),
+        br#"{"answers":{"k":{"choice":"route_0","confidence":0.5,"probabilities":{"route_0":-0.1}}}}"#.as_slice(),
+        br#"{"answers":{"k":{"noul":0.5,"choice":"route_0"}}}"#.as_slice(),
         br#"{"answers":{"k":{"score":"x","confidence":0.5,"probabilities":{}}}}"#.as_slice(),
     ] {
         assert!(parse_response(200, body).is_err(), "{body:?} must fail");

@@ -3,7 +3,7 @@ import { chmod, lstat, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { checkJudgeQuestions, checkJudgeState, createSystemOneJudge, hasJudgeKey, parseJudgeEndpoint,
+import { checkJudgeAnswers, checkJudgeQuestions, checkJudgeState, createSystemOneJudge, hasJudgeKey, parseJudgeEndpoint,
   parseJudgeResponse, removeJudgeKey, resolveJudge, resolveJudgeKey, storeJudgeKey,
   JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, MAX_JUDGE_QUESTIONS, SYSTEM_ONE_URL } from "../src/judge.ts";
 
@@ -14,6 +14,8 @@ const envWith = (entries: Record<string, string>) => (name: string) => entries[n
 test("question batches are bounded and typed before reaching any backend", () => {
   expect(() => checkJudgeQuestions({})).toThrow("JUDGE_QUESTIONS_LIMIT");
   expect(() => checkJudgeQuestions({ q: { type: "noul", instructions: "ok?" } })).not.toThrow();
+  expect(() => checkJudgeQuestions({ "model[1]": { type: "noul", instructions: "ok?" } })).not.toThrow();
+  expect(() => checkJudgeQuestions({ "bad:name": { type: "noul", instructions: "ok?" } })).toThrow("JUDGE_NAME_INVALID");
   expect(() => checkJudgeQuestions({ "bad name": { type: "noul", instructions: "ok?" } })).toThrow("JUDGE_NAME_INVALID");
   expect(() => checkJudgeQuestions({ q: { type: "noul", instructions: "x".repeat(4 * 1024 + 1) } })).toThrow();
   const many = Object.fromEntries(Array.from({ length: MAX_JUDGE_QUESTIONS + 1 }, (_, i) => [`q${i}`, { type: "noul" as const, instructions: "ok?" }]));
@@ -41,6 +43,7 @@ test("responses map status codes and validate every answer shape", () => {
   expect(() => parseJudgeResponse(200, '{"answers":{"q":{"noul":1.5}}}')).toThrow("JUDGE_ANSWER_RANGE");
   const parsed = parseJudgeResponse(200, JSON.stringify({
     model: "jev-latest",
+    usage: { input_tokens: 12, output_tokens: 3 },
     answers: {
       a: { noul: 0.9 },
       b: { choice: "x", confidence: 0.8, probabilities: { x: 0.8, y: 0.2 } },
@@ -48,9 +51,36 @@ test("responses map status codes and validate every answer shape", () => {
     },
   }));
   expect(parsed.model).toBe("jev-latest");
+  expect(parsed.usage).toEqual({ input_tokens: 12, output_tokens: 3 });
   expect(parsed.answers.a).toEqual({ type: "noul", noul: 0.9 });
   expect(parsed.answers.b?.type === "choice" && parsed.answers.b.choice === "x").toBe(true);
   expect(parsed.answers.c?.type === "score" && parsed.answers.c.score === 4).toBe(true);
+  const questions = {
+    a: { type: "noul" as const, instructions: "yes?" },
+    b: { type: "choice" as const, instructions: "pick", criteria: { x: null, y: null } },
+    c: { type: "score" as const, instructions: "score", criteria: ["0", "1", "2", "3", "4"] },
+  };
+  expect(checkJudgeAnswers(questions, parsed)).toBe(parsed);
+  expect(() => checkJudgeAnswers(questions, { ...parsed, answers: { a: parsed.answers.a! } }))
+    .toThrow("JUDGE_RESPONSE_QUESTION_MISMATCH");
+  expect(() => checkJudgeAnswers({ ...questions, b: { ...questions.b, criteria: { y: null } } }, parsed))
+    .toThrow("JUDGE_RESPONSE_OPTION_MISMATCH");
+  const choice = parsed.answers.b!;
+  if (choice.type !== "choice") throw new Error("fixture");
+  expect(() => checkJudgeAnswers(questions, {
+    ...parsed, answers: { ...parsed.answers, b: { ...choice, probabilities: { y: 1 } } },
+  })).toThrow("JUDGE_RESPONSE_OPTION_MISMATCH");
+  expect(() => checkJudgeAnswers({ ...questions, c: { ...questions.c, criteria: ["0", "1"] } }, parsed))
+    .toThrow("JUDGE_RESPONSE_SCORE_MISMATCH");
+  for (const body of [
+    { model: "jev-latest\nforged", answers: { q: { noul: 0.5 } } },
+    { answers: { q: { choice: "x\nforged", confidence: 0.5, probabilities: { x: 1 } } } },
+    { answers: { q: { choice: "x", confidence: 1.1, probabilities: { x: 1 } } } },
+    { answers: { q: { choice: "x", confidence: 0.5, probabilities: { x: -0.1 } } } },
+    { answers: { q: { noul: 0.5, choice: "x" } } },
+    { usage: { input_tokens: -1 }, answers: { q: { noul: 0.5 } } },
+    { usage: { input_tokens: 1, secret: 2 }, answers: { q: { noul: 0.5 } } },
+  ]) expect(() => parseJudgeResponse(200, JSON.stringify(body))).toThrow();
 });
 
 test("endpoints are https-only with a clean authority", () => {
@@ -58,8 +88,11 @@ test("endpoints are https-only with a clean authority", () => {
   expect(() => parseJudgeEndpoint("https://user:pw@api.typesafe.ai/x")).toThrow("JUDGE_ENDPOINT_INVALID");
   expect(() => parseJudgeEndpoint("https://api.typesafe.ai/x?y=1")).toThrow("JUDGE_ENDPOINT_INVALID");
   expect(() => parseJudgeEndpoint("https://api.typesafe.ai/x#frag")).toThrow("JUDGE_ENDPOINT_INVALID");
+  expect(() => parseJudgeEndpoint("https://api.typesafe.ai/x\nforged")).toThrow("JUDGE_ENDPOINT_INVALID");
+  expect(() => parseJudgeEndpoint("https://api.typesafe.ai/x\tforged")).toThrow("JUDGE_ENDPOINT_INVALID");
   expect(() => parseJudgeEndpoint("not a url")).toThrow("JUDGE_ENDPOINT_INVALID");
   expect(parseJudgeEndpoint(SYSTEM_ONE_URL).hostname).toBe("api.typesafe.ai");
+  expect(() => createSystemOneJudge({ token: TOKEN, model: "jev-latest\nforged" })).toThrow("JUDGE_NAME_INVALID");
 });
 
 test("SystemOneJudge sends one bounded POST and parses the response", async () => {

@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 use crate::{Error, Result};
 
 use crate::judge::{
-    Judge, JudgeAnswer, JudgeAnswers, JudgeQuestions, check_questions, check_state,
+    Judge, JudgeAnswer, JudgeAnswers, JudgeQuestions, check_answers, check_questions, check_state,
 };
 
 pub const SYSTEM_ONE_URL: &str = "https://api.typesafe.ai/v1/systemone";
@@ -72,7 +72,10 @@ impl Endpoint {
             return Err(xcb_core::Error::Invalid("judge endpoint host").into());
         }
         bounded_text(&path, 1024)?;
-        if path.contains(['?', '#', ' ']) {
+        if path
+            .bytes()
+            .any(|byte| !(0x21..=0x7e).contains(&byte) || matches!(byte, b'?' | b'#'))
+        {
             return Err(xcb_core::Error::Invalid("judge endpoint path").into());
         }
         Ok(Self {
@@ -87,19 +90,32 @@ impl Endpoint {
 /// config fields first, then the environment overrides, then the built-in
 /// defaults. Status output reports this so it shows what the backend would
 /// actually use, not just the stored config.
-pub fn effective_target(config: &crate::config::JudgeConfig) -> (String, String) {
-    let model = config
-        .model
-        .as_ref()
-        .map(|id| id.as_str().to_owned())
-        .or_else(|| std::env::var(JUDGE_MODEL_ENV).ok())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+fn target(
+    config: &crate::config::JudgeConfig,
+    model_env: Option<String>,
+    endpoint_env: Option<String>,
+) -> Result<(Id, String)> {
+    let model = match config.model.clone() {
+        Some(model) => model,
+        None => Id::new(model_env.unwrap_or_else(|| DEFAULT_MODEL.to_owned()).trim())?,
+    };
     let endpoint = config
         .endpoint
         .clone()
-        .or_else(|| std::env::var(JUDGE_URL_ENV).ok())
-        .unwrap_or_else(|| SYSTEM_ONE_URL.to_owned());
-    (model, endpoint)
+        .or(endpoint_env)
+        .unwrap_or_else(|| SYSTEM_ONE_URL.to_owned())
+        .trim()
+        .to_owned();
+    Endpoint::parse(&endpoint)?;
+    Ok((model, endpoint))
+}
+
+pub fn effective_target(config: &crate::config::JudgeConfig) -> Result<(Id, String)> {
+    target(
+        config,
+        std::env::var(JUDGE_MODEL_ENV).ok(),
+        std::env::var(JUDGE_URL_ENV).ok(),
+    )
 }
 
 /// The System One backend: a `Judge` over one bounded HTTPS POST per ask.
@@ -120,9 +136,9 @@ impl SystemOne {
             enabled: true,
             model,
             endpoint,
-        });
-        let endpoint = Endpoint::parse(url.trim())?;
-        bounded_text(&model, 128)?;
+        })?;
+        let endpoint = Endpoint::parse(&url)?;
+        let model = model.as_str().to_owned();
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
@@ -156,7 +172,9 @@ impl Judge for SystemOne {
             let (status, response) = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(&body))
                 .await
                 .map_err(|_| Error::Unavailable("judge request timed out"))??;
-            parse_response(status, &response)
+            let answers = parse_response(status, &response)?;
+            check_answers(questions, &answers)?;
+            Ok(answers)
         })
     }
 }
@@ -351,15 +369,19 @@ pub fn parse_response(status: u16, body: &[u8]) -> Result<JudgeAnswers> {
         .map_err(|_| Error::Unavailable("judge returned malformed JSON"))?;
     let mut answers = BTreeMap::new();
     for (name, value) in raw.answers {
+        Id::new(&name).map_err(|_| Error::Unavailable("judge answer name malformed"))?;
         answers.insert(name, parse_answer(&value)?);
     }
     if answers.is_empty() {
         return Err(Error::Unavailable("judge response is missing answers"));
     }
-    Ok(JudgeAnswers {
-        answers,
-        model: raw.model,
-    })
+    let model = raw
+        .model
+        .map(Id::new)
+        .transpose()
+        .map_err(|_| Error::Unavailable("judge response model malformed"))?
+        .map(String::from);
+    Ok(JudgeAnswers { answers, model })
 }
 
 fn finite(value: Option<&serde_json::Value>) -> Result<f64> {
@@ -369,13 +391,24 @@ fn finite(value: Option<&serde_json::Value>) -> Result<f64> {
         .ok_or(Error::Unavailable("judge answer malformed"))
 }
 
+fn probability(value: Option<&serde_json::Value>) -> Result<f64> {
+    finite(value).and_then(|probability| {
+        (0.0..=1.0)
+            .contains(&probability)
+            .then_some(probability)
+            .ok_or(Error::Unavailable("judge answer out of range"))
+    })
+}
+
 fn probabilities(value: Option<&serde_json::Value>) -> Result<BTreeMap<String, f64>> {
     let object = value
         .and_then(|value| value.as_object())
+        .filter(|object| !object.is_empty())
         .ok_or(Error::Unavailable("judge answer malformed"))?;
     let mut output = BTreeMap::new();
-    for (key, probability) in object {
-        output.insert(key.clone(), finite(Some(probability))?);
+    for (key, value) in object {
+        Id::new(key).map_err(|_| Error::Unavailable("judge probability name malformed"))?;
+        output.insert(key.clone(), probability(Some(value))?);
     }
     Ok(output)
 }
@@ -384,32 +417,38 @@ fn parse_answer(value: &serde_json::Value) -> Result<JudgeAnswer> {
     let object = value
         .as_object()
         .ok_or(Error::Unavailable("judge answer malformed"))?;
-    if object.contains_key("noul") {
-        let noul = finite(object.get("noul"))?;
-        if !(0.0..=1.0).contains(&noul) {
-            return Err(Error::Unavailable("judge answer out of range"));
+    let kinds = ["noul", "choice", "score"]
+        .into_iter()
+        .filter(|key| object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if kinds.len() != 1
+        || object
+            .get("type")
+            .is_some_and(|kind| kind.as_str() != Some(kinds[0]))
+    {
+        return Err(Error::Unavailable("judge answer malformed"));
+    }
+    match kinds[0] {
+        "noul" => Ok(JudgeAnswer::Noul(probability(object.get("noul"))?)),
+        "choice" => {
+            let choice = object
+                .get("choice")
+                .and_then(|value| value.as_str())
+                .ok_or(Error::Unavailable("judge answer malformed"))?;
+            Id::new(choice).map_err(|_| Error::Unavailable("judge choice malformed"))?;
+            Ok(JudgeAnswer::Choice {
+                choice: choice.to_owned(),
+                confidence: probability(object.get("confidence"))?,
+                probabilities: probabilities(object.get("probabilities"))?,
+            })
         }
-        return Ok(JudgeAnswer::Noul(noul));
-    }
-    if object.contains_key("choice") {
-        let choice = object
-            .get("choice")
-            .and_then(|value| value.as_str())
-            .ok_or(Error::Unavailable("judge answer malformed"))?;
-        return Ok(JudgeAnswer::Choice {
-            choice: choice.to_owned(),
-            confidence: finite(object.get("confidence"))?,
-            probabilities: probabilities(object.get("probabilities"))?,
-        });
-    }
-    if object.contains_key("score") {
-        return Ok(JudgeAnswer::Score {
+        "score" => Ok(JudgeAnswer::Score {
             score: finite(object.get("score"))?,
-            confidence: finite(object.get("confidence"))?,
+            confidence: probability(object.get("confidence"))?,
             probabilities: probabilities(object.get("probabilities"))?,
-        });
+        }),
+        _ => unreachable!("one of the three keys above"),
     }
-    Err(Error::Unavailable("judge answer malformed"))
 }
 
 #[cfg(test)]
@@ -419,6 +458,36 @@ mod tests {
     async fn respond(bytes: &[u8]) -> Result<(u16, Vec<u8>)> {
         let mut stream: &[u8] = bytes;
         read_response(&mut stream).await
+    }
+
+    #[test]
+    fn effective_target_rejects_output_and_request_line_injection() {
+        let config = crate::config::JudgeConfig::default();
+        assert!(target(&config, Some("jev-latest\nforged".into()), None).is_err());
+        assert!(
+            target(
+                &config,
+                None,
+                Some("https://api.typesafe.ai/v1/systemone\nforged: value".into()),
+            )
+            .is_err()
+        );
+        assert!(
+            target(
+                &config,
+                None,
+                Some("https://api.typesafe.ai/v1/systemone\tforged".into()),
+            )
+            .is_err()
+        );
+        let (model, endpoint) = target(
+            &config,
+            Some(" jev-test ".into()),
+            Some(" https://judge.example/v1/ask ".into()),
+        )
+        .unwrap();
+        assert_eq!(model.as_str(), "jev-test");
+        assert_eq!(endpoint, "https://judge.example/v1/ask");
     }
 
     #[tokio::test]

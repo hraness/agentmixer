@@ -47,6 +47,7 @@ import { assertAgentTaskAccountLease, runAgentTask,
   type AgentTaskAdapter, type AgentTaskBinding, type AgentTaskCompletion, type AgentTaskExecutionRequest,
   type AgentTaskRoute, type AgentTaskStopEvidence, type AgentTaskStopReason, type TaskRuntimeQualification } from "./task-runtime.ts";
 import { boundedText, identifier, safeInteger } from "./validation.ts";
+import { canonicalJsonSha256 } from "./canonical-json.ts";
 
 export const GOBSTOPPER_EDITOR_LIMITS = Object.freeze({
   stdinBytes: 256 * 1024, promptBytes: 448 * 1024, items: 4096, calls: 64, toolsPerTurn: 64,
@@ -272,7 +273,7 @@ const binding = (request: AgentTaskExecutionRequest): AgentTaskBinding => Object
   route: Object.freeze({ ...request.route }), accountId: request.accountId, workspaceId: request.workspaceId, runId: request.runId,
   profile: Object.freeze({ ...request.profile }), model: Object.freeze({ ...request.model }), runtime: Object.freeze({ ...request.runtime }),
   accountLease: request.accountLease });
-const requestDigest = (request: AgentTaskExecutionRequest) => proof({ ...binding(request), purpose: request.purpose, prompt: request.prompt,
+const requestDigest = (request: AgentTaskExecutionRequest) => canonicalJsonSha256({ ...binding(request), purpose: request.purpose, prompt: request.prompt,
   limits: request.limits, admittedAtUnixMs: request.admittedAtUnixMs, executionDeadlineUnixMs: request.executionDeadlineUnixMs });
 
 type Active = { binding: AgentTaskBinding; requestDigest: string; cleanupDeadlineUnixMs: number; controller: AbortController;

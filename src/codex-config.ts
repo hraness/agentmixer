@@ -4,6 +4,9 @@ import { boundedText, object, safeInteger } from "./validation.ts";
 import { createHash } from "node:crypto";
 import { assertCapabilityProfile, type CapabilityProfile, type CapabilityProfileIdentity } from "./capabilities.ts";
 import type { AgentTaskModel } from "./task-runtime.ts";
+import { canonicalJson } from "./canonical-json.ts";
+
+export { canonicalJson } from "./canonical-json.ts";
 
 /** Exact inspected source contract; this is not runtime qualification. */
 export const CODEX_VERSION = "0.153.4";
@@ -109,12 +112,6 @@ function codexResponseSchema(schema: Readonly<Record<string, unknown>>): Record<
     if (Array.isArray(values)) result[key] = values.map(value => isSchema(value) ? codexResponseSchema(value) : value);
   }
   return result;
-}
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 /** The host supplies only its newly owned loopback listener. No credential options exist. */
 export function codexConfiguration(model: string, baseUrl: string): string {

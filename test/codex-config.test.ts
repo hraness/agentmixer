@@ -1,8 +1,38 @@
 import { expect, test } from "bun:test";
 import { BROKER_TOOL_NAMES, createToolBroker, type BrokerToolName } from "../src/broker.ts";
-import { CODEX_TOOL_NAMES, codexResponseTools, codexTools } from "../src/codex-config.ts";
+import { CODEX_TOOL_NAMES, canonicalJson, codexResponseTools, codexTools } from "../src/codex-config.ts";
 import { assertCodexCapabilityMapping, createCodexCapabilityMapping, codexTaskSettings, codexTaskConfiguration } from "../src/codex-config.ts";
 import { createCapabilityProfile, type CapabilityProfile } from "../src/capabilities.ts";
+import { canonicalJsonSha256 } from "../src/canonical-json.ts";
+
+test("canonical JSON is insertion-order independent over the strict JSON domain", () => {
+  const left = { z: [{ b: 2, a: 1 }], a: "é", "\ue000": true, "😀": false };
+  const right = { "😀": false, "\ue000": true, a: "é", z: [{ a: 1, b: 2 }] };
+  expect(canonicalJson(left)).toBe('{"a":"é","z":[{"a":1,"b":2}],"😀":false,"":true}');
+  expect(canonicalJson(right)).toBe(canonicalJson(left));
+  expect(canonicalJsonSha256(right)).toBe(canonicalJsonSha256(left));
+  for (let seed = 1; seed <= 250; seed += 1) {
+    const keys = Array.from({ length: 12 }, (_, index) => `k${(seed * 17 + index * 31) % 97}`);
+    const first: Record<string, number> = {}, second: Record<string, number> = {};
+    keys.forEach((key, index) => { first[key] = index; });
+    keys.toReversed().forEach(key => { second[key] = first[key] as number; });
+    expect(canonicalJson(first)).toBe(canonicalJson(second));
+  }
+});
+
+test("canonical JSON rejects values that do not have one strict encoding", () => {
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  const accessor = Object.defineProperty({}, "value", { enumerable: true, get: () => 1 });
+  const nonenumerable = Object.defineProperty({}, "value", { enumerable: false, value: 1 });
+  const symbolObject = { value: 1, [Symbol("hidden")]: 2 };
+  const keyedArray = [1] as number[] & { extra?: number };
+  keyedArray.extra = 2;
+  for (const value of [undefined, 1n, -0, Number.NaN, Number.POSITIVE_INFINITY, "\ud800", "\udfff",
+    { value: undefined }, cyclic, Array(1), accessor, nonenumerable, symbolObject, keyedArray, new Date(0)]) {
+    expect(() => canonicalJson(value)).toThrow();
+  }
+});
 
 test("registered capability mappings preserve distinct names and recursive schemas", () => {
   const inputSchema = { type: "object", properties: { node: { $ref: "#/$defs/Node" } }, required: ["node"], additionalProperties: false,

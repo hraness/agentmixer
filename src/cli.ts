@@ -12,8 +12,8 @@ import { inspectCliBinary, CLI_CODEX_ENV, CLI_CLAUDE_ENV, CLI_DEVIN_ENV, type Cl
 import { claudeLogin, claudeAuthStatus, clearClaudeOAuthToken } from "./cli/auth.ts";
 import { codexAuthStatus, codexLogin, codexLogout } from "./cli/codex.ts";
 import { CLI_DEVIN_MIN_VERSION, devinAuthStatus, devinLogin, devinLogout } from "./cli/devin.ts";
-import { resolveJudge, resolveJudgeKey, storeJudgeKey, removeJudgeKey, hasJudgeKey,
-  JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, type JudgeAnswers } from "./judge.ts";
+import { checkJudgeKeyTarget, resolveJudge, resolveJudgeKey, storeJudgeKey, removeJudgeKey, hasJudgeKey,
+  JUDGE_KEY_ENV, JUDGE_KEY_VENDOR_ENV, JUDGE_TOKEN_FILE, JUDGE_URL_ENV, type JudgeAnswers } from "./judge.ts";
 import { readCliQualification } from "./cli/qualification.ts";
 import { seatbeltAvailable } from "./cli/sandbox.ts";
 import type { ClaudeTaskEvents } from "./claude-task-adapter.ts";
@@ -124,9 +124,14 @@ async function commandDoctor(stateRoot: string): Promise<number> {
     process.stdout.write(`${seatbelt ? green("✓") : yellow("!")} sandbox: seatbelt ${seatbelt ? "available" : "unavailable"} ${dim("(claude runs confined; availability is not attestation)")}\n`);
   }
   const judgeKey = await resolveJudgeKey(stateRoot).catch(() => null);
-  process.stdout.write(`${judgeKey === null ? dim("○") : green("✓")} judge: ${judgeKey === null
+  let judgeBlocked = false;
+  if (judgeKey !== null) {
+    try { checkJudgeKeyTarget(judgeKey.source, process.env[JUDGE_URL_ENV]); } catch { judgeBlocked = true; }
+  }
+  process.stdout.write(`${judgeKey === null ? dim("○") : judgeBlocked ? yellow("!") : green("✓")} judge: ${judgeKey === null
     ? `no jev key — ${dim(`--provider auto\` needs one; pipe it into \`xcb judge token\``)}`
-    : `key from ${judgeKey.source} — ${dim("\`--provider auto\` can route")}`}\n`);
+    : judgeBlocked ? "blocked — vaulted key cannot be used with a custom endpoint"
+      : `key from ${judgeKey.source} — ${dim("\`--provider auto\` can route")}`}\n`);
   // Doctor succeeds when at least one provider is admitted; an absent optional
   // provider is a diagnostic line, not a failure.
   return admitted > 0 ? 0 : 1;
@@ -270,6 +275,11 @@ async function commandJudge(sub: string | undefined, stateRoot: string): Promise
   }
   if (sub !== undefined && sub !== "status") return fail("usage: xcb judge [status|token|logout|test]");
   const key = await resolveJudgeKey(stateRoot).catch(() => null);
+  if (key !== null) {
+    try { checkJudgeKeyTarget(key.source, process.env[JUDGE_URL_ENV]); } catch {
+      return fail("vaulted judge key is bound to the canonical System One endpoint; use an environment key for a custom endpoint.");
+    }
+  }
   const vaulted = await hasJudgeKey(stateRoot);
   const source = key === null ? "none" : key.source === "env" ? "environment" : "vault";
   process.stdout.write(`judge: ${key === null ? "no key configured" : `key from ${source}`}${vaulted && key?.source !== "vault" ? dim(" (vault file also present)") : ""}\n`);

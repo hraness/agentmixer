@@ -180,6 +180,68 @@ pub fn check_questions(questions: &JudgeQuestions) -> Result<()> {
     Ok(())
 }
 
+fn valid_probability(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
+/// Validates that a response is complete, matches every asked question's type,
+/// and cannot select an option or probability bucket outside that question.
+pub fn check_answers(questions: &JudgeQuestions, response: &JudgeAnswers) -> Result<()> {
+    check_questions(questions)?;
+    if response.answers.len() != questions.len() {
+        return Err(Error::Unavailable("judge response question mismatch"));
+    }
+    for (name, question) in questions {
+        let answer = response
+            .answers
+            .get(name)
+            .ok_or(Error::Unavailable("judge response missing answer"))?;
+        let valid = match (question, answer) {
+            (JudgeQuestion::Noul { .. }, JudgeAnswer::Noul(value)) => valid_probability(*value),
+            (
+                JudgeQuestion::Choice { criteria, .. },
+                JudgeAnswer::Choice {
+                    choice,
+                    confidence,
+                    probabilities,
+                },
+            ) => {
+                criteria.contains_key(choice)
+                    && probabilities.contains_key(choice)
+                    && valid_probability(*confidence)
+                    && !probabilities.is_empty()
+                    && probabilities.iter().all(|(option, probability)| {
+                        criteria.contains_key(option) && valid_probability(*probability)
+                    })
+            }
+            (
+                JudgeQuestion::Score { criteria, .. },
+                JudgeAnswer::Score {
+                    score,
+                    confidence,
+                    probabilities,
+                },
+            ) => {
+                score.is_finite()
+                    && (0.0..=(criteria.len() - 1) as f64).contains(score)
+                    && valid_probability(*confidence)
+                    && !probabilities.is_empty()
+                    && probabilities.iter().all(|(bucket, probability)| {
+                        bucket
+                            .parse::<usize>()
+                            .is_ok_and(|index| index < criteria.len())
+                            && valid_probability(*probability)
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(Error::Unavailable("judge response does not match question"));
+        }
+    }
+    Ok(())
+}
+
 /// Validates the serialized state before it reaches any backend.
 pub fn check_state(state: &serde_json::Value) -> Result<()> {
     let bytes = serde_json::to_vec(state).map_err(|_| xcb_core::Error::Invalid("judge state"))?;
@@ -275,6 +337,28 @@ pub fn judge_token(root: &Path) -> Result<Option<(Zeroizing<String>, JudgeKeySou
     vault_token(root)
 }
 
+/// Prevents a vaulted TypeSafe credential from being redirected to another
+/// origin. A deliberate custom endpoint must pair with an environment-supplied
+/// key; future backends own distinct credential custody rather than repurposing
+/// the System One vault.
+pub fn check_key_target(source: JudgeKeySource, config: &JudgeConfig) -> Result<()> {
+    if source != JudgeKeySource::Vault {
+        return Ok(());
+    }
+    let (_, target) = crate::jev::effective_target(config)?;
+    let target = crate::jev::Endpoint::parse(&target)?;
+    let canonical = crate::jev::Endpoint::parse(crate::jev::SYSTEM_ONE_URL)?;
+    if target.host != canonical.host
+        || target.port != canonical.port
+        || target.path != canonical.path
+    {
+        return Err(Error::Unavailable(
+            "vaulted judge key is bound to the canonical System One endpoint; use an environment key for a custom endpoint",
+        ));
+    }
+    Ok(())
+}
+
 /// Resolves a ready-to-use judge when the extension is enabled and a key is
 /// configured. Returns `Ok(None)` for either absence — consumers keep their
 /// deterministic path in both cases.
@@ -282,9 +366,10 @@ pub fn resolve(root: &Path, config: &JudgeConfig) -> Result<Option<Arc<dyn Judge
     if !config.enabled {
         return Ok(None);
     }
-    let Some((token, _)) = judge_token(root)? else {
+    let Some((token, source)) = judge_token(root)? else {
         return Ok(None);
     };
+    check_key_target(source, config)?;
     Ok(Some(Arc::new(crate::jev::SystemOne::new(
         token,
         config.model.clone(),
